@@ -20,6 +20,7 @@ import {
   isBoolean,
   isBooleanOrBinary
 } from './general.utils.js';
+import { deleteFileRecord, queryFileRegistryRecords } from './files.utils.js';
 
 /**
  * Generate a Hyperswarm topic name for a space
@@ -657,6 +658,12 @@ export async function getTopicToSpaceMap(db) {
  * @returns {Promise<void>} - Resolves when the row deletes.
  */
 export async function deleteSpace(db, spaceId) {
+  const fileRegisteries = await queryFileRegistryRecords(db, { spaceId: spaceId });
+  
+  for (const registry of fileRegisteries) {
+    await deleteFileRecord(db, registry.id);
+  }
+
   await db.delete(broadcastWhitelist)
     .where(eq(broadcastWhitelist.spaceId, spaceId));
 
