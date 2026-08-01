@@ -105,7 +105,7 @@ export class AccountService {
     await this.managers.connection.init();
     // setup message throttler memory
     await this.managers.throttle.load();
-    // load space file lists 
+    // load space file management 
     await this.managers.spaceFiles.init();
 
     return {
