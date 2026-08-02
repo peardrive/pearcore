@@ -1,6 +1,7 @@
 import { createChild } from '../logger.js';
-import { generateSpaceTopic, getSpaceTopicHash } from "../utils/space.utils.js";
-import { encodeShareLink, decodeShareLink } from "../utils/sharelink.utils.js";
+import { deleteSpace, generateSpaceTopic, getSpaceTopicHash, querySpace } from "../utils/space.utils.js";
+import { encodeShareLink, decodeShareLink, queryShareLink, deleteShareLink, saveShareLink } from "../utils/sharelink.utils.js";
+import { isString } from '../utils/general.utils.js';
 
 const logger = createChild('SpaceService');
 
@@ -8,6 +9,11 @@ export class SpaceService {
     constructor(emitter, { managers } = {}) {
         this.managers = managers;
         this.sharelinkPrefix = 'pearcore';
+    }
+
+    get #db() {
+        const { db } = this.managers.session.getDatabase();
+        return db;
     }
 
     setPrefix(prefix) {
@@ -52,35 +58,27 @@ export class SpaceService {
 
     /**
      * Joins an existing space using sharelink.
-     * @param {Object} shareLink - Join parameters
+     * @param {string} sharelink - Join parameters
      * @returns {Promise<Object>} Promise resolving to the decoded space metadata
      * @throws {Error} If shareLink is invalid or decoding fails
      */
-    async join(shareLink) {
-        const shouldBeString = str => typeof str === 'string';
-
-        if (!shouldBeString(shareLink)) {
-            throw new Error('Invalid shareLink parameter');
+    async join(sharelink) {
+        if (!isString(sharelink)) {
+            throw new Error('Invalid sharelink parameter');
         }
 
-        const decoded = decodeShareLink(shareLink);
-        const space = {
-            spaceName: decoded.spaceName,
-            publicKey: decoded.publicKey,
-            nonce: decoded.nonce
+        const decoded = decodeShareLink(sharelink);
+
+        const spaceQueryResult = await querySpace(this.#db, decoded);
+        const sharelinkQueryResult = await queryShareLink(this.#db, decoded);
+
+        if (spaceQueryResult.length > 0 || sharelinkQueryResult.length > 0) {
+            throw new Error(`Record for sharelink already exists: ${sharelink}`);
         }
 
-        const spaceQuery = await this.managers.storage.querySpace(space);
-        if (spaceQuery.length > 0) {
-            throw new Error('Space already joined');
-        }
+        await saveShareLink(this.#db, decoded);
 
-        const queryResult = await this.managers.storage.queryShareLink(space);
-        if (queryResult.length <= 0) {
-            await this.managers.storage.createShareLink(space, this.sharelinkPrefix);
-        }
-
-        const spaceTopicHash = getSpaceTopicHash(space);
+        const spaceTopicHash = getSpaceTopicHash(decoded);
         await this.managers.connection.join(spaceTopicHash);
         await this.managers.connection.update();
 
@@ -93,23 +91,35 @@ export class SpaceService {
      * @param {String} sharelink 
      */
     async leave(sharelink) {
-        const shouldBeString = str => typeof str === 'string';
-
-        if (!shouldBeString(sharelink)) {
-            throw new Error('Invalid shareLink parameter');
+        if (!isString(sharelink)) {
+            throw new Error(`shareLink is invalid: ${sharelink}`);
         }
 
         const decoded = decodeShareLink(sharelink);
-        const spaceParams = {
-            spaceName: decoded.spaceName,
-            publicKey: decoded.publicKey,
-            nonce: decoded.nonce
+        if (!decoded) {
+            throw new Error(`Parsing shareLink failed: ${sharelink}`);
         }
 
-        await this.managers.storage.deleteSpace(spaceParams);
-        await this.managers.storage.deleteShareLink(spaceParams);
+        const spaceQueryResult = await querySpace(this.#db, decoded);
+        const sharelinkQueryResult = await queryShareLink(this.#db, decoded);
 
-        const spaceTopicHash = getSpaceTopicHash(spaceParams);
+        if (spaceQueryResult.length === 0 && sharelinkQueryResult.length === 0) {
+            throw new Error(`No record found for sharelink: ${sharelink}`);
+        }
+
+        if (spaceQueryResult.length > 0) {
+            for (const space of spaceQueryResult) {
+                await deleteSpace(this.#db, space.id);
+            }
+        }
+
+        if (sharelinkQueryResult.length > 0) {
+            for (const sharelinkRecord of sharelinkQueryResult) {
+                await deleteShareLink(this.#db, sharelinkRecord.id);
+            }
+        }
+
+        const spaceTopicHash = getSpaceTopicHash(decoded);
         await this.managers.connection.leave(spaceTopicHash);
         await this.managers.connection.update();
     }

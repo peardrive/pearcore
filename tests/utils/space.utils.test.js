@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach } from "vitest";
 import { eq } from "drizzle-orm";
 import { hex, signJSON } from "../../src/utils/crypto.utils.js";
 import { spaces, broadcastWhitelist, readWhitelist } from "../../src/database/schemas/space.schema.js"
-import { generateKeypair,createTempDatabase, buildTestSpacePayload } from "../general.utils.js"
+import { generateKeypair, createTempDatabase, buildTestSpacePayload, createSandbox, makeTempDir, generateRandomFile, cleanup } from "../general.utils.js"
 import { now } from "../../src/utils/general.utils.js";
 import {
   generateSpaceTopic,
@@ -20,6 +20,8 @@ import {
   listSpaces,
   deleteSpace
 } from "../../src/utils/space.utils.js";
+import { createFileIndexRecord, generateFileTreeRecord } from "../../src/utils/files.utils.js";
+import path from "path";
 
 
 const generateValidHex = (length) => {
@@ -455,8 +457,33 @@ describe("Space operations", () => {
 
       await deleteSpace(db, space.spaceId);
       const finalList = await listSpaces(db);
-      
+
       expect(finalList.length).toBe(0);
     })
+
+    it('should delete space which includes file registeries included', async () => {
+      const spacePayload = await buildTestSpacePayload({ spaceName: 'Test Space' });
+      const { spaceId } = await createSpace(db, spacePayload);
+
+      const root = await makeTempDir();
+      const tempFilePath = path.join(root, 'tempfile.bin');
+      
+      await generateRandomFile(tempFilePath, 1); // 1MB
+
+      const registry = await generateFileTreeRecord(db, {
+        fileSourcePath: tempFilePath,
+        spacePath: '/files',
+        spaceFilename: 'temp.bin',
+        spaceId: spaceId
+      });
+
+      // attemp deleting the space
+      await deleteSpace(db, spaceId);
+
+      const list = await listSpaces(db);
+      expect(list.length).toBe(0);
+
+      await cleanup(root);
+    });
   })
 })
