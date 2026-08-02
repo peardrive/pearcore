@@ -1,3 +1,4 @@
+import { isDefined, isString } from '../utils/general.utils.js';
 import { loadAccountDatabase } from '../database/database.js';
 import {
   listAccountsWithMeta,
@@ -34,16 +35,11 @@ export class AccountService {
    * @returns {Promise<Object>} Account metadata
    */
   async create(username, password) {
-    const isDefined = obj => obj !== undefined && obj !== null;
-    const shouldBeString = (obj) => typeof obj === 'string';
-    const shouldBeValid = (obj) => isDefined(obj) &&
-      shouldBeString(obj) && obj.length > 0;
-
-    if (!shouldBeValid(username)) {
+    if (!isString(username)) {
       throw new Error('Invalid username parameter');
     }
 
-    if (!shouldBeValid(password)) {
+    if (!isString(password)) {
       throw new Error('Invalid password parameter');
     }
 
@@ -57,12 +53,7 @@ export class AccountService {
   }
 
   async delete(username) {
-    const isDefined = obj => obj !== undefined && obj !== null;
-    const shouldBeString = (obj) => typeof obj === 'string';
-    const shouldBeValid = (obj) => isDefined(obj) &&
-      shouldBeString(obj) && obj.length > 0;
-
-    if (!shouldBeValid(username)) {
+    if (!isString(username)) {
       throw new Error('Invalid username parameter');
     }
 
@@ -77,16 +68,11 @@ export class AccountService {
    * @returns {Promise<Object>} Object containing username, publicKey, and secretKey
    */
   async authenticate(username, password) {
-    const isDefined = obj => obj !== undefined && obj !== null;
-    const shouldBeString = (obj) => typeof obj === 'string';
-    const shouldBeValid = (obj) => isDefined(obj) &&
-      shouldBeString(obj) && obj.length > 0;
-
-    if (!shouldBeValid(username)) {
+    if (!isString(username)) {
       throw new Error('Invalid username parameter');
     }
 
-    if (!shouldBeValid(password)) {
+    if (!isString(password)) {
       throw new Error('Invalid password parameter');
     }
 
@@ -105,7 +91,7 @@ export class AccountService {
     await this.managers.connection.init();
     // setup message throttler memory
     await this.managers.throttle.load();
-    // load space file lists 
+    // load space file management 
     await this.managers.spaceFiles.init();
 
     return {
@@ -136,8 +122,6 @@ export class AccountService {
    * @returns {Object} State object with username, publicKey and authentication state.
    */
   getCurrentState() {
-    const isDefined = obj => obj !== undefined && obj !== null;
-
     const { db, sqlite } = this.managers.session.getDatabase();
     const { publicKey, secretKey } = this.managers.session.getCredentials();
     const { username } = this.managers.session.getAccount();
