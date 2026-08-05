@@ -48,9 +48,16 @@ export class MessageManager {
      * @param {any} socket - The socket connection to send the message to
      */
     async sendMessageToSocket(message, socket) {
-        this.throttleManager.updateByMessage(message);
-        const messageStr = JSON.stringify(message);
-        await this.muxManager.send(socket, messageStr, FrameTypes.JSON);
+        try {
+            this.throttleManager.updateByMessage(message);
+            const messageStr = JSON.stringify(message);
+            await this.muxManager.send(socket, messageStr, FrameTypes.JSON);
+        } catch (error) {
+            logger.warn('Failed to send message to socket', {
+                message: message,
+                error: error
+            });
+        }
     }
 
     /**
@@ -77,12 +84,22 @@ export class MessageManager {
         const result = await Promise.allSettled(promises);
 
         return result.map((result, index) => {
-            const {
-                publicKey,
-                topics
-            } = this.socketManager.getPeerInfoBySocket(sockets[index]);
+            let peerInfo;
 
-            return { publicKey, topics, status: result.status, reason: result.reason };
+            try {
+                peerInfo = this.socketManager.getPeerInfoBySocket(sockets[index]);
+            } catch(error) {
+                peerInfo = { publicKey: 'unkown', topics: [] };
+            }
+
+            return { 
+                publicKey: peerInfo.publicKey, 
+                topics: peerInfo.topics, 
+                status: 
+                result.status, 
+                reason: result.reason
+            };
+
         });
     }
 
