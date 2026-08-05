@@ -3,11 +3,11 @@ import { DEFAULT_CHUNK_SIZE } from '../constants/global.constants.js';
 import { isDefined, now } from "../utils/general.utils.js";
 import { getSpace, getSpaceTopicHash, getSpaceToTopicMap } from "../utils/space.utils.js";
 import { closeFile, createFileStream, deleteFile, fileExists, getFileSize, openFile, pathJoin } from "../utils/system.utils.js";
-import { 
-    createSpaceFileEventMessage, 
-    createSpaceFileRecordSignature, 
-    createSpaceFileTreeRequestMessage, 
-    createSpaceFileContentRequestMessage 
+import {
+    createSpaceFileEventMessage,
+    createSpaceFileRecordSignature,
+    createSpaceFileTreeRequestMessage,
+    createSpaceFileContentRequestMessage
 } from "../utils/protocol.utils.js";
 import {
     deleteFileRecord,
@@ -409,10 +409,17 @@ export class LocalFileRegistry {
         this.fileEventBroadcaster = fileEventBroadcaster;
 
         this.watcher = null;
+        this.backoffStates = new Map(); // filePath -> { timeout, delay }
+        this.indexingInProgress = new Map(); // filePath -> boolean
+        this.pendingAfterIndex = new Map(); // filePath -> boolean
     }
 
     get db() {
         return this.sessionManager.getDatabase().db;
+    }
+
+    get backoffConfig() {
+        return this.sessionManager.session.get('files.localChangeBackoff');
     }
 
     /**
@@ -597,11 +604,11 @@ export class LocalFileRegistry {
             spaceId: spaceId
         });
 
-        if (!this.watcher) return;
-
-        const watchedFiles = this.watcher.getWatched() || {};
-        if (!Object.keys(watchedFiles).includes(fileSourcePath)) {
-            await this.watcher.add(fileSourcePath);
+        if (this.watcher) {
+            const watchedFiles = this.watcher.getWatched() || {};
+            if (!Object.keys(watchedFiles).includes(fileSourcePath)) {
+                await this.watcher.add(fileSourcePath);
+            }
         }
 
         const { publicKey, secretKey } = this.sessionManager.getCredentials();
@@ -671,6 +678,13 @@ export class LocalFileRegistry {
             await this.watcher.close();
             this.watcher = null;
         }
+
+        for (const [filePath, entry] in this.backoffStates.entries()) {
+            clearTimeout(entry.timeout);
+        }
+
+        this.pendingAfterIndex.clear();
+        this.indexingInProgress.clear();
     }
 
     async onChangeEvent(filePath) {
@@ -691,17 +705,9 @@ export class LocalFileRegistry {
         const currentMetaHash = await getFileMetaHashFromSource(filePath);
         if (currentMetaHash === registeries[0].metaHash) return;
 
-        const size = await getFileSize(filePath);
-        const stream = await createFileStream(filePath);
-        const tree = await generateMerkleTree({ stream, size });
+        this.scheduleFileIndexing(filePath);
 
         for (const registry of registeries) {
-            await updateFileTreeRecord(this.db, {
-                registryId: registry.id,
-                metaHash: currentMetaHash,
-                tree: tree
-            });
-
             const space = await getSpace(this.db, registry.spaceId);
 
             if (space) {
@@ -714,16 +720,14 @@ export class LocalFileRegistry {
                     publicKey,
                     secretKey,
                     timestamp: now(),
-                    rootHash: tree.rootHash,
+                    rootHash: registeries[0].rootHash,
                 });
 
-                // remove the old record and re-add with new rootHash into local file list
+                // remove the old record into local file list
                 this.spaceFileListManager.remove(record);
-                this.spaceFileListManager.add(record);
-                // advertise the updated registry to the space
-                // the new timestamp will forcefully remove the old record from other nodes
+                // broadcast the removal to the network
                 this.fileEventBroadcaster.add(
-                    EVENTS.SpaceFileEventOptions.ADD,
+                    EVENTS.SpaceFileEventOptions.REMOVE,
                     record
                 );
             }
@@ -731,6 +735,12 @@ export class LocalFileRegistry {
     }
 
     async onDeleteEvent(filePath) {
+        const schedule = this.backoffStates.get(filePath);
+        if (schedule) {
+            clearTimeout(schedule.timeout);
+            this.backoffStates.delete(filePath);
+        }
+
         const exists = await fileExists(filePath);
         if (exists) return; // avoid deletion if the file still exists; rare condition.
 
@@ -771,6 +781,131 @@ export class LocalFileRegistry {
                 );
             }
         }
+    }
+
+    /**
+     * Schedule and re-schedules the indexing task for a file-change.
+     */
+    scheduleFileIndexing(filePath) {
+        const inProcess = this.indexingInProgress.get(filePath);
+        if (inProcess) {
+            this.pendingAfterIndex.set(filePath, true);
+            return;
+        }
+
+        const existing = this.backoffStates.get(filePath);
+        let scheduleDelay = 0;
+
+        if (existing) {
+            clearTimeout(existing.timeout);
+            scheduleDelay = existing.delay + this.backoffConfig.backoffIncrement;
+        }
+        else {
+            scheduleDelay = this.backoffConfig.baseDelay;
+        }
+
+        const updatedSchduleDelay = Math.min(scheduleDelay, this.backoffConfig.maxDelay);
+
+        const timeout = setTimeout(
+            () => this.processFileIndex(filePath),
+            updatedSchduleDelay
+        );
+
+        this.backoffStates.set(filePath, { timeout, delay: updatedSchduleDelay });
+    }
+
+    /**
+     * Compute new Merkle tree and update registeries, creates new file-events and broadcasts to the network.
+     * @param {string} filePath 
+     * @returns {Promise<void>} Resolves when the indexing has completed and the new event broadcasts to the network.
+     */
+    async processFileIndex(filePath) {
+        const inProcess = this.indexingInProgress.get(filePath);
+        if (inProcess) {
+            this.pendingAfterIndex.set(filePath, true);
+            return;
+        }
+
+        this.indexingInProgress.set(filePath, true);
+        this.backoffStates.delete(filePath);
+
+        try {
+            const exists = await fileExists(filePath);
+            if (!exists) return;
+
+            const { publicKey, secretKey } = this.sessionManager.getCredentials();
+
+            const registeries = await queryFileRegistryRecords(this.db, { fileSourcePath: filePath });
+            if (registeries.length === 0) return;
+
+            const downloadRecord = await getDownloadRecord(this.db, registeries[0].id);
+            if (downloadRecord) return;
+
+            const currentMetaHash = await getFileMetaHashFromSource(filePath);
+            if (currentMetaHash === registeries[0].metaHash) return;
+
+            let tree;
+            try {
+                const size = await getFileSize(filePath);
+                const stream = await createFileStream(filePath);
+                tree = await generateMerkleTree({ stream, size });
+            } catch (error) {
+                logger.error('Generating Merkle tree failed during scheduled indexing', {
+                    filePath,
+                    error
+                });
+                return;
+            }
+
+            for (const registry of registeries) {
+                await updateFileTreeRecord(this.db, {
+                    registryId: registry.id,
+                    metaHash: currentMetaHash,
+                    tree: tree
+                });
+
+                const space = await getSpace(this.db, registry.spaceId);
+
+                if (space) {
+                    const spaceTopicHash = getSpaceTopicHash(space);
+                    const spaceFilePath = pathJoin(registry.spacePath, registry.spaceFilename);
+
+                    const record = await this.createSignedEvent({
+                        topic: spaceTopicHash,
+                        path: spaceFilePath,
+                        publicKey,
+                        secretKey,
+                        timestamp: now(),
+                        rootHash: tree.rootHash,
+                    });
+
+                    // remove the old record and re-add with new rootHash into local file list
+                    this.spaceFileListManager.remove(record);
+                    this.spaceFileListManager.add(record);
+                    // advertise the updated registry to the space
+                    // the new timestamp will forcefully remove the old record from other nodes
+                    this.fileEventBroadcaster.add(
+                        EVENTS.SpaceFileEventOptions.ADD,
+                        record
+                    );
+                }
+
+            }
+        } catch (error) {
+            logger.error('Indexing local file registry failed', {
+                filePath: filePath,
+                error: error
+            });
+        } finally {
+            this.indexingInProgress.delete(filePath);
+
+            const pending = this.pendingAfterIndex.get(filePath);
+            if (pending) {
+                this.pendingAfterIndex.delete(filePath);
+                this.scheduleFileIndexing(filePath);
+            }
+        }
+
     }
 }
 
@@ -857,12 +992,12 @@ export class SpaceDownloadTask {
         if (!registry) {
             throw new Error("Registry not found for the download record");
         }
-        
+
         const space = await getSpace(this.db, registry.spaceId);
         if (!space) {
             throw new Error(`Registry with id:${registry.id} failed setting download task due to unknown spaceId:${registry.spaceId}`);
         }
-        
+
         this.registryId = registryId;
         this.spaceId = registry.spaceId;
         this.topic = getSpaceTopicHash(space);
@@ -1179,7 +1314,8 @@ export class SpaceDownloadTask {
         }
 
         const maxLeaf = this.providerLastRequestableLeaf.get(provider);
-        if (maxLeaf !== undefined && endLeaf > maxLeaf) {yeap
+        if (maxLeaf !== undefined && endLeaf > maxLeaf) {
+            yeap
             endLeaf = Math.min(endLeaf, maxLeaf);
             if (startLeaf > endLeaf) return;
         }
@@ -1209,7 +1345,7 @@ export class SpaceDownloadTask {
 
         if (sockets.length === 0) {
             this.connectionManager.connectWith(provider);
-        } 
+        }
         else {
             await this.messageManager.sendMessageToSocket(message, sockets[0]);
         }
@@ -1276,7 +1412,7 @@ export class SpaceDownloadTask {
     checkTimeouts() {
         const now = Date.now();
         for (const [provider, req] of this.pendingRequests.entries()) {
-            if (now - req.timestamp > this.requestTimeout) {                
+            if (now - req.timestamp > this.requestTimeout) {
                 this.reassignSlice(provider, req.startLeaf, req.endLeaf);
 
                 this.pendingRequests.delete(provider);
@@ -1297,7 +1433,7 @@ export class SpaceDownloadTask {
         for (let i = startLeaf; i <= endLeaf; i++) {
             this.inFlightLeafs.delete(i);
         }
-        
+
         this.scheduleWindow();
     }
 
@@ -1435,10 +1571,10 @@ export class SpaceFileManager {
         this.downloadTasks.set(key, spaceDownloadTask);
         spaceDownloadTask.setKey(key);
 
-        await spaceDownloadTask.setTask({ 
-            space, 
-            spaceFilePath, 
-            rootHash, 
+        await spaceDownloadTask.setTask({
+            space,
+            spaceFilePath,
+            rootHash,
             finalDestination
         });
 
@@ -1462,7 +1598,7 @@ export class SpaceFileManager {
 
         const leafIndex = data.readUInt32BE(keyLength);
         const chunk = data.slice(keyLength + 4);
-        
+
         await task.handleChunk(leafIndex, chunk);
     }
 
