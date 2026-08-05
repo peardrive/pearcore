@@ -672,95 +672,22 @@ describe("File Management", () => {
                 const originalRegistry = await getFileRegistryRecord(db, registryId);
                 const addSpy = vi.spyOn(localFileRegistry.fileEventBroadcaster, 'add');
 
-                // set short backoff for testing
-                const session = core.managers.session;
-                session.session.set('files.localChangeBackoff', {
-                    baseDelay: 10,
-                    maxDelay: 15,
-                    backoffIncrement: 1
-                });
-
+                await localFileRegistry.init();
                 // change the file content (from 1MB size to 2MB)
                 await generateRandomFile(filePath, 2);
 
-                await localFileRegistry.init();
                 await localFileRegistry.onChangeEvent(filePath);
+                const updatedRegistry = await getFileRegistryRecord(db, registryId);
 
-                // wait until the file-indexing settles
-                await new Promise(resolve => setTimeout(resolve, 100));
+                // check registry to be updated with new metaHash
+                expect(updatedRegistry.metaHash).not.toBe(originalRegistry.metaHash);
+                // check FileEventBroadcaster to be called after registry update
+                expect(addSpy).toHaveBeenCalled();
 
                 // check SpaceFileList to be updated with new registry record
-                const updatedRegistry = await getFileRegistryRecord(db, registryId);
                 const spaceFile = localFileRegistry.spaceFileListManager.get(space.topicHash)['/file.txt'];
                 const finalRootHash = Object.keys(spaceFile)[0];
                 expect(finalRootHash).toBe(updatedRegistry.rootHash);
-
-                expect(addSpy).toHaveBeenCalled();
-            });
-
-            it('should increase delay on rapid changes and only run indexing once after last change', async () => {
-                vi.useFakeTimers();
-
-                const session = core.managers.session;
-                session.session.set('files.localChangeBackoff', {
-                    baseDelay: 100,
-                    maxDelay: 500,
-                    backoffIncrement: 150
-                });
-
-                await generateFileTreeRecord(db, { fileSourcePath: filePath, spacePath: '/', spaceFilename: 'file.txt', spaceId: 1 });
-                await localFileRegistry.init();
-
-                const processSpy = vi.spyOn(localFileRegistry, 'processFileIndex');
-
-                for (let i = 0; i < 3; i++) {
-                    await generateRandomFile(filePath, 2 + i);
-                    await localFileRegistry.onChangeEvent(filePath);
-                    vi.advanceTimersByTime(50); // less than baseDelay
-                }
-
-                expect(processSpy).not.toHaveBeenCalled();
-
-                vi.advanceTimersByTime(400);
-                expect(processSpy).toHaveBeenCalledTimes(1);
-
-                vi.useRealTimers();
-            });
-
-            it('should set pending flag when changes occur during active indexing', async () => {
-                vi.useFakeTimers();
-
-                const session = core.managers.session;
-                session.session.set('files.localChangeBackoff', {
-                    baseDelay: 100,
-                    maxDelay: 500,
-                    backoffIncrement: 150
-                });
-
-                await generateFileTreeRecord(db, { fileSourcePath: filePath, spacePath: '/', spaceFilename: 'file.txt', spaceId: 1 });
-                await localFileRegistry.init();
-
-                const originalProcess = localFileRegistry.processFileIndex;
-                const processSpy = vi.spyOn(localFileRegistry, 'processFileIndex').mockImplementation(async function (...args) {
-                    await new Promise(resolve => setTimeout(resolve, 200));
-                    return originalProcess.apply(this, args);
-                });
-
-                await generateRandomFile(filePath, 2);
-                await localFileRegistry.onChangeEvent(filePath);
-
-                // this will trigger initial indexing
-                vi.advanceTimersByTime(100);
-
-                await generateRandomFile(filePath, 3);
-                await localFileRegistry.onChangeEvent(filePath);
-
-                // finish the indexing and allow a follow-up
-                vi.advanceTimersByTime(300);
-                expect(processSpy).toHaveBeenCalledTimes(2);
-                expect(localFileRegistry.pendingAfterIndex.get(filePath)).toBeUndefined();
-
-                vi.useRealTimers();
             });
         });
 
@@ -860,4 +787,6 @@ describe("File Management", () => {
             });
         });
     });
+
+    
 });

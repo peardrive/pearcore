@@ -46,14 +46,6 @@ export class SessionManager {
             },
 
             files: {
-                localChangeBackoff: {
-                    // minimum wait time before hashing a changed file. Resets on each new change.
-                    baseDelay: 500, //500ms
-                    // maximum backoff cap. No matter how frantic the writes, we wait at most this long.
-                    maxDelay: 30000, // 30 seconds
-                    // additional delay added per rapid change (e.g., 2s => 4s => 6s ... up to maxDelayMs).
-                    backoffIncrement: 2000 // 2 seconds
-                },
                 broadcastThrottleTime: 1000, // 1-second
                 // minimum required leaf count for advertising file availability
                 minLeafCountForAdvertisement: 10,
