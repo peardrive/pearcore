@@ -35,14 +35,12 @@ export class SessionManager {
             messaging: {
                 rawLimitSize: messageConstants.MAX_MESSAGE_SIZE,
                 frequencyThrottle: messageConstants.MAX_FREQUENCY_THROTTLE,
-                maxQuarantineTime: messageConstants.MAX_QUARANTINE_TIME, // replace with 1000000
+                maxQuarantineTime: messageConstants.MAX_QUARANTINE_TIME,
                 allowThrottleRejection: messageConstants.ALLOW_THROTTLE_REJECTIONS,
 
                 // limit the number of messages that are stored per event type to prevent
                 // excessive disk consumption and maintain system performance. 
-                recordMessagesForEvents: [
-                    eventConstants.SpaceMessage
-                ]
+                recordMessagesForEvents: []
             },
 
             files: {

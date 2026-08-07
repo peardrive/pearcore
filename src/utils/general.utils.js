@@ -11,6 +11,7 @@ export const isNullOrHex = obj => isNull(obj) || (isString(obj) && validateHexSt
 export const isString = item => typeof item === 'string';
 export const isNumber = item => typeof item === 'number';
 export const isObject = item => typeof item === 'object';
+export const isFunction = item => typeof item === 'function';
 export const hasExactLength = (item, length) => item.length === length;
 export const isValidTopic = item => {
     return isString(item) && containsCharacters(item, 64) && validateHexString(item)
