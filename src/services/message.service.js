@@ -1,4 +1,5 @@
 import * as EVENTS from '../constants/events.constants.js';
+import { isFunction } from '../utils/general.utils.js';
 import { getSpaceTopicHash } from "../utils/space.utils.js"
 import { createSpaceMessage, encryptPayload } from '../utils/protocol.utils.js';
 import { publicKeyIsAllowedToRead } from '../utils/policy.utils.js';
@@ -126,12 +127,10 @@ export class MessageService {
 
         // assign the callback for the message
         // when core receives rejection message related to this message, it will be called.
-        const shouldBeFunction = typeof onRejectionCallback === 'function';
-        if (shouldBeFunction) this.assignCallback(message, onRejectionCallback);
+        if (isFunction(onRejectionCallback)) {
+            this.assignCallback(message, onRejectionCallback);
+        }
 
-        // save local record of the message
-        await this.managers.storage.saveMessageRecord({ message, senderPublicKey: publicKey });
-        // return broadcast status for the connected nodes
         return await this.managers.message.broadcastMessageToSockets(message, sockets);
     }
 }
