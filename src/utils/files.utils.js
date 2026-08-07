@@ -377,7 +377,7 @@ export async function createFileIndexRecord(db, registryId, tree) {
         if (!level) continue;
 
         for (const node of level) {
-            rows.push({
+            await db.insert(fileIndex).values({
                 registryId,
                 rootHash,
                 level: node.level,
@@ -389,10 +389,6 @@ export async function createFileIndexRecord(db, registryId, tree) {
                 leafIndex: node.leafIndex ?? null,
             });
         }
-    }
-
-    if (rows.length > 0) {
-        await db.insert(fileIndex).values(rows);
     }
 }
 
