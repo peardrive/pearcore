@@ -348,3 +348,9 @@ export class SpaceFileContentRequestHandler extends BaseProtocolHandler {
         this.emit(EVENTS.SpaceFileContentRequest, { info, message });
     }
 }
+
+export class SpaceFileContentCancel extends BaseProtocolHandler {
+    async handle(socket, message, info) {
+        
+    }
+}

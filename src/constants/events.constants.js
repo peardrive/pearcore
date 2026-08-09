@@ -56,6 +56,10 @@ export const SpaceMessage = "SpaceMessage";
  */
 export const ProfileUpdate = "ProfileUpdate";
 
+// Emitters related to local watchdog for local file registeries.
+export const LocalFileChange = 'LocalFileChange';
+export const LocalFileDetele = 'LocalFileDelete';
+
 /**
  * Emitted when a file action (add/remove/merge) has been emitted within the space.
  */
@@ -74,5 +78,7 @@ export const SpaceFileEventOptions = {
 export const SpaceFileTreeRequest = "SpaceFileTreeRequest";
 // Emitted when peer response to space file tree request.
 export const SpaceFileTreeResponse = "SpaceFileTreeResponse";
-// Emitter when peers wants to ask for file download.
+// Emitted when peers wants to ask for file download.
 export const SpaceFileContentRequest = "SpaceFileContentRequest";
+// Emitter once individual peer wants to cancel their previous file content request.
+export const SpaceFileContentCancel = "SpaceFileContentCancel";

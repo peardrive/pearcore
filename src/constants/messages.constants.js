@@ -24,3 +24,4 @@ export const BROADCAST_PERMISSION_NOT_ALLOWED_MESSAGE = 'peer is not allowed to 
 export const SPACE_FILE_NOT_FOUND = 'space file path does not exists';
 export const SLICE_NOT_AVAILABLE_MESSAGE = 'the request slice range is not available';
 export const FILE_NOT_ACCESSIBLE_MESSAGE = 'the requested file is not accessible locally';
+export const CONTENT_REQUEST_RATE_EXCEEDED = 'the count of content requests exceeded the limit';
