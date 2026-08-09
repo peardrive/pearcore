@@ -12,6 +12,7 @@ import {
     validateBaseMessage,
     verifyMessageSignature
 } from '../utils/protocol.utils.js';
+import { pushMessageToHistory } from '../utils/message.utils.js';
 
 const logger = createChild('MessageManager');
 
@@ -27,6 +28,11 @@ export class MessageManager {
         this.emitter = emitter;
     }
 
+    get db() {
+        const { db } = this.sessionManager.getDatabase();
+        return db;
+    }
+
     get messageConfig() {
         return this.sessionManager.getMessageConfig();
     }
@@ -36,7 +42,7 @@ export class MessageManager {
     }
 
     setProtocolMap(protocols) {
-        this.protocolHandlers = new Map()
+        this.protocolHandlers = new Map();
         for (const { type, handler } of protocols) {
             this.protocolHandlers.set(type, handler);
         }
@@ -49,7 +55,18 @@ export class MessageManager {
      */
     async sendMessageToSocket(message, socket) {
         try {
+            // update the throttler to avoid duplicates in the future
             this.throttleManager.updateByMessage(message);
+
+            if (this.messageConfig.recordMessagesForEvents.includes(message.type)) {
+                const { publicKey } = this.credentials;
+
+                await pushMessageToHistory(this.db, {
+                    message: message,
+                    senderPublicKey: publicKey
+                });
+            }
+
             const messageStr = JSON.stringify(message);
             await this.muxManager.send(socket, messageStr, FrameTypes.JSON);
         } catch (error) {
@@ -88,15 +105,14 @@ export class MessageManager {
 
             try {
                 peerInfo = this.socketManager.getPeerInfoBySocket(sockets[index]);
-            } catch(error) {
+            } catch (error) {
                 peerInfo = { publicKey: 'unkown', topics: [] };
             }
 
-            return { 
-                publicKey: peerInfo.publicKey, 
-                topics: peerInfo.topics, 
-                status: 
-                result.status, 
+            return {
+                publicKey: peerInfo.publicKey,
+                topics: peerInfo.topics,
+                status: result.status,
                 reason: result.reason
             };
 
@@ -183,6 +199,15 @@ export class MessageManager {
         }
 
         this.throttleManager.updateByMessage(message);
+
+        if (this.messageConfig.recordMessagesForEvents.includes(message.type)) {
+            const { publicKey } = this.credentials;
+
+            await pushMessageToHistory(this.db, {
+                message: message,
+                senderPublicKey: publicKey
+            });
+        }
 
         const handler = this.protocolHandlers.get(message.type);
         if (handler) {

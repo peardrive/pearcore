@@ -3,7 +3,8 @@ import {
     createMessageFilter,
     createMessageRecord,
     queryMessageRecord,
-    flushMessageRecord
+    flushMessageRecord,
+    pushMessageToHistory
 } from "../../src/utils/message.utils.js";
 import { createBaseMessage } from "../../src/utils/protocol.utils.js";
 import { createTempDatabase, generateKeypair } from "../general.utils.js";
@@ -238,6 +239,24 @@ describe('Message Utilities', () => {
             expect(queryResultUnkown.length).toBe(0);
         })
     })
+
+    describe('pushMessageToHistory', () => {
+        beforeEach(async () => {
+            await flushMessageRecord(db, {}); // clear database
+        });
+
+        it('should avoid insertion of duplicated message', async () => {
+            const message = await createMessage();
+            const senderPublicKey = message.publicKey;
+            const broadcastTimestamp = now();
+
+            await pushMessageToHistory(db, { message, senderPublicKey });
+            await pushMessageToHistory(db, { message, senderPublicKey });
+
+            const messageRecords = await queryMessageRecord(db, {});
+            expect(messageRecords.length).toBe(1);
+        });
+    });
 
     describe('flushMessageRecord', () => {
         it('should delete records matching exact id', async () => {

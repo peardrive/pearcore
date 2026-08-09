@@ -331,7 +331,6 @@ export class SpaceFileContentRequestHandler extends BaseProtocolHandler {
         }
 
         const keyBuffer = Buffer.from(key, 'hex');
-        console.log(keyBuffer.length)
         const stats = await fileHandler.stat();
         const size = stats.size;
 
