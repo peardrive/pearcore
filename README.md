@@ -12,12 +12,12 @@
 
 Since PearCore is not yet published to npm, you can install it directly from Github:
 ```bash
-npm install git+https://github.com/your-org/pearcore.git
+npm install npm install git+https://github.com/peardrive/Pearcore.git
 ```
 
 Or if you prefer to clone and build locally:
 ```bash
-git clone https://github.com/your-org/pearcore.git
+git clone https://github.com/peardrive/Pearcore.git
 cd pearcore
 npm install
 ```
