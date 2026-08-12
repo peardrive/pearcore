@@ -1,6 +1,6 @@
 # PearCore
 
-[![version](https://img.shields.io/badge/version-1.0.0-blue)](https://github.com/peardrive/Pearcore)
+[![version](https://img.shields.io/badge/version-0.2.1-blue)](https://github.com/peardrive/Pearcore)
 [![license](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](https://github.com/peardrive/Pearcore/pulls)
 

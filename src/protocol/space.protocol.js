@@ -18,7 +18,7 @@ export class SpaceHashListHandler extends BaseProtocolHandler {
             return;
         }
 
-        if (message.publicKey != senderPublicKey) {
+        if (message.publicKey !== senderPublicKey) {
             await this.messageManager.reject(socket, message, MESSAGES.NO_RELAY_MESSAGE);
             return;
         }
@@ -29,7 +29,7 @@ export class SpaceHashListHandler extends BaseProtocolHandler {
         const spaceTopicList = await this.storageManager.generateSpaceTopicHashMap();
         const { publicKey, secretKey } = this.sessionManager.getCredentials();
 
-        topicList.forEach(async (topic, index) => {
+        for (const topic of topicList) {
             const space = spaceTopicList[topic];
             if (space) {
                 if (publicKeyIsAllowedToRead(senderPublicKey, space)) {
@@ -43,7 +43,7 @@ export class SpaceHashListHandler extends BaseProtocolHandler {
                     await this.messageManager.sendMessageToSocket(spaceSyncMessage, socket);
                 }
             }
-        })
+        }
 
         this.emit(EVENTS.SpaceHashList, { info, message, topics: topicList });
     }

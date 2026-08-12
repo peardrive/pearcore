@@ -2,6 +2,7 @@
   "name": "pearcore",
   "version": "0.1.0",
   "description": "decentralized networking toolkit",
+  "type": "module",
   "module": "src/core.js",
   "scripts": {
     "start": "node src/index.js run",
@@ -18,7 +19,7 @@
   ],
   "author": "PearDrive Team",
   "license": "MIT",
-  "repository": {},
+  "repository": "https://github.com/peardrive/Pearcore/",
   "devDependencies": {
     "@types/jest": "^30.0.0",
     "@types/node": "^24.10.0",
@@ -69,9 +70,5 @@
     "treeify": "^1.1.0",
     "ws": "^8.18.3",
     "yargs": "^18.0.0"
-  },
-  "type": "module",
-  "bin": {
-    "pearcore": "./src/index.js"
   }
 }
