@@ -4,6 +4,7 @@ import { getSpaceTopicHash } from "../utils/space.utils.js"
 import { createSpaceMessage, encryptPayload } from '../utils/protocol.utils.js';
 import { publicKeyIsAllowedToRead } from '../utils/policy.utils.js';
 import { encryptJSON, hex, randomNonce } from '../utils/crypto.utils.js';
+import { SpaceInstance } from './interface.js';
 
 export class MessageService {
     constructor(emitter, { managers }) {
@@ -89,30 +90,21 @@ export class MessageService {
     /**
      * Send a message to a space/topic.
      * 
-     * @param {Object} space - The space object to send the message into
-     * @param {string} space.spaceName - spaceName property of space is required.
-     * @param {string} space.publicKey - publicKey property of space is required.
-     * @param {string} space.nonce - nonce property of space is required.
+     * @param {SpaceInstance} space - The space instance for message assignment.
      * @param {Object} payload - Message content
      * @param {CallableFunction} onRejectionCallback - callback function that will be called whenever sockets sends back rejection for the mesage
      * @returns {Promise<void>} Resolves when the message has been sent to the connected nodes.
      */
     async send(space, payload, onRejectionCallback = undefined) {
-        const spaceQuery = await this.managers.storage.querySpace(space);
-        if (spaceQuery.length === 0) throw new Error('space not found');
-
-        const spaceRecord = spaceQuery[0];
-        const topic = getSpaceTopicHash(spaceRecord);
-
         const { publicKey, secretKey } = this.managers.session.getCredentials();
 
         const nonce = hex(randomNonce());
-        if (spaceRecord.secret) {
-            payload = await encryptPayload({ payload, spaceSecret: spaceRecord.secret, nonce: nonce });
+        if (space.secret) {
+            payload = await encryptPayload({ payload, spaceSecret: space.secret, nonce: nonce });
         }
 
         const message = await createSpaceMessage({
-            topic: topic,
+            topic: space.topicHash,
             messagePayload: payload,
             publicKey: publicKey,
             secretKey: secretKey,
@@ -120,9 +112,9 @@ export class MessageService {
         });
 
         // limit the nodes to a subset that has the required permission to receive this message
-        const peers = this.managers.sockets.getPeerKeys(key => publicKeyIsAllowedToRead(key, spaceRecord));
+        const peers = this.managers.sockets.getPeerKeys(key => publicKeyIsAllowedToRead(key, space));
         const sockets = this.managers.sockets.getConnectedSockets({
-            peers: peers, topics: [topic]
+            peers: peers, topics: [space.topicHash]
         });
 
         // assign the callback for the message

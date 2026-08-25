@@ -4,7 +4,7 @@ import { startBootstrapper } from "../../src/utils/network.utils";
 import { getRandomPort, buildTestSpacePayload, makeTempDir, getMockSocket } from '../general.utils.js';
 import { createCore } from '../../src/core.js';
 import { getSpaceTopicHash } from "../../src/utils/space.utils.js";
-import { encodeShareLink } from "../../src/utils/sharelink.utils.js";
+import { encodeShareLink, queryShareLink } from "../../src/utils/sharelink.utils.js";
 
 const setupTestCore = async (bootstrapper) => {
     const root = await makeTempDir();
@@ -46,13 +46,13 @@ describe('spaceService', () => {
 
             const payload = await buildTestSpacePayload();
             const space = await core.space.create(payload);
-            const topicHash = getSpaceTopicHash(space);
+
             const { publicKey } = core.managers.session.getCredentials();
 
             expect(space.spaceName).toBe(payload.spaceName);
             expect(space.publicKey).toBe(publicKey);
             expect(space.nonce).toBe(payload.nonce);
-            expect(core.managers.connection.isDiscoverable(topicHash));
+            expect(core.managers.connection.isDiscoverable(space.topicHash));
         })
     })
 
@@ -137,7 +137,7 @@ describe('spaceService', () => {
             })
 
             const space = await primaryCore.space.create({ spaceName: 'original' });
-            await secondaryCore.space.join(space.sharelink);
+            const secondaryJoinedSpace = await secondaryCore.space.join(space.sharelink);
 
             const randomSpace = await buildTestSpacePayload({ spaceName: 'random space' });
             const randomSharelink = encodeShareLink(randomSpace);
@@ -150,7 +150,7 @@ describe('spaceService', () => {
             expect(primarySnapShot[secondaryPublicKey].length).toBe(2);
             expect(primarySnapShot[secondaryPublicKey]).toEqual([space.topicHash, randomTopicHash]);
 
-            await secondaryCore.space.leave(space.sharelink);
+            await secondaryCore.space.leave(secondaryJoinedSpace);
 
             let updatedPrimarySnapShot = null;
 
@@ -165,7 +165,7 @@ describe('spaceService', () => {
             expect(typeof updatedPrimarySnapShot === 'object').toBe(true);
             // exclude the original space and only contain the randomly generated space
             expect(updatedPrimarySnapShot[secondaryPublicKey]).toEqual([randomTopicHash]);
-        })
+        });
     })
 
     describe('list', () => {

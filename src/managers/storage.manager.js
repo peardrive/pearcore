@@ -373,7 +373,8 @@ export class StorageManager {
      */
     async queryShareLink({ spaceName, publicKey, nonce }) {
         const queryResult = await queryShareLink(this.db, { spaceName, publicKey, nonce });
-        return queryResult.map(item => stripIds(item));
+        //return queryResult.map(item => stripIds(item));
+        return queryResult
     }
 
     async listSharelinkTopics(returnHash = false) {

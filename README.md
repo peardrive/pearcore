@@ -1,10 +1,20 @@
-# PearCore
+<h1 align="center">PearCore</h1>
 
-[![version](https://img.shields.io/badge/version-0.2.1-blue)](https://github.com/peardrive/Pearcore)
-[![license](https://img.shields.io/badge/license-MIT-green)](LICENSE)
-[![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](https://github.com/peardrive/Pearcore/pulls)
+<p align="center">
+  <a href="https://github.com/peardrive/Pearcore">
+    <img src="https://img.shields.io/badge/version-0.2.1-blue" alt="version">
+  </a>
+  <a href="LICENSE">
+    <img src="https://img.shields.io/badge/license-MIT-green" alt="license">
+  </a>
+  <a href="https://github.com/peardrive/Pearcore/pulls">
+    <img src="https://img.shields.io/badge/PRs-welcome-brightgreen.svg" alt="PRs Welcome">
+  </a>
+</p>
 
-**PearCore** is a modular, peer‑to‑peer framework for building decentralized applications. It provides account management, encrypted spaces (topics), profile broadcasting, message routing, and multi‑source file download system. Built on top of `hyperdht` and `hyperswarm`, it enables secure, permissioned communication without central servers.
+<p align="center">
+  <strong>PearCore</strong> is a modular, peer‑to‑peer framework for building decentralized applications. It provides account management, encrypted spaces (topics), profile broadcasting, message routing, and multi‑source file download system. Built on top of <code>hyperdht</code> and <code>hyperswarm</code>, it enables secure, permissioned communication without central servers.
+</p>
 
 <br>
 
@@ -29,18 +39,28 @@ Here's a minimal setup to create an account, authenticate, and start using PearC
 ```javascript
 import { createCore } from 'pearcore';
 
-const core = await createCore({
-  rootPath: './data',          // where accounts and databases are stored
+async function main() {
+  // create fresh core instance
+  const core = await createCore({
+    rootPath: './data', // directory path to store account metadata
+  });
+
+  // create new account (publicKey + secretKey + internal database)
+  await core.accounts.create('alice', 'securePassword123');
+
+  // load the account
+  await core.accounts.authenticate('alice', 'securePassword123');
+
+  // create new space for peers to join
+  const space = await core.space.create({ spaceName: 'ChatApp' });
+  
+  console.log('PearCore is running!');
+  console.log(`use this sharelink to join space: ${space.sharelink}`);
+}
+
+main().catch(error => {
+  console.error(`Setting up PearCore has failed: ${error}`)
 });
-
-// Create a new account
-await core.accounts.create('alice', 'securePassword123');
-
-// Authenticate (load account and start P2P node)
-await core.accounts.authenticate('alice', 'securePassword123');
-
-// Now you're ready to use spaces, messages, files, etc.
-console.log('PearCore is ready!');
 ```
 
 For more practical examples checkout **[examples/](./docs/examples)** directory.
