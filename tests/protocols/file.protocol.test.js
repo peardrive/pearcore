@@ -2,14 +2,12 @@ import * as EVENTS from '../../src/constants/events.constants.js';
 import * as MESSAGES from '../../src/constants/messages.constants.js';
 import { describe, it, beforeEach, afterEach, expect } from "vitest";
 import { getSpaceTopicHash } from '../../src/utils/space.utils.js';
-import { publicKeyIsAllowedToBroadcast } from '../../src/utils/policy.utils.js';
 import { createSpaceFileContentRequestMessage, createSpaceFileEventMessage, createSpaceFileRecordSignature, createSpaceFileTreeRequestMessage, validateSpaceFileTreeResponsePayload } from "../../src/utils/protocol.utils.js";
-import { CoreFactory } from '../factory.js';
 import { createP2PNetwork, createConnections, buildTestSpacePayload, unframeJson, makeTempDir, cleanup, generateRandomFile } from '../general.utils.js';
 import path from 'path';
 import { createDownloadRecord, createFileIndexRecord, deleteFileRecord, generateFileTreeRecord, getFileChunk, getFileTreeRecord, queryFileRegistryRecords, updateDownloadRecord } from '../../src/utils/files.utils.js';
 import { generateMerkleTree } from '../../src/utils/merkletree.utils.js';
-import { closeFile, createFileStream, getFileSize, openFile, pathJoin } from '../../src/utils/system.utils.js';
+import { closeFile, createFileStream, fileExists, getFileSize, openFile, pathJoin } from '../../src/utils/system.utils.js';
 import { DEFAULT_CHUNK_SIZE } from '../../src/constants/global.constants.js';
 import { FrameTypes } from '../../src/managers/multiplexer.manager.js';
 
@@ -482,9 +480,13 @@ describe('Space File Protocols', () => {
                 secondary.info
             );
 
-            const calls = secondary.socket.write.mock.calls;
-            const expectedChunks = endLeaf - startLeaf + 1;
+            // wait for task to be assigned internally and then wait for completion of the task
+            await new Promise(resolve => setImmediate(resolve));
+            await primary.manager.delivery.waitForTask(testKey);
 
+            const calls = secondary.socket.write.mock.calls;
+            
+            const expectedChunks = endLeaf - startLeaf + 1;
             expect(calls.length).toBe(expectedChunks);
 
             const keyBuffer = Buffer.from(testKey, 'hex');
@@ -515,4 +517,6 @@ describe('Space File Protocols', () => {
             await closeFile(fileHandler);
         });
     });
+
+    describe('SpaceFileContentCancel');
 })

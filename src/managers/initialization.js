@@ -7,6 +7,7 @@ import { ThrottleManager } from "./throttle.manager.js";
 import { ConnectionManager } from "./connection.manager.js";
 import { MuxManager, FrameTypes } from "./multiplexer.manager.js";
 import { SpaceFileListManager, SpaceFileManager } from "./file.manager.js";
+import { FileContentDeliveryManager } from "./delivery.manager.js";
 
 export function initializeManagers(emitter) {
     const sessionManager = new SessionManager();
@@ -51,6 +52,12 @@ export function initializeManagers(emitter) {
         spaceFileListManager
     });
 
+    const fileContentDeliveryManager = new FileContentDeliveryManager(emitter, {
+        sessionManager,
+        messageManager,
+        muxManager
+    });
+
     muxManager.setHandlers([
         {
             type: FrameTypes.JSON,
@@ -69,6 +76,7 @@ export function initializeManagers(emitter) {
         message: messageManager,
         spaceFileList: spaceFileListManager,
         mux: muxManager,
+        delivery: fileContentDeliveryManager
     });
 
     messageManager.setProtocolMap(protocols);
@@ -83,5 +91,6 @@ export function initializeManagers(emitter) {
         connection: connectionManager,
         spaceFileList: spaceFileListManager,
         spaceFiles: spaceFileManager,
+        delivery: fileContentDeliveryManager
     };
 }

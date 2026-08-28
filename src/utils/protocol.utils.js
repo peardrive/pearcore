@@ -907,3 +907,50 @@ export function validateSpaceFileContentRequestPayload(message) {
 
     return { isValid: true, reason: 'message is valid' };
 }
+
+/**
+ * Creates signed space file content 'cancel' request.
+ * @param {Object} params
+ * @param {string} params.topic - Topic the message belongs
+ * @param {string} params.downloadKey - Request download key for stream routing.
+ * @param {Uint8Array} params.secretKey - Sender's Ed25519 secret key
+ * @param {Uint8Array} params.publicKey - Sender's Ed25519 public key
+ * @param {string} params.nonce - Optional pre-generated nonce (hex)
+ * @param {number} params.timestamp - Optional timestamp override
+ * @returns {Promise<Object>} 
+ */
+export async function createSpaceFileContentCancelMessage(params) {
+    const { topic, downloadKey, publicKey, secretKey, nonce, timestamp } = params;
+
+    if (!topic) throw new Error('topic is required');
+    if (!downloadKey) throw new Error('key is required');
+    if (!secretKey) throw new Error('secretKey is required');
+    if (!publicKey) throw new Error('publicKey is required');
+
+    const payload = { key: downloadKey };
+    return await createBaseMessage({
+        type: EVENTS.SpaceFileContentCancel,
+        topic,
+        payload: payload,
+        secretKey,
+        publicKey,
+        nonce,
+        timestamp
+    });
+}
+
+/**
+ * Validates SpaceFileContentCancel request.
+ * @param {Object} message 
+ * @param {String} message.key - the generated download task key.
+ * @returns {{isValid: Boolean, reason: String}}
+ */
+export function validateSpaceFileContentCancelPayload(message) {
+    const key = message.payload.key;
+
+    if (!isString(key) || !validateHexString(key)) {
+        return { isValid: false, reason: 'key should be string' };
+    }
+
+    return { isValid: true, reason: 'mesage is valid' };
+}

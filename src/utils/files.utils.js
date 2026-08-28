@@ -4,7 +4,6 @@ import fs from 'fs/promises';
 import chokidar from 'chokidar';
 import { getSpace } from './space.utils.js';
 import { eq, and, asc, isNotNull } from 'drizzle-orm';
-import { notNull, notUndefined } from './general.utils.js';
 import { hex, hash, canonicalStringify } from './crypto.utils.js';
 import { DEFAULT_CHUNK_SIZE } from '../constants/global.constants.js';
 import { isDefined, isNumber, isString, now } from './general.utils.js';
@@ -13,8 +12,6 @@ import { downloadRecord, fileIndex, fileRegistry } from '../database/schemas/fil
 import {
     createDirectory,
     createEmptyFile,
-    createFileStreamFromHandler,
-    deleteFile,
     fileExists,
     getFileSize,
     openFile,
