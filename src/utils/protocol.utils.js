@@ -946,7 +946,9 @@ export async function createSpaceFileContentCancelMessage(params) {
  * @returns {{isValid: Boolean, reason: String}}
  */
 export function validateSpaceFileContentCancelPayload(message) {
-    if (!isString(message.key)) {
+    const key = message.payload.key;
+
+    if (!isString(key) || !validateHexString(key)) {
         return { isValid: false, reason: 'key should be string' };
     }
 
