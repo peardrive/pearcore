@@ -93,6 +93,8 @@ export class AccountService {
     await this.managers.throttle.load();
     // load space file management 
     await this.managers.spaceFiles.init();
+    // load file-content delivery managerment
+    await this.managers.delivery.init();
 
     return {
       username: creds.username,
@@ -115,6 +117,7 @@ export class AccountService {
     this.managers.throttle.clear();
     this.managers.spaceFileList.clear();
     await this.managers.spaceFiles.stop();
+    await this.managers.delivery.stop();
   }
 
   /**
