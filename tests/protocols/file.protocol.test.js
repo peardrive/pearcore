@@ -170,6 +170,61 @@ describe('Space File Protocols', () => {
                 toEvent(fileTwoRecord)
             ]);
         });
+
+        it('should handle removal events correctly', async () => {
+            const initialRecord = await createRecord({
+                topic: spaceTopicHash,
+                path: '/file1.txt',
+                rootHash: 'hash1',
+                timestamp: 1000,
+                publicKey: secondary.publicKey,
+                secretKey: secondary.secretKey
+            });
+
+            primary.manager.spaceFileList.add(initialRecord);
+
+            const removeRecord = await createRecord({
+                topic: spaceTopicHash,
+                path: '/file1.txt',
+                rootHash: 'hash1',
+                timestamp: 2000, // newer than the existing 1000
+                publicKey: secondary.publicKey,
+                secretKey: secondary.secretKey
+            });
+
+            const eventStack = [{
+                action: EVENTS.SpaceFileEventOptions.REMOVE,
+                files: [toEvent(removeRecord)]
+            }];
+
+            const message = await createSpaceFileEventMessage({
+                topic: spaceTopicHash,
+                events: eventStack,
+                publicKey: secondary.publicKey,
+                secretKey: secondary.secretKey
+            });
+
+            await primary.manager.message.handleIncomingMessage(
+                secondary.socket,
+                JSON.stringify(message),
+                secondary.info
+            );
+
+            // short pause for handler to process event
+            await new Promise(resolve => setImmediate(resolve));
+
+            // ensure that the provider was removed from the primary node's list
+            const primaryFiles = primary.manager.spaceFileList.get(spaceTopicHash);
+            expect(primaryFiles['/file1.txt']).toBeUndefined();
+
+            // ensure that the primary broadcast the removal to other pears
+            const standbyCalls = standby.socket.write.mock.calls;
+            expect(standbyCalls.length).toBe(1);
+
+            const broadcastMessage = JSON.parse(unframeJson(standbyCalls[0][0]));
+            expect(broadcastMessage.payload[0].action).toBe(EVENTS.SpaceFileEventOptions.REMOVE);
+            expect(broadcastMessage.payload[0].files).toEqual([toEvent(removeRecord)]);
+        });
     });
 
     describe('SpaceFileTreeRequestHandler', () => {
@@ -485,7 +540,7 @@ describe('Space File Protocols', () => {
             await primary.manager.delivery.waitForTask(testKey);
 
             const calls = secondary.socket.write.mock.calls;
-            
+
             const expectedChunks = endLeaf - startLeaf + 1;
             expect(calls.length).toBe(expectedChunks);
 
@@ -494,7 +549,7 @@ describe('Space File Protocols', () => {
             const stats = await fileHandler.stat();
             const size = stats.size;
 
-            for (let index=0; index < expectedChunks; index++) {
+            for (let index = 0; index < expectedChunks; index++) {
                 const frame = calls[index][0];
 
                 const type = frame[0];
@@ -504,13 +559,13 @@ describe('Space File Protocols', () => {
                 const payload = frame.subarray(5, 5 + length);
                 const receivedKey = payload.subarray(0, keyBuffer.length);
                 const leafIndex = payload.readUInt32BE(keyBuffer.length);
-                
+
                 expect(receivedKey).toEqual(keyBuffer);
                 expect(leafIndex).toBe(startLeaf + index);
-                
+
                 const chunk = payload.subarray(keyBuffer.length + 4);
                 const expectedChunk = await getFileChunk(fileHandler, size, startLeaf + index, DEFAULT_CHUNK_SIZE);
-                
+
                 expect(chunk).toEqual(expectedChunk);
             }
 

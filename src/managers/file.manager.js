@@ -235,13 +235,6 @@ export class SpaceFileListManager {
         }
     }
 
-    /**
-     * Creates new file list that is the substraction of remote and local file list.
-     * @param {Object} context 
-     * @param {string} context.topic - Space topic hash.
-     * @param {Object} context.fileList - External space file list for substraction
-     * @returns {Object} Returns substracted file list.
-     */
     diff(context) {
         const { topic, fileList, mode = 'add' } = context;
         const { publicKey: localPublicKey } = this.sessionManager.getCredentials();

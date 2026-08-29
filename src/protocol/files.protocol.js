@@ -104,7 +104,6 @@ export class SpaceFileEventHandler extends BaseProtocolHandler {
                         fileList: diff
                     });
 
-
                     if (Object.keys(diff).length > 0) {
                         const broadcastStack = this.spaceFileListManager.convertListToStack(diff);
                         eventStack.push({ action: action, files: broadcastStack });
@@ -114,7 +113,9 @@ export class SpaceFileEventHandler extends BaseProtocolHandler {
 
                 case EVENTS.SpaceFileEventOptions.REMOVE:
 
-                    diff.forEach(record => {
+                    const removeStack = this.spaceFileListManager.convertListToStack(diff);
+
+                    removeStack.forEach(record => {
                         const [filepath, publicKey, timestamp, rootHash, signature] = record;
 
                         this.spaceFileListManager.remove({
@@ -124,16 +125,14 @@ export class SpaceFileEventHandler extends BaseProtocolHandler {
                         });
                     });
 
-                    if (Object.keys(diff).length > 0) {
-                        const broadcastStack = this.spaceFileListManager.convertListToStack(diff);
-                        eventStack.push({ action: action, files: broadcastStack });
+                    if (removeStack.length > 0) {
+                        eventStack.push({ action: action, files: removeStack });
                     }
 
                     break;
             }
         }
 
-        // emit the received message before broadcasting the space
         this.emit(EVENTS.SpaceFileEvent, { info, message });
 
         if (eventStack.length > 0) {
