@@ -104,10 +104,8 @@ export class SpaceFileEventHandler extends BaseProtocolHandler {
                         fileList: diff
                     });
 
-                    if (Object.keys(diff).length > 0) {
-                        const broadcastStack = this.spaceFileListManager.convertListToStack(diff);
-                        eventStack.push({ action: action, files: broadcastStack });
-                    }
+                    const broadcastStack = this.spaceFileListManager.convertListToStack(diff);
+                    eventStack.push({ action: action, files: broadcastStack });
 
                     break;
 
@@ -130,6 +128,10 @@ export class SpaceFileEventHandler extends BaseProtocolHandler {
                     }
 
                     break;
+
+                default:
+                    await this.messageManager.reject(socket, message, MESSAGES.INVALID_FILE_EVENT_ACTION_MESSAGE);
+                    return;
             }
         }
 
@@ -259,7 +261,7 @@ export class SpaceFileTreeResponseHandler extends BaseProtocolHandler {
         }
 
         const verificationResult = verifyMerkleTree(message.payload.tree);
-        
+
         if (!verificationResult.isValid) {
             await this.messageManager.reject(socket, message, verificationResult.reason);
         }
@@ -317,14 +319,14 @@ export class SpaceFileContentRequestHandler extends BaseProtocolHandler {
         const maxAvailableLeafs = downloadRecord ? downloadRecord.lastPushedLeaf : registry.leafCount - 1;
 
         const [startLeaf, endLeaf] = slice;
-        
+
         if (startLeaf < 0 || endLeaf > maxAvailableLeafs || startLeaf > endLeaf) {
             await this.messageManager.reject(socket, message, MESSAGES.SLICE_NOT_AVAILABLE_MESSAGE);
             return;
         }
 
         const taskResult = await this.deliveryManager.createTask({
-            socket, 
+            socket,
             key,
             filePath: registry.fileSourcePath,
             startLeaf,
