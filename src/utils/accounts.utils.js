@@ -281,6 +281,52 @@ export async function createAccount(username, password, root) {
 }
 
 /**
+ * Create a new local user account from existing BIP39 mnemonic.
+ * @param {String} username - account's username
+ * @param {String} password - account's password
+ * @param {String} mnemonic - 12 or 24-word BIP39 mnemonic phrases
+ * @param {String} root - Base directory for account
+ *
+ * @returns {Promise<{
+ *   mnemonic: string,
+ *   username: string,
+ *   path: string,
+ *   publicKey: string
+ * }>}
+ */
+export async function createAccountFromMnemonic(username, password, mnemonic, root) {
+  if (!username || typeof username !== 'string' || username.trim() === '') {
+    throw new Error('Username required');
+  }
+
+  if (!password || typeof password !== 'string' || password.trim() === '') {
+    throw new Error('Password required');
+  }
+
+  if (!mnemonic || typeof mnemonic !== 'string' || mnemonic.trim() === '') {
+    throw new Error('Mnemonic required');
+  }
+
+  const seed = seedFromMnemonic(mnemonic);
+  const { publicKey, secretKey } = await edKeyPairFromSeed(seed);
+
+  const info = await addAccount(
+    username,
+    password,
+    hex(publicKey),
+    hex(secretKey),
+    root
+  );
+
+  return {
+    mnemonic,
+    username: info.username,
+    path: info.userDirectory,
+    publicKey: hex(publicKey),
+  };
+}
+
+/**
  * Delete a local user account.
  * @param {string} username - Account username
  * @param {string} root - Root directory for accounts
