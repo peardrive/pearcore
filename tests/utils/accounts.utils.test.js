@@ -19,7 +19,8 @@ import {
   listAccountsWithMeta,
   createAccount,
   authenticateAccount,
-  deleteAccount
+  deleteAccount,
+  createAccountFromMnemonic
 } from '../../src/utils/accounts.utils.js'
 
 
@@ -359,6 +360,31 @@ describe('Account Utilities', () => {
       })
     })
   })
+
+  describe('createAccountFromMnemonic', () => {
+    let mnemonic;
+    let expectedPublicKey;
+
+    beforeEach(async () => {
+      const info = await createAccount('testUser', 'testPassword', tempRoot);
+      mnemonic = info.mnemonic;
+      expectedPublicKey = info.publicKey;
+    });
+
+    it('should create an account from a valid mnemonic', async () => {
+      const username = 'recoveryUsername';
+      const info = await createAccountFromMnemonic(username, 'recoveryPassword', mnemonic, tempRoot);
+      const status = await ensureAccountExists(username, tempRoot);
+      
+      expect(info.publicKey).toBe(expectedPublicKey);
+      expect(status).toBeDefined();
+      expect(status.publicKey).toBe(expectedPublicKey);
+    });
+
+    it('should allow authentication with correct password', async () => {
+
+    });
+  });
 
   describe('authenticateAccount', () => {
     it('should return decrypted credentials for valid account', async () => {

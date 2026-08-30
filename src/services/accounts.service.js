@@ -5,6 +5,7 @@ import {
   createAccount,
   authenticateAccount,
   deleteAccount,
+  createAccountFromMnemonic,
 } from '../utils/accounts.utils.js';
 
 
@@ -58,6 +59,30 @@ export class AccountService {
     }
 
     await deleteAccount(username, this.root);
+  }
+
+  /**
+   * Recover credentials using mnemonic recovery phrases
+   * @param {String} username - local account's username
+   * @param {String} password - local account's password
+   * @param {String} mnemonic - 12 or 24-word BIP30 mnemonic phrases
+   * @returns {Promise<{
+   *  path: String,
+   *  publicKey: String
+   * }>}
+   */
+  async recover(username, password, mnemonic) {
+    const account = await createAccountFromMnemonic(
+      username, 
+      password,
+      mnemonic,
+      this.root
+    );
+
+    return {
+      path: account.path,
+      publicKey: account.publicKey
+    };
   }
 
   /**

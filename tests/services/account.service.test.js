@@ -68,6 +68,17 @@ describe('AccountService', () => {
         })
     })
 
+    describe('recover', () => {
+        it('should recovery credentials from valid mnemonic', async () => {
+            const info = await core.accounts.create('initialUser', '123');
+            const recovery = await core.accounts.recover('recovered', '123', info.mnemonic);
+            const list = await core.accounts.list();
+
+            expect(recovery.publicKey).toBe(info.publicKey);
+            expect(list.length).toBe(2);
+        });
+    });
+
     describe('authenticate', () => {
         it('should throw if username is invalid', async () => {
             await expect(core.accounts.authenticate('', 'pass')).rejects.toThrow();
