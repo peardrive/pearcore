@@ -13,7 +13,7 @@ import {
   hex,
   hexToUint8
 } from './crypto.utils.js';
-import { now } from './general.utils.js';
+import { isString, now } from './general.utils.js';
 
 /**
  * Return the user's root directory: {root}/{username}
@@ -161,6 +161,72 @@ export async function listAccountsWithMeta(root) {
   return results;
 }
 
+/**
+ * Setup account with predefined credentials.
+ * @param {string} username - Local username.
+ * @param {string} password - Auth password.
+ * @param {string} publicKey - Public key (64-char hex).
+ * @param {string} secretKey - Secret key (128-char hex).
+ * @param {string} root - Base directory.
+ * @returns {Promise<{
+ *   username: string,
+ *   userDirectory: string,
+ *   publicKey: string,
+ *   nonce: string,
+ *   salt: string,
+ *   createdAt: number
+ * }>}
+ */
+export async function addAccount(username, password, publicKey, secretKey, root) {
+  const processedUsername = username.trim();
+
+  if (!isString(username) || processedUsername === "") {
+    throw new Error("Username required");
+  }
+
+  if (!isString(password) || password.toLowerCase().trim() === "") {
+    throw new Error("Password required");
+  }
+
+  await directoryExists(root);
+
+  const dirs = await listSubdirs(root);
+  if (dirs.includes(processedUsername)) throw new Error('Account already exists');
+
+  // user root folder
+  const userRoot = path.join(root, processedUsername);
+  const accountDir = path.join(userRoot, '.account');
+  const driveDir = path.join(userRoot, 'drive');
+
+  await directoryExists(accountDir);
+  await directoryExists(driveDir);
+
+  const salt = await randomSalt();
+  const key = await deriveKeyFromPassword(password, salt);
+  const credentials = {
+    username: processedUsername,
+    publicKey: publicKey,
+    secretKey: secretKey
+  };
+
+  const nonce = randomNonce();
+  const encrypted = await encryptJSON(hex(key), hex(nonce), credentials);
+
+  await fs.writeFile(path.join(accountDir, 'credentials.enc.json'), JSON.stringify(encrypted, null, 2));
+
+  const meta = {
+    username: processedUsername,
+    userDirectory: userRoot,
+    publicKey: publicKey,
+    nonce: hex(nonce),
+    salt: hex(salt),
+    createdAt: now()
+  };
+
+  await fs.writeFile(path.join(accountDir, 'meta.json'), JSON.stringify(meta, null, 2));
+
+  return meta;
+}
 
 /**
  * Create a new local user account with password-protected credentials.
@@ -200,57 +266,19 @@ export async function listAccountsWithMeta(root) {
  * }>}
  */
 export async function createAccount(username, password, root) {
-  username = username.trim().toLowerCase();
-  if (!username) throw new Error('Username required');
-
-  await directoryExists(root);
-
-  const dirs = await listSubdirs(root);
-  if (dirs.includes(username)) throw new Error('Account already exists');
-
-  // user root folder
-  const userRoot = path.join(root, username);
-  const accountDir = path.join(userRoot, '.account');
-  const driveDir = path.join(userRoot, 'drive');
-
-  await directoryExists(accountDir);
-  await directoryExists(driveDir);
-
   const mnemonic = generateMnemonic();
   const seed = seedFromMnemonic(mnemonic);
   const { publicKey, secretKey } = await edKeyPairFromSeed(seed);
 
-  const salt = await randomSalt();
-  const key = await deriveKeyFromPassword(password, salt);
-  const credentials = {
-    username,
-    publicKey: hex(publicKey),
-    secretKey: hex(secretKey)
-  };
-
-  const nonce = randomNonce();
-  const encrypted = await encryptJSON(hex(key), hex(nonce), credentials);
-
-  await fs.writeFile(path.join(accountDir, 'credentials.enc.json'), JSON.stringify(encrypted, null, 2));
-
-  const meta = {
-    username,
-    publicKey: hex(publicKey),
-    nonce: hex(nonce),
-    salt: hex(salt),
-    createdAt: now()
-  };
-
-  await fs.writeFile(path.join(accountDir, 'meta.json'), JSON.stringify(meta, null, 2));
+  const info = await addAccount(username, password, hex(publicKey), hex(secretKey), root);
 
   return {
-    username,
     mnemonic,
+    username: info.username,
+    path: info.userDirectory,
     publicKey: hex(publicKey),
-    path: userRoot
   };
 }
-
 
 /**
  * Delete a local user account.
@@ -292,7 +320,7 @@ export async function deleteAccount(username, root) {
  * // creds = { username: 'alice', publicKey: 'abc123...', secretKey: 'def456...' }
  */
 export async function authenticateAccount(username, password, root) {
-  username = username.trim().toLowerCase();
+  username = username.trim();
 
   if (!username) {
     throw new Error("Username required.");
@@ -335,11 +363,12 @@ export async function authenticateAccount(username, password, root) {
 
     // Verify decrypted data matches metadata
     if (decrypted.username !== username) {
+      console.log({ internal: decrypted.username, username })
       throw new Error('Username mismatch in credentials');
     }
 
     if (decrypted.publicKey !== meta.publicKey) {
-      throw new Error('Public key mismatch');
+      throw new Error('Publickey mismatch');
     }
 
     return {
