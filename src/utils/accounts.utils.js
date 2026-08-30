@@ -94,7 +94,14 @@ export async function readAccountMeta(userRoot) {
  *
  * @param {string} username
  * @param {string} [root]
- * @returns {Promise<object>} meta (contains publicKey, username, createdAt?)
+ * @returns {Promise<{
+ *   username: string,
+ *   userDirectory: string,
+ *   publicKey: string,
+ *   nonce: string,
+ *   salt: string,
+ *   createdAt: number
+ * }>}
  */
 export async function ensureAccountExists(username, root) {
   if (!username || typeof username !== 'string') throw new Error('username required');
