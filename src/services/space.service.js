@@ -1,8 +1,10 @@
 import { createChild } from '../logger.js';
-import { createSpaceForPublicKey, deleteSpace, generateSpaceTopic, getSpace, getSpaceTopicHash, querySpace } from "../utils/space.utils.js";
-import { encodeShareLink, decodeShareLink, queryShareLink, deleteShareLink, saveShareLink } from "../utils/sharelink.utils.js";
+import { createSpaceForPublicKey, deleteSpace, getSpace, getSpaceTopicHash, querySpace, updateSpaceForPublicKey } from "../utils/space.utils.js";
+import { decodeShareLink, queryShareLink, deleteShareLink, saveShareLink } from "../utils/sharelink.utils.js";
+import { createSpaceSyncMessage } from "../utils/protocol.utils.js";
 import { isString } from '../utils/general.utils.js';
 import { SpaceInstance } from './interface.js';
+import { publicKeyIsAllowedToRead } from '../utils/policy.utils.js';
 
 const logger = createChild('SpaceService');
 
@@ -54,6 +56,53 @@ export class SpaceService {
     }
 
     /**
+     * Updates permission rules for space and broadcast the update to members.
+     * @param {SpaceInstance} space - the original space instance
+     * @param {Object} params - Space configuration parameters
+     * @param {boolean} [params.permissionBroadcast=true] - Whether broadcasting is permissioned
+     * @param {Array<string>} [params.broadcastWhitelist=[]] - Public keys allowed to broadcast
+     * @param {boolean} [params.permissionRead=true] - Whether reading is permissioned
+     * @param {Array<string>} [params.readWhitelist=[]] - Public keys allowed to read
+     * @returns {Promise<SpaceInstance>}
+     */
+    async update(space, params) {
+        const { publicKey, secretKey } = this.managers.session.getCredentials();
+
+        if (space.publicKey !== publicKey) {
+            throw new Error("Space update failed. You can only update self-owned spaces.");
+        }
+
+        const exists = await getSpace(this.#db, space.id);
+        if (!exists) {
+            throw new Error("Space does not exists.");
+        }
+
+        await updateSpaceForPublicKey(this.#db, space.id, params, secretKey);
+
+        const updatedSpace = await getSpace(this.#db, space.id);
+        const topicHash = getSpaceTopicHash(updatedSpace);
+
+        const message = await createSpaceSyncMessage({
+            topic: topicHash,
+            space: updatedSpace,
+            publicKey: publicKey,
+            secretKey: secretKey
+        });
+
+        await this.managers.connection.update();
+
+        const peers = this.managers.sockets.getPeerKeys(key => publicKeyIsAllowedToRead(key, updatedSpace));
+        const sockets = this.managers.sockets.getConnectedSockets({
+            peers: peers, topics: [topicHash]
+        });
+
+        await this.managers.message.broadcastMessageToSockets(message, sockets);
+
+        const instance = new SpaceInstance(updatedSpace, "space");
+        return instance;
+    }
+
+    /**
      * Joins an existing space using sharelink.
      * @param {string} sharelink - Join parameters
      * @returns {Promise<Object>} Promise resolving to the decoded space metadata
@@ -98,7 +147,7 @@ export class SpaceService {
             } else {
                 await deleteShareLink(this.#db, space.id);
             }
-        } catch(error) {
+        } catch (error) {
             return; // race condition: sharelink converts to space record before deletion
         }
     }

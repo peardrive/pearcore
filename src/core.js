@@ -41,7 +41,8 @@ import { initializeManagers } from './managers/initialization.js';
  *   accounts: AccountService,
  *   space: SpaceService,
  *   profile: ProfileService,
- *   messages: MessageService
+ *   messages: MessageService,
+ *   getPublicKey: Function
  * }>}
  *   A fully initialized service container with authenticated session
  *   (if credentials were provided).
@@ -79,6 +80,11 @@ export async function createCore({
     await accounts.authenticate(user.username, user.password);
   }
 
+  const getPublicKey = () => {
+    const { publicKey } = managers.session.getCredentials();
+    return publicKey || undefined; 
+  }
+
   return {
     emitter,
     managers,
@@ -86,5 +92,6 @@ export async function createCore({
     messages,
     profile,
     accounts,
+    getPublicKey
   }
 }

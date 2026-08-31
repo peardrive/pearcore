@@ -31,6 +31,10 @@ export class SpaceInstance {
         this.prefix = prefix;
     }
 
+    toObject() {
+        return this.#data;
+    }
+
     setPrefix(prefix) {
         if (isString(prefix)) {
             this.prefix = prefix;
@@ -62,11 +66,11 @@ export class SpaceInstance {
     }
 
     get permissionBroadcast() {
-        return this.#type === 'space' ? this.#data.permissionBroadcast : undefined;
+        return this.#type === 'space' ? Boolean(this.#data.permissionBroadcast) : undefined;
     }
 
     get permissionRead() {
-        return this.#type === 'space' ? this.#data.permissionRead : undefined;
+        return this.#type === 'space' ? Boolean(this.#data.permissionRead) : undefined;
     }
 
     get signature() {
