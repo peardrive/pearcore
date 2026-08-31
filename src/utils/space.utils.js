@@ -1,7 +1,5 @@
-import { eq, inArray, like, gte, lte, and, asc, desc } from 'drizzle-orm';
+import { eq, like, gte, lte, and, asc, desc } from 'drizzle-orm';
 import { spaces, broadcastWhitelist, readWhitelist } from "../database/schemas/space.schema.js";
-import { spaceMembers } from "../database/schemas/spaceMembers.schema.js";
-import { userProfiles } from "../database/schemas/profile.schema.js";
 import { isString, now, validateHexString, validateTimestamp } from "./general.utils.js";
 import {
   hex,

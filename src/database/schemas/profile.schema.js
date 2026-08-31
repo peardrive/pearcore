@@ -1,7 +1,4 @@
 import { sqliteTable, text, integer } from "drizzle-orm/sqlite-core";
-import { relations } from "drizzle-orm";
-
-import { spaceMembers } from "./spaceMembers.schema.js";
 
 /**
  * User Profiles Table
@@ -26,17 +23,3 @@ export const userProfiles = sqliteTable("user_profiles", {
   signature: text("signature").notNull(),
   timestamp: integer("timestamp").notNull(),
 });
-
-/**
- * Relations for the userProfiles table.
- *
- * A user may be part of many spaces through the spaceMembers join table.
- * This provides a typed relational mapping enabling queries like:
- *
- * db.query.userProfiles.findMany({
- *   with: { memberOfSpaces: { with: { space: true } } }
- * });
- */
-export const userProfilesRelations = relations(userProfiles, ({ many }) => ({
-  memberOfSpaces: many(spaceMembers), // many spaces per user
-}));

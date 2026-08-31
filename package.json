@@ -7,9 +7,7 @@
   "scripts": {
     "start": "node src/index.js run",
     "test": "cross-env NODE_ENV=test vitest",
-    "db:generate": "drizzle-kit generate  --config=drizzle.config.js",
-    "db:migrate": "drizzle-kit migrate  --config=drizzle.config.js",
-    "db:push": "drizzle-kit push"
+    "db:generate": "drizzle-kit generate:sqlite --config=drizzle.config.js"
   },
   "keywords": [
     "p2p",
@@ -19,7 +17,7 @@
   ],
   "author": "Anjou Team",
   "license": "MIT",
-  "repository": "https://github.com/peardrive/Pearcore/",
+  "repository": "https://github.com/peardrive/pearcore/",
   "devDependencies": {
     "@types/jest": "^30.0.0",
     "@types/node": "^24.10.0",
