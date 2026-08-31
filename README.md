@@ -63,7 +63,7 @@ main().catch(error => {
 });
 ```
 
-For more practical examples checkout **[examples/](./docs/examples)** directory.
+For more practical examples checkout **[examples/](./docs/examples.md)** directory.
 
 <br>
 
@@ -78,5 +78,3 @@ Full API documentation and advanced usage examples are located in the [`docs/`](
 - **[Profile Management](./docs/profiles.md)** – update, broadcast, and list profiles
 - **[Messaging](./docs/messages.md)** – send, receive, and filter messages
 - **[File Sharing](./docs/files.md)** – upload, download, and monitor file transfers
-
-For a quick reference of the main services, see the table below.
