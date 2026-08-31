@@ -2,7 +2,7 @@ import { SocketManager } from "./sockets.manager.js";
 import { SessionManager } from "./session.manager.js";
 import { MessageManager } from "./message.manager.js";
 import { StorageManager } from "./storage.manager.js";
-import { ProtocolMapFactory } from "../protocol/map.js";
+import { ProtocolMapFactory } from "../protocols/map.js";
 import { ThrottleManager } from "./throttle.manager.js";
 import { ConnectionManager } from "./connection.manager.js";
 import { MuxManager, FrameTypes } from "./multiplexer.manager.js";

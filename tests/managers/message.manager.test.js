@@ -5,7 +5,7 @@ import { MessageManager } from "../../src/managers/message.manager.js";
 import { initializeManagers } from "../../src/managers/initialization";
 import { createSpaceHashListMessage } from "../../src/utils/protocol.utils.js";
 import { buildTestSpacePayload, createFakeP2PConnection, unframeJson } from "../general.utils.js";
-import { BaseProtocolHandler } from "../../src/protocol/base.js";
+import { BaseProtocolHandler } from "../../src/protocols/base.js";
 import { hex, randomNonce } from "../../src/utils/crypto.utils.js";
 import { getSpaceTopicHash } from "../../src/utils/space.utils.js";
 

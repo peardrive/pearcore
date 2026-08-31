@@ -5,7 +5,7 @@ import { initializeManagers } from "../../src/managers/initialization.js";
 import { createSpaceHashListMessage, createSpaceMessage, createSpaceSyncMessage, encryptPayload } from "../../src/utils/protocol.utils.js";
 import { buildTestSpacePayload, createFakeP2PConnection, unframeJson } from "../general.utils.js";
 import { generateSpaceTopic, getSpaceTopicHash } from "../../src/utils/space.utils.js";
-import { SpaceSyncHandler } from "../../src/protocol/space.protocol.js";
+import { SpaceSyncHandler } from "../../src/protocols/space.protocol.js";
 import { now } from "../../src/utils/general.utils.js";
 import { hex, randomNonce } from "../../src/utils/crypto.utils.js";
 import { createP2PNetwork, createConnections } from '../general.utils.js';
