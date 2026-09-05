@@ -924,7 +924,7 @@ export class ProviderList {
         // insert new providers into the list
         for (const publicKey of currentProviders) {
             if (!this.providers.has(publicKey)) {
-                this.providers.set(publicKey, { lastRequestabeLeaf: undefined });
+                this.providers.set(publicKey, { lastRequestableLeaf: undefined });
             }
         }
 
@@ -949,7 +949,7 @@ export class ProviderList {
     /**
      * Get provider's maximum requestable leaf.
      * @param {String} publicKey - Peer's publicKey
-     * @returns {{ lastRequestabeLeaf: Number }}
+     * @returns {{ lastRequestableLeaf: Number }}
      */
     get(publicKey) {
         return this.providers.get(publicKey);
@@ -965,7 +965,7 @@ export class ProviderList {
 
     /**
      * Returns iterator over provider map entries.
-     * @returns {Iterator<[ String, { lastRequestabeLeaf: Number } ]>}
+     * @returns {Iterator<[ String, { lastRequestableLeaf: Number } ]>}
      */
     entries() {
         return this.providers.entries();
@@ -974,11 +974,11 @@ export class ProviderList {
     /**
      * 
      * @param {String} publicKey - Peer's publicKey
-     * @param {Number} lastRequestabeLeaf - The last leaf index the provider maintains.
+     * @param {Number} lastRequestableLeaf - The last leaf index the provider maintains.
      */
-    setAdvertisedLeaf(publicKey, lastRequestabeLeaf) {
+    setAdvertisedLeaf(publicKey, lastRequestableLeaf) {
         if (!this.providers.has(publicKey)) return;
-        this.providers.set(publicKey, { lastRequestabeLeaf });
+        this.providers.set(publicKey, { lastRequestableLeaf });
     }
 }
 
@@ -1012,7 +1012,7 @@ export class SpaceTreeMaintainer {
      * 
      * @param {String} publicKey - Peer's publicKey
      * @param {Object|undefined} info 
-     * @param {Number|undefined} info.lastRequestabeLeaf - Provider's maximum leaf index maintaind.
+     * @param {Number|undefined} info.lastRequestableLeaf - Provider's maximum leaf index maintaind.
      * @param {Number|null} knownLeafCount - Number of leaves in the Merkle tree.
      * @returns {Boolean}
      */
@@ -1021,12 +1021,12 @@ export class SpaceTreeMaintainer {
         if (this.isPending(publicKey)) return false;
 
         // should request if no context about provider's leaves is maintained.
-        if (!info || !info.lastRequestabeLeaf) return true;
+        if (!info || !info.lastRequestableLeaf) return true;
 
         // this means Merkle Tree is not maintained internally, request is required to maintain the full tree.
         if (!knownLeafCount) return true;
 
-        return info.lastRequestabeLeaf < knownLeafCount - 1;
+        return info.lastRequestableLeaf < knownLeafCount - 1;
     }
 
     /**
@@ -1072,14 +1072,14 @@ export class SpaceTreeMaintainer {
     /**
      * Validates an incoming SpacefileTreeResponse for valid tree and relevance to rootHash.
      * @param {Object} message
-     * @return {{ succeed: Boolean, reason: String, publicKey: String, tree: Object, lastRequestabeLeaf: number }}
+     * @return {{ succeed: Boolean, reason: String, publicKey: String, tree: Object, lastRequestableLeaf: number }}
      */
     verify(message) {
         if (message.topic !== this.topic) {
             return { succeed: false, reason: 'message topic mismatch' };
         }
 
-        const { tree, lastRequestabeLeaf, replyNonce } = message.payload;
+        const { tree, lastRequestableLeaf, replyNonce } = message.payload;
 
         if (this.pendingRequests.get(replyNonce) !== message.publicKey) {
             return { succeed: false, reason: 'umatched message nonce' };
@@ -1101,8 +1101,224 @@ export class SpaceTreeMaintainer {
             reason: 'verification succeed',
             publicKey: message.publicKey,
             tree: tree,
-            lastRequestabeLeaf: lastRequestabeLeaf
+            lastRequestableLeaf: lastRequestableLeaf
         };
+    }
+}
+
+export class LeafDeliveryScheduler {
+    constructor({
+        sessionManager,
+        socketManager,
+        messageManager,
+        connectionManager,
+        ProviderList,
+        topic,
+        spaceFilePath,
+        chunkLeaves,
+        requestTimeoutMs,
+        getDownloadKey
+    }) {
+        this.sessionManager = sessionManager;
+        this.socketManager = socketManager;
+        this.messageManager = messageManager;
+        this.connectionManager = connectionManager;
+        this.ProviderList = ProviderList;
+        this.topic = topic;
+        this.spaceFilePath = spaceFilePath;
+        this.chunkLeaves = chunkLeaves;
+        this.requestTimeoutMs = requestTimeoutMs;
+        this.getDownloadKey = getDownloadKey;
+
+        /**
+         * Queue the leaf index ranges pending for assignment.
+         * @type {Array<[number, number]>}
+         * 
+         * Each elemnt is a range of `[startLeaf, endLeaf]` which represents leaves that
+         * have not yet been assigned to any provider.
+         */
+        this.queue = [];               // [[startLeaf, endLeaf], ...] ascending, not yet assigned
+        this.assignments = new Map();  // publicKey -> { start, end, remaining: Set<leaf>, requestedAt }
+    }
+
+    get settings() {
+        return this.sessionManager.getDownloadConfig();
+    }
+
+    /** Initialize the internal queue */
+    seed(startLeaf, endLeaf) {
+        this.queue = startLeaf <= endLeaf ? [[startLeaf, endLeaf]] : [];
+    }
+
+    /**
+     * Checks if the provider has any assigned delivery.
+     * @param {String} publicKey 
+     * @returns {Boolean}
+     */
+    isIdle(publicKey) {
+        return !this.assignments.has(publicKey);
+    }
+
+    /**
+     * Picks and returns the publicKey of the first provider that is:
+     * 1. idle with no assigments
+     * 2. maintains the minimum expected leaf index.
+     * @param {Number} minLeafIndex 
+     * @returns {String}
+     */
+    pickIdleProvider(minLeafIndex) {
+        for (const [publicKey, info] of this.ProviderList.entries()) {
+            if (!this.isIdle(publicKey)) continue;
+            if (info.lastRequestableLeaf === undefined) continue;
+            if (info.lastRequestableLeaf < minLeafIndex) continue;
+
+            return publicKey;
+        }
+
+        return null;
+    }
+
+    /**
+     * Returns the provider publicKey that is assigned to deliver that specific leaf index.
+     * @param {Number} leafIndex 
+     * @returns {String|null}
+     */
+    getProviderForLeaf(leafIndex) {
+        for (const [publicKey, assignments] of this.assignments) {
+            if (leafIndex >= assignments.start && leafIndex <= assignments.end) {
+                return publicKey;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Set state that a lead has arrived and free its provider once the assignment is fully complete.
+     * @param {Number} leafIndex - the arrived leaf index.
+     */
+    markDelivered(leafIndex) {
+        const publicKey = this.getProviderForLeaf(leafIndex);
+        if (!publicKey) return;
+
+        const assignment = this.assignments.get(publicKey);
+        assignment.remaining.delete(leafIndex);
+
+        if (assignment.remaining.size === 0) {
+            this.assignments.delete(publicKey);
+        }
+    }
+
+    /**
+     * Distribute queued ranges to idle providers.
+     */
+    assign() {
+        while (this.queue.length > 0) {
+            const [rangeStart] = this.queue[0];
+            const publicKey = this.pickIdleProvider(rangeStart);
+
+            if (!publicKey) break;
+
+            const [start, rangeEnd] = this.queue.shift();
+            const providerLimit = this.ProviderList.get(publicKey).lastRequestableLeaf;
+            const maximumAllowedChunkSize = start + this.settings.assignedChunkSize;
+            const end = Math.min(rangeEnd, providerLimit, maximumAllowedChunkSize);
+
+            if (end < rangeEnd) {
+                this.queue.unshift([end + 1, rangeEnd``]);
+            }
+
+            this.assignRange(publicKey, start, end);
+        }
+    }
+
+    /**
+     * Sends SpaceFileContentRequest message to provider.
+     * @param {String} publicKey - provider publicKey
+     * @param {Number} start - start leaf index
+     * @param {Number} end - end leaf index
+     * @returns {Promise<void>}
+     */
+    async sendContentRequest(publicKey, start, end) {
+        const credentials = this.sessionManager.getCredentials();
+        const message = await createSpaceFileContentRequestMessage({
+            topic: this.topic,
+            spaceFilePath: this.spaceFilePath,
+            leafStart: start,
+            leafStop: end,
+            downloadKey: this.getDownloadKey(),
+            publicKey: credentials.publicKey,
+            secretKey: credentials.secretKey
+        });
+
+        const sockets = this.socketManager.getConnectedSockets({ peers: [publicKey], topics: [this.topic] });
+        if (sockets.length === 0) {
+            this.connectionManager.connectWith(publicKey);
+            return;
+        }
+
+        await this.messageManager.sendMessageToSocket(message, sockets[0]);
+    }
+
+    /**
+     * Create new assigment delivery range to provider.
+     * @param {String} publicKey 
+     * @param {Number} start 
+     * @param {Number} end 
+     */
+    assignRange(publicKey, start, end) {
+        const remaining = new Set();
+        for (let leaf = start; leaf <= end; leaf++) {
+            remaining.add(leaf);
+        }
+
+        this.assignments.set(publicKey, { start, end, remaining, requestedAt: now() });
+        const requestPromise = this.sendContentRequest(publicKey, start, end);
+
+        requestPromise
+            .catch(error => {
+                logger.warn(`Failed to request SpaceFileContentRequest`, {
+                    publicKey,
+                    range: { start, end },
+                    message,
+                    error
+                });
+            });
+
+        return requestPromise;
+    }
+
+    requeue(assigment) {
+        const leaves = [...assigment.remaining].sort((a, b) => a - b);
+        if (leaves.length === 0) return;
+
+        const ranges = [];
+        let start = leaves[0];
+        let previous = leaves[0];
+
+        for (let index = 1; index < leaves.length; index++) {
+            if (leaves[index] === previous + 1) {
+                previous = leaves[index];
+                continue;
+            }
+
+            ranges.push([start, previous]);
+            start = leaves[index];
+            previous = leaves[index];
+        }
+
+        ranges.push([start, previous]);
+
+        this.queue.push(...ranges);
+        this.queue.sort((a, b) => a[0] - b[0]);
+    }
+
+    releaseProvider(publicKey) {
+        const assignment = this.assignments.get(publicKey);
+        if (!assignment) return;
+
+        this.assignments.delete(publicKey);
+        this.requeue(assignment);
     }
 }
 
