@@ -982,7 +982,7 @@ export class ProviderList {
     }
 }
 
-export class SpaceTreeMaintainer {
+export class SpaceTreePuller {
     constructor({ sessionManager, socketManager, messageManager, connectionManager, topic, spaceFilePath, rootHash }) {
         this.sessionManager = sessionManager;
         this.socketManager = socketManager;
