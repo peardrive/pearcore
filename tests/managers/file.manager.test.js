@@ -5,7 +5,7 @@ import * as EVENTS from '../../src/constants/events.constants.js';
 import { getSpaceTopicHash } from "../../src/utils/space.utils.js";
 import { CoreFactory } from "../factory.js";
 import { cleanup, createP2PNetwork, generateRandomFile, makeTempDir } from "../general.utils.js";
-import { FileEventBroadcaster, LocalFileRegistry, ProviderList, SpaceFileListManager } from "../../src/managers/file.manager.js";
+import { FileEventBroadcaster, LocalFileRegistry, ProviderList, SpaceFileListManager, SpaceTreePuller } from "../../src/managers/file.manager.js";
 import { now } from "../../src/utils/general.utils.js";
 import { createSpaceFileRecordSignature } from "../../src/utils/protocol.utils.js";
 import { generateFileTreeRecord, createWatcher, createfileRegistryRecord, queryFileRegistryRecords, createDownloadRecord, getTemporarySourcePathForSpaceFile, getFileRegistryRecord, getFileMetaHashFromSource } from "../../src/utils/files.utils.js";
@@ -987,5 +987,118 @@ describe("ProviderList", () => {
         providerList.refresh();
         expect(providerList.has('A1')).toBe(false);
         expect(onDrop).toHaveBeenCalledOnce();
+    });
+});
+
+describe('SpaceTreePuler', () => {
+    const SPACE_FILE_PATH = '/shared.txt';
+
+    let factory;
+    let primaryCore;
+    let secondaryCore;
+    let space;
+
+    // file related variables
+    let temporaryDirectory;
+    let filePath;
+    let rootHash;
+    let leafCount;
+
+    let puller;
+
+    beforeEach(async () => {
+        factory = new CoreFactory();
+        await factory.init();
+
+        primaryCore = await factory.createCore();
+        secondaryCore = await factory.createCore();
+
+        space = await secondaryCore.space.create({ spaceName: 'tree-puller' });
+        // wait for primaryCore to connect with secondary
+        await factory.condition(async (core, success) => {
+            core.emitter.once(EVENTS.SpaceSync, () => success());
+            await core.space.join(space.sharelink);
+
+        }, { excludeIndices: [1], timeout: 5000 });
+
+        temporaryDirectory = await makeTempDir();
+        filePath = path.join(temporaryDirectory, 'shared.txt');
+
+        await generateRandomFile(filePath, 1); // 1MB
+
+        const db = primaryCore.managers.session.getDatabase().db;
+        const { registryId } = await generateFileTreeRecord(db, {
+            fileSourcePath: filePath,
+            spacePath: '/',
+            spaceFilename: 'shared.txt',
+            spaceId: space.id
+        });
+
+        const registry = await getFileRegistryRecord(db, registryId);
+        rootHash = registry.rootHash;
+        leafCount = registry.leafCount;
+
+        puller = new SpaceTreePuller({
+            sessionManager: secondaryCore.managers.session,
+            socketManager: secondaryCore.managers.sockets,
+            messageManager: secondaryCore.managers.message,
+            connectionManager: secondaryCore.managers.connection,
+            topic: space.topicHash,
+            spaceFilePath: SPACE_FILE_PATH,
+            rootHash
+        });
+    });
+
+    afterEach(async () => {
+        await factory.cleanup();
+        await cleanup(temporaryDirectory);
+    });
+
+    it('should send SpaceFileTreeRequest and mark the peer as pending', async () => {
+        await puller.request(primaryCore.publicKey);
+        expect(puller.isPending(primaryCore.publicKey)).toBe(true);
+    });
+
+    it('should ask to connect and record nothing for a peer with no active connection', async () => {
+        const isolatedCore = await factory.createCore('isolated');
+        const connectSpy = vi.spyOn(puller.connectionManager, 'connectWith');
+
+        await puller.request(isolatedCore.publicKey);
+
+        expect(connectSpy).toHaveBeenCalledOnce();
+        expect(puller.isPending(isolatedCore.publicKey)).toBe(false);
+    });
+
+    it('should verify a genuine tree response from the provider', async () => {
+        const responsePromise = waitForEvent(secondaryCore, EVENTS.SpaceFileTreeResponse);
+
+        await puller.request(primaryCore.publicKey);
+        const { message } = await responsePromise;
+        const result = puller.verify(message);
+
+        expect(result.succeed).toBe(true);
+        expect(result.publicKey).toBe(primaryCore.publicKey);
+        expect(result.tree.rootHash).toBe(rootHash);
+        expect(result.lastRequestableLeaf).toBe(leafCount);
+        expect(puller.isPending(primaryCore.publicKey)).toBe(false);
+    });
+
+    describe('shouldRequest', () => {
+        it('should return false while a request is already pending for that peer', async () => {
+            await puller.request(primaryCore.publicKey);
+            expect(puller.shouldRequest(primaryCore.publicKey, undefined, null)).toBe(false);
+        });
+
+        it('should return true when there is no info at all for the peer', () => {
+            expect(puller.shouldRequest(primaryCore.publicKey, undefined, 10)).toBe(true);
+        });
+
+        it('should return true when the leaf count is not known yet', () => {
+            expect(puller.shouldRequest(primaryCore.publicKey, { lastRequestableLeaf: 5 }, null)).toBe(true);
+        });
+
+        it('should return true for a partial provider (advertised leaf below leafCount - 1)', () => {
+            expect(puller.shouldRequest(primaryCore.publicKey, { lastRequestableLeaf: 5 }, 10)).toBe(true);
+        });
     });
 });
