@@ -26,7 +26,7 @@ import {
     listDownloadRecords,
     setDownloadAsComplete
 } from "../utils/files.utils.js";
-import { generateMerkleTree } from '../utils/merkletree.utils.js';
+import { generateMerkleTree, verifyMerkleTree } from '../utils/merkletree.utils.js';
 import { parseFilePath } from '../utils/parsers.utils.js';
 import { publicKeyIsAllowedToRead } from '../utils/policy.utils.js';
 import { createChild } from '../logger.js';
@@ -902,574 +902,423 @@ export class LocalFileRegistry {
     }
 }
 
-export class SpaceDownloadTask {
-    constructor(emitter, managers) {
-        this.emitter = emitter;
-        this.sessionManager = managers.sessionManager;
-        this.spaceFileListManager = managers.spaceFileListManager;
-        this.messageManager = managers.messageManager;
-        this.socketManager = managers.socketManager;
-        this.connectionManager = managers.connectionManager;
-        this.fileEventBroadcaster = managers.fileEventBroadcaster;
-
-        this.registryId = null;
-        this.spaceId = null;
-        this.topic = null;
-        this.spaceFilePath = null;
-        this.rootHash = null;
-        this.finalDestination = null;
-        this.key = null;
-        this.keyBuffer = null; // download key as Buffer
-
-        // Merkle tree related parameters
-        this.tree = null;
-        this.leafCount = null;
-        this.fileHandler = null;
-        this.tempFilePath = null;
-
-        // Download state
-        this.nextExpectedLeaf = 0; // next leaf to write sequentially
-        this.buffer = new Map(); // leafIndex -> Buffer (received chunks)
-        this.inFlightLeafs = new Set(); // leaf indices currently requested (pending)
-        this.pendingRequests = new Map(); // provider -> { startLeaf, endLeaf, timestamp }
-        this.completedLeafs = []; // for tracking written leaves (may not be needed)
-
-        // tracking providers
-        this.providers = [];
-        this.providerLastRequestableLeaf = new Map();
-        this.providerPerformance = new Map(); // avg response time (ms)
-
-        // tracking tree requests
-        this.treeRequestNonces = [];
-        this.pendingTreeRequests = new Map();
-
-        // control download status
-        this.downloadStarted = false;
-        this.downloadComplete = false;
-        this.windowSizeLeaves = 0;
-
-        // internal timers
-        this.treeRequestInterval = null;
-        this.timeoutTimer = null;
-
-        // timeout for response delays
-        this.requestTimeout = 30000;    // 30 seconds
-    }
-
-    get db() {
-        return this.sessionManager.getDatabase().db;
-    }
-
-    get treeRequestIntervalTime() {
-        return this.sessionManager.session.get('files.treeRequestInterval') ?? 5000;
-    }
-
-    get minLeafCountForAdvertisement() {
-        return this.sessionManager.session.get('files.minLeafCountForAdvertisement') ?? 100;
-    }
-
-    /**
-     * Set download key for stream routing
-     * @param {string} key - 12 bytes hex string key
-     */
-    setKey(key) {
-        this.key = key;
-        this.keyBuffer = Buffer.from(key, 'hex');
-    }
-
-
-    async setRecord(record) {
-        const { finalDestination, lastPushedLeaf, registryId } = record;
-
-        const registry = await getFileRegistryRecord(this.db, registryId);
-        if (!registry) {
-            throw new Error("Registry not found for the download record");
-        }
-
-        const space = await getSpace(this.db, registry.spaceId);
-        if (!space) {
-            throw new Error(`Registry with id:${registry.id} failed setting download task due to unknown spaceId:${registry.spaceId}`);
-        }
-
-        this.registryId = registryId;
-        this.spaceId = registry.spaceId;
-        this.topic = getSpaceTopicHash(space);
-        this.spaceFilePath = pathJoin(registry.spacePath, registry.spaceFilename);
-        this.rootHash = registry.rootHash;
-        this.tempFilePath = registry.fileSourcePath;
-        this.finalDestination = finalDestination;
-        this.leafCount = registry.leafCount;
-
-        // load the merkle tree from file registry record
-        const savedTree = await getFileTreeRecord(this.db, registryId);
-        if (isDefined(savedTree) && savedTree.rootHash === registry.rootHash) {
-            this.tree = savedTree;
-            this.leafCount = savedTree.leafCount;
-        }
-
-        this.nextExpectedLeaf = lastPushedLeaf + 1;
-
-        const exists = await fileExists(this.tempFilePath);
-        if (!exists) {
-            throw new Error(`Temporary file missing for download resume: ${this.tempFilePath}`);
-        }
-
-        this.fileHandler = await openFile(this.tempFilePath);
-        this.downloadStarted = false; // will start after tree is ready
-    }
-
-    async setTask({ space, spaceFilePath, rootHash, finalDestination }) {
-        this.spaceId = space.id;
-        this.topic = getSpaceTopicHash(space);
+export class ProviderList {
+    constructor({ spaceFileListManager, topic, spaceFilePath, rootHash, onDrop }) {
+        this.spaceFileListManager = spaceFileListManager;
+        this.topic = topic;
         this.spaceFilePath = spaceFilePath;
         this.rootHash = rootHash;
-        this.finalDestination = finalDestination;
+        this.onDrop = onDrop;
 
-        const { directory, username } = this.sessionManager.getAccount();
-        const temporarySourcePath = getTemporarySourcePathForSpaceFile({
-            root: directory,
-            username: username,
-            spaceFilePath: spaceFilePath,
-            rootHash: rootHash,
-            topic: this.topic
-        });
-
-        this.tempFilePath = temporarySourcePath;
-        this.nextExpectedLeaf = 0;
-        this.downloadStarted = false;
-    }
-
-    async start() {
-        if (!this.spaceFilePath || !this.rootHash) {
-            throw new Error("Task initialization failed. call setRecord() or setTask() first.");
-        }
-
-        // listen for provider updates to sync current provider list
-        this.emitter.on(EVENTS.SpaceFileEvent, () => this.updateProvideList());
-
-        // listen for file tree responses from providers
-        this.emitter.on(EVENTS.SpaceFileTreeResponse, async message => await this.onTreeResponseHandler(message));
-
-        // requesting file tree from foreign providers that just established socket connection
-        this.emitter.on(EVENTS.SpaceHashList, async context => await this.onSpaceHashList(context));
-
-        // periodically update provider list and request trees from providers
-        await this.providerContextUpdate();
-        this.treeRequestInterval = setInterval(
-            async () => await this.providerContextUpdate(),
-            this.treeRequestIntervalTime
-        );
-
-        // set timeout interval for content delivery delays
-        this.timeoutTimer = setInterval(() => this.checkTimeouts(), 5000);
-
-        if (this.tree) {
-            await this.beginDownloading();
-        }
-    }
-
-    async stop() {
-        if (this.treeRequestInterval) {
-            clearInterval(this.treeRequestInterval);
-            this.treeRequestInterval = null;
-        }
-        if (this.timeoutTimer) {
-            clearInterval(this.timeoutTimer);
-            this.timeoutTimer = null;
-        }
-        if (this.fileHandler) {
-            await closeFile(this.fileHandler);
-            this.fileHandler = null;
-        }
-        this.downloadStarted = false;
+        this.providers = new Map();
     }
 
     /**
-     * Condition which task should avoid requesting file tree from full providers (advertisedLeaf=leafCount - 1)
-     * which means updatings their file availability state is no longer required.
-     * @param {string} publicKey 
-     * @returns {boolean}
+     * Sync agains the SpaceFileListManager for newely seen peers are added as provider.
      */
-    shouldRequestTreeFromProvider(publicKey) {
-        const advertisedLeaf = this.providerLastRequestableLeaf.get(publicKey);
-        if (advertisedLeaf === undefined) return true;
-        return advertisedLeaf < (this.leafCount - 1);
+    refresh() {
+        const spaceFiles = this.spaceFileListManager.get(this.topic);
+        const variant = spaceFiles?.[this.spaceFilePath]?.[this.rootHash];
+        const currentProviders = new Set(variant ? Object.keys(variant.peers) : []);
+
+        // insert new providers into the list
+        for (const publicKey of currentProviders) {
+            if (!this.providers.has(publicKey)) {
+                this.providers.set(publicKey, { lastRequestableLeaf: undefined });
+            }
+        }
+
+        // clear list from removed providers
+        for (const publicKey of this.providers.keys()) {
+            if (!currentProviders.has(publicKey)) {
+                this.providers.delete(publicKey);
+                this.onDrop?.(publicKey);
+            }
+        }
     }
 
     /**
-     * send SpaceFileTreeRequest messages to providers to acumulate information about their file availability
-     * @param {string} publicKey 
+     * Checks if the provider is in the list
+     * @param {String} publicKey - Peer's publicKey
+     * @returns {Boolean}
+     */
+    has(publicKey) {
+        return this.providers.has(publicKey);
+    }
+
+    /**
+     * Get provider's maximum requestable leaf.
+     * @param {String} publicKey - Peer's publicKey
+     * @returns {{ lastRequestableLeaf: Number }}
+     */
+    get(publicKey) {
+        return this.providers.get(publicKey);
+    }
+
+    /**
+     * Returns list of all provider publicKeys.
+     * @returns {Array<String>}
+     */
+    peers() {
+        return this.providers.keys();
+    }
+
+    /**
+     * Returns iterator over provider map entries.
+     * @returns {Iterator<[ String, { lastRequestableLeaf: Number } ]>}
+     */
+    entries() {
+        return this.providers.entries();
+    }
+
+    /**
+     * 
+     * @param {String} publicKey - Peer's publicKey
+     * @param {Number} lastRequestableLeaf - The last leaf index the provider maintains.
+     */
+    setAdvertisedLeaf(publicKey, lastRequestableLeaf) {
+        if (!this.providers.has(publicKey)) return;
+        this.providers.set(publicKey, { lastRequestableLeaf });
+    }
+}
+
+export class SpaceTreePuller {
+    constructor({ sessionManager, socketManager, messageManager, connectionManager, topic, spaceFilePath, rootHash }) {
+        this.sessionManager = sessionManager;
+        this.socketManager = socketManager;
+        this.messageManager = messageManager;
+        this.connectionManager = connectionManager;
+        this.topic = topic;
+        this.spaceFilePath = spaceFilePath;
+        this.rootHash = rootHash;
+
+        this.pendingRequests = new Map(); // nonce -> publicKey
+    }
+
+    /**
+     * Checks whether the publicKey has pending SpaceFileTreeRequest to response.
+     * @param {String} publicKey 
+     * @returns {Boolean}
+     */
+    isPending(publicKey) {
+        for (const pending of this.pendingRequests.values()) {
+            if (pending === publicKey) return true;
+        }
+
+        return false;
+    }
+
+    /**
+     * 
+     * @param {String} publicKey - Peer's publicKey
+     * @param {Object|undefined} info 
+     * @param {Number|undefined} info.lastRequestableLeaf - Provider's maximum leaf index maintaind.
+     * @param {Number|null} knownLeafCount - Number of leaves in the Merkle tree.
+     * @returns {Boolean}
+     */
+    shouldRequest(publicKey, info, knownLeafCount) {
+        // avoid multiple request to one publicKey while they didn't response the earlier requests.
+        if (this.isPending(publicKey)) return false;
+
+        // should request if no context about provider's leaves is maintained.
+        if (!info || !info.lastRequestableLeaf) return true;
+
+        // this means Merkle Tree is not maintained internally, request is required to maintain the full tree.
+        if (!knownLeafCount) return true;
+
+        return info.lastRequestableLeaf < knownLeafCount - 1;
+    }
+
+    /**
+     * Sends SpaceFileTreeRequest message to the peer.
+     * @param {String} publicKey - Peer's publicKey
      * @returns {Promise<void>}
      */
-    async requestTreeFromProvider(publicKey) {
-        if (!this.shouldRequestTreeFromProvider(publicKey)) return;
-
+    async request(publicKey) {
+        const credentials = this.sessionManager.getCredentials();
         const message = await createSpaceFileTreeRequestMessage({
             topic: this.topic,
             spaceFilePath: this.spaceFilePath,
-            rootHash: this.rootHash
-        });
-
-        this.treeRequestNonces.push(message.nonce);
-        this.pendingTreeRequests.set(publicKey, message.timestamp);
-
-        const sockets = this.socketManager.getConnectedSockets({
-            peers: [publicKey],
-            topics: [this.topic]
-        });
-
-        if (sockets.length !== 0) {
-            await this.messageManager.sendMessageToSocket(message, sockets[0]);
-        }
-    }
-
-    async providerContextUpdate() {
-        const subscribedPeers = this.socketManager.topicIndex.get(this.topic);
-        if (!subscribedPeers) return;
-
-        this.updateProvideList();
-
-        for (const publicKey of this.providers) {
-            if (subscribedPeers.has(publicKey)) {
-                await this.requestTreeFromProvider(publicKey);
-            } else {
-                this.connectionManager.connectWith(publicKey);
-            }
-        }
-    }
-
-    removeAllProviders() {
-        for (const [provider, request] of this.pendingRequests) {
-            this.reassignSlice(provider, request.startLeaf, request.endLeaf);
-        }
-
-        this.pendingRequests.clear();
-        this.providers = [];
-        this.inFlightLeafs.clear();
-    }
-
-    removeProvider(publicKey) {
-        if (this.pendingRequests.has(publicKey)) {
-            const req = this.pendingRequests.get(publicKey);
-            this.reassignSlice(publicKey, req.startLeaf, req.endLeaf);
-            this.pendingRequests.delete(publicKey);
-        }
-    }
-
-    async onTreeResponseHandler(responseMessage) {
-        if (responseMessage.topic !== this.topic) return;
-
-        const { tree, lastRequestableLeaf, replyNonce } = responseMessage.payload;
-        if (!this.treeRequestNonces.includes(replyNonce)) return;
-        if (tree.rootHash !== this.rootHash) return;
-
-        this.providerLastRequestableLeaf.set(responseMessage.publicKey, lastRequestableLeaf);
-
-        if (this.tree) return; // already have tree
-
-        this.tree = tree;
-
-        const height = tree.levels.length - 1;
-        this.leafCount = tree.levels[height].length;
-        this.completedLeafs = new Array(this.leafCount).fill(false);
-
-        // create the new download record based on the received tree response
-        const parsed = parseFilePath(this.spaceFilePath);
-        const { registryId } = await createDownloadRecord(this.db, {
-            tempFilePath: this.tempFilePath,
-            finalDestination: this.finalDestination,
-            spaceId: this.spaceId,
-            spacePath: parsed.dir,
-            spaceFilename: parsed.filename,
             rootHash: this.rootHash,
-            leafCount: this.leafCount,
-            height: height
+            publicKey: credentials.publicKey,
+            secretKey: credentials.secretKey
         });
 
-        this.registryId = registryId;
-        this.fileHandler = await openFile(this.tempFilePath);
+        try {
+            const sockets = this.socketManager.getConnectedSockets({
+                peers: [publicKey], topics: [this.topic]
+            });
 
-        if (!this.downloadStarted) {
-            await this.beginDownloading();
+            if (sockets.length === 0) {
+                this.connectionManager.connectWith(publicKey);
+                return;
+            }
+
+            await this.messageManager.sendMessageToSocket(message, sockets[0]);
+            this.pendingRequests.set(message.nonce, publicKey);
+
+        } catch (error) {
+            logger.warn("Failed to send SpaceFileTreeRequest", {
+                publicKey,
+                spaceFilePath: this.spaceFilePath,
+                rootHash: this.rootHash
+            });
+
+            this.pendingRequests.delete(message.nonce);
+
         }
     }
 
-    async beginDownloading() {
-        if (this.downloadStarted || this.downloadComplete) return;
-        if (!this.tree || !this.fileHandler) {
-            logger.warn('Cannot begin download: tree or fileHandler missing');
-            return;
+    /**
+     * Validates an incoming SpacefileTreeResponse for valid tree and relevance to rootHash.
+     * @param {Object} message
+     * @return {{ succeed: Boolean, reason: String, publicKey: String, tree: Object, lastRequestableLeaf: number }}
+     */
+    verify(message) {
+        if (message.topic !== this.topic) {
+            return { succeed: false, reason: 'message topic mismatch' };
         }
 
-        this.downloadStarted = true;
-        // Set window size: e.g., up to 50 MB
-        const maxWindowBytes = 50 * 1024 * 1024; // 50 MB
-        const fileSize = await this.fileHandler.stat().then(s => s.size);
-        const windowBytes = Math.min(fileSize, maxWindowBytes);
-        this.windowSizeLeaves = Math.ceil(windowBytes / DEFAULT_CHUNK_SIZE) + 10;
+        const { tree, lastRequestableLeaf, replyNonce } = message.payload;
 
-        await this.scheduleWindow();
+        if (this.pendingRequests.get(replyNonce) !== message.publicKey) {
+            return { succeed: false, reason: 'umatched message nonce' };
+        }
+
+        this.pendingRequests.delete(replyNonce);
+
+        if (tree.rootHash !== this.rootHash) {
+            return { succeed: false, reason: 'tree rootHash mismatch' };
+        }
+
+        const verification = verifyMerkleTree(tree);
+        if (!verification.isValid) {
+            return { succeed: false, reason: verification.reason };
+        }
+
+        return {
+            succeed: true,
+            reason: 'verification succeed',
+            publicKey: message.publicKey,
+            tree: tree,
+            lastRequestableLeaf: lastRequestableLeaf
+        };
+    }
+}
+
+export class LeafDeliveryScheduler {
+    constructor({
+        sessionManager,
+        socketManager,
+        messageManager,
+        connectionManager,
+        ProviderList,
+        topic,
+        spaceFilePath,
+        chunkLeaves,
+        requestTimeoutMs,
+        getDownloadKey
+    }) {
+        this.sessionManager = sessionManager;
+        this.socketManager = socketManager;
+        this.messageManager = messageManager;
+        this.connectionManager = connectionManager;
+        this.ProviderList = ProviderList;
+        this.topic = topic;
+        this.spaceFilePath = spaceFilePath;
+        this.chunkLeaves = chunkLeaves;
+        this.requestTimeoutMs = requestTimeoutMs;
+        this.getDownloadKey = getDownloadKey;
+
+        /**
+         * Queue the leaf index ranges pending for assignment.
+         * @type {Array<[number, number]>}
+         * 
+         * Each elemnt is a range of `[startLeaf, endLeaf]` which represents leaves that
+         * have not yet been assigned to any provider.
+         */
+        this.queue = [];               // [[startLeaf, endLeaf], ...] ascending, not yet assigned
+        this.assignments = new Map();  // publicKey -> { start, end, remaining: Set<leaf>, requestedAt }
     }
 
-    async scheduleWindow() {
-        if (this.downloadComplete) return;
+    get settings() {
+        return this.sessionManager.getDownloadConfig();
+    }
 
-        const start = this.nextExpectedLeaf;
-        if (start >= this.leafCount) {
-            await this.finishDownload();
-            return;
+    /** Initialize the internal queue */
+    seed(startLeaf, endLeaf) {
+        this.queue = startLeaf <= endLeaf ? [[startLeaf, endLeaf]] : [];
+    }
+
+    /**
+     * Checks if the provider has any assigned delivery.
+     * @param {String} publicKey 
+     * @returns {Boolean}
+     */
+    isIdle(publicKey) {
+        return !this.assignments.has(publicKey);
+    }
+
+    /**
+     * Picks and returns the publicKey of the first provider that is:
+     * 1. idle with no assigments
+     * 2. maintains the minimum expected leaf index.
+     * @param {Number} minLeafIndex 
+     * @returns {String}
+     */
+    pickIdleProvider(minLeafIndex) {
+        for (const [publicKey, info] of this.ProviderList.entries()) {
+            if (!this.isIdle(publicKey)) continue;
+            if (info.lastRequestableLeaf === undefined) continue;
+            if (info.lastRequestableLeaf < minLeafIndex) continue;
+
+            return publicKey;
         }
 
-        const end = Math.min(start + this.windowSizeLeaves, this.leafCount);
+        return null;
+    }
 
-        const availableLeaves = [];
-        for (let i = start; i < end; i++) {
-            if (!this.buffer.has(i) && !this.inFlightLeafs.has(i)) {
-                availableLeaves.push(i);
+    /**
+     * Returns the provider publicKey that is assigned to deliver that specific leaf index.
+     * @param {Number} leafIndex 
+     * @returns {String|null}
+     */
+    getProviderForLeaf(leafIndex) {
+        for (const [publicKey, assignments] of this.assignments) {
+            if (leafIndex >= assignments.start && leafIndex <= assignments.end) {
+                return publicKey;
             }
         }
 
-        if (availableLeaves.length === 0) {
-            // All leaves in window are already in flight or buffered; wait for writes to progress
-            return;
-        }
+        return null;
+    }
 
-        // Get list of active providers (those with lastRequestableLeaf >= start)
-        const activeProviders = this.providers.filter(p => {
-            const maxLeaf = this.providerLastRequestableLeaf.get(p);
-            return maxLeaf !== undefined && maxLeaf >= start;
-        });
+    /**
+     * Set state that a lead has arrived and free its provider once the assignment is fully complete.
+     * @param {Number} leafIndex - the arrived leaf index.
+     */
+    markDelivered(leafIndex) {
+        const publicKey = this.getProviderForLeaf(leafIndex);
+        if (!publicKey) return;
 
-        if (activeProviders.length === 0) {
-            // No providers available; wait for provider context update
-            return;
-        }
+        const assignment = this.assignments.get(publicKey);
+        assignment.remaining.delete(leafIndex);
 
-        const slices = this.distributeLeaves(availableLeaves, activeProviders);
-
-        for (const [provider, leafIndices] of slices) {
-            if (leafIndices.length === 0) continue;
-            const startLeaf = leafIndices[0];
-            const endLeaf = leafIndices[leafIndices.length - 1];
-            await this.requestSlice(provider, startLeaf, endLeaf);
+        if (assignment.remaining.size === 0) {
+            this.assignments.delete(publicKey);
         }
     }
 
-    distributeLeaves(leaves, providers) {
-        const totalWeight = providers.reduce((sum, p) => {
-            const perf = this.providerPerformance.get(p) || 100; // default 100ms
-            const weight = 1 / (perf + 1); // avoid division by zero
-            return sum + weight;
-        }, 0);
+    /**
+     * Distribute queued ranges to idle providers.
+     */
+    assign() {
+        while (this.queue.length > 0) {
+            const [rangeStart] = this.queue[0];
+            const publicKey = this.pickIdleProvider(rangeStart);
 
-        let idx = 0;
-        const slices = new Map();
-        let remaining = leaves.length;
+            if (!publicKey) break;
 
-        for (const provider of providers) {
-            const perf = this.providerPerformance.get(provider) || 100;
-            const weight = 1 / (perf + 1);
-            const count = Math.floor((weight / totalWeight) * leaves.length);
-            const sliceLeaves = leaves.slice(idx, idx + count);
-            idx += count;
-            remaining -= count;
-            if (sliceLeaves.length > 0) {
-                slices.set(provider, sliceLeaves);
+            const [start, rangeEnd] = this.queue.shift();
+            const providerLimit = this.ProviderList.get(publicKey).lastRequestableLeaf;
+            const maximumAllowedChunkSize = start + this.settings.assignedChunkSize;
+            const end = Math.min(rangeEnd, providerLimit, maximumAllowedChunkSize);
+
+            if (end < rangeEnd) {
+                this.queue.unshift([end + 1, rangeEnd``]);
             }
+
+            this.assignRange(publicKey, start, end);
         }
-
-        // Distribute any remaining leaves to the fastest provider (or round-robin)
-        if (remaining > 0 && idx < leaves.length) {
-            // Assign remaining to the provider with best performance (lowest avg time)
-            let best = providers[0];
-            let bestPerf = this.providerPerformance.get(best) || Infinity;
-            for (const p of providers) {
-                const perf = this.providerPerformance.get(p) || Infinity;
-                if (perf < bestPerf) {
-                    bestPerf = perf;
-                    best = p;
-                }
-            }
-            const extra = leaves.slice(idx);
-            if (slices.has(best)) {
-                slices.get(best).push(...extra);
-            } else {
-                slices.set(best, extra);
-            }
-        }
-
-        return slices;
     }
 
-    async requestSlice(provider, startLeaf, endLeaf) {
-        if (this.pendingRequests.has(provider)) {
-            return;
-        }
-
-        const maxLeaf = this.providerLastRequestableLeaf.get(provider);
-        if (maxLeaf !== undefined && endLeaf > maxLeaf) {
-            yeap
-            endLeaf = Math.min(endLeaf, maxLeaf);
-            if (startLeaf > endLeaf) return;
-        }
-
-        for (let i = startLeaf; i <= endLeaf; i++) {
-            this.inFlightLeafs.add(i);
-        }
-
+    /**
+     * Sends SpaceFileContentRequest message to provider.
+     * @param {String} publicKey - provider publicKey
+     * @param {Number} start - start leaf index
+     * @param {Number} end - end leaf index
+     * @returns {Promise<void>}
+     */
+    async sendContentRequest(publicKey, start, end) {
+        const credentials = this.sessionManager.getCredentials();
         const message = await createSpaceFileContentRequestMessage({
             topic: this.topic,
             spaceFilePath: this.spaceFilePath,
-            leafStart: startLeaf,
-            leafStop: endLeaf,
-            downloadKey: this.key
+            leafStart: start,
+            leafStop: end,
+            downloadKey: this.getDownloadKey(),
+            publicKey: credentials.publicKey,
+            secretKey: credentials.secretKey
         });
 
-        this.pendingRequests.set(provider, {
-            startLeaf,
-            endLeaf,
-            timestamp: now()
-        });
-
-        const sockets = this.socketManager.getConnectedSockets({
-            peers: [provider],
-            topics: [this.topic]
-        });
-
+        const sockets = this.socketManager.getConnectedSockets({ peers: [publicKey], topics: [this.topic] });
         if (sockets.length === 0) {
-            this.connectionManager.connectWith(provider);
-        }
-        else {
-            await this.messageManager.sendMessageToSocket(message, sockets[0]);
-        }
-    }
-
-    async handleChunk(leafIndex, chunk) {
-        if (this.downloadComplete) return;
-        if (leafIndex < 0 || leafIndex >= this.leafCount) {
-            logger.warn(`Invalid leaf index ${leafIndex}`);
+            this.connectionManager.connectWith(publicKey);
             return;
         }
 
-        if (this.buffer.has(leafIndex)) {
-            return;
-        }
-
-        this.buffer.set(leafIndex, chunk);
-        this.inFlightLeafs.delete(leafIndex);
-
-        await this.tryWrite();
-        await this.scheduleWindow();
+        await this.messageManager.sendMessageToSocket(message, sockets[0]);
     }
 
-    async tryWrite() {
-        let wrote = 0;
-        while (this.buffer.has(this.nextExpectedLeaf)) {
-            const chunk = this.buffer.get(this.nextExpectedLeaf);
-            const offset = this.nextExpectedLeaf * DEFAULT_CHUNK_SIZE;
-            await this.fileHandler.write(chunk, 0, chunk.length, offset);
+    /**
+     * Create new assigment delivery range to provider.
+     * @param {String} publicKey 
+     * @param {Number} start 
+     * @param {Number} end 
+     */
+    assignRange(publicKey, start, end) {
+        const remaining = new Set();
+        for (let leaf = start; leaf <= end; leaf++) {
+            remaining.add(leaf);
+        }
 
-            await updateDownloadRecord(this.db, {
-                registryId: this.registryId,
-                leafIndex: this.nextExpectedLeaf,
-                leafContent: chunk,
-                fileHandler: this.fileHandler
+        this.assignments.set(publicKey, { start, end, remaining, requestedAt: now() });
+        const requestPromise = this.sendContentRequest(publicKey, start, end);
+
+        requestPromise
+            .catch(error => {
+                logger.warn(`Failed to request SpaceFileContentRequest`, {
+                    publicKey,
+                    range: { start, end },
+                    message,
+                    error
+                });
             });
 
-            this.buffer.delete(this.nextExpectedLeaf);
-            this.nextExpectedLeaf++;
-            wrote++;
-        }
+        return requestPromise;
+    }
 
-        if (wrote > 0) {
-            if (this.nextExpectedLeaf >= this.leafCount) {
-                await this.finishDownload();
+    requeue(assigment) {
+        const leaves = [...assigment.remaining].sort((a, b) => a - b);
+        if (leaves.length === 0) return;
+
+        const ranges = [];
+        let start = leaves[0];
+        let previous = leaves[0];
+
+        for (let index = 1; index < leaves.length; index++) {
+            if (leaves[index] === previous + 1) {
+                previous = leaves[index];
+                continue;
             }
+
+            ranges.push([start, previous]);
+            start = leaves[index];
+            previous = leaves[index];
         }
+
+        ranges.push([start, previous]);
+
+        this.queue.push(...ranges);
+        this.queue.sort((a, b) => a[0] - b[0]);
     }
 
-    async finishDownload() {
-        if (this.downloadComplete) return;
-        this.downloadComplete = true;
-        this.downloadStarted = false;
+    releaseProvider(publicKey) {
+        const assignment = this.assignments.get(publicKey);
+        if (!assignment) return;
 
-        if (this.fileHandler) {
-            await closeFile(this.fileHandler);
-            this.fileHandler = null;
-        }
-
-        await setDownloadAsComplete(this.db, this.registryId);
-        await this.stop();
-    }
-
-    checkTimeouts() {
-        const now = Date.now();
-        for (const [provider, req] of this.pendingRequests.entries()) {
-            if (now - req.timestamp > this.requestTimeout) {
-                this.reassignSlice(provider, req.startLeaf, req.endLeaf);
-
-                this.pendingRequests.delete(provider);
-                this.updateProviderPerformance(provider, this.requestTimeout * 2);
-            }
-        }
-    }
-
-    reassignSlice(provider, startLeaf, endLeaf) {
-        const missing = [];
-        for (let i = startLeaf; i <= endLeaf; i++) {
-            if (!this.buffer.has(i) && !this.inFlightLeafs.has(i)) {
-                missing.push(i);
-            }
-        }
-        if (missing.length === 0) return;
-
-        for (let i = startLeaf; i <= endLeaf; i++) {
-            this.inFlightLeafs.delete(i);
-        }
-
-        this.scheduleWindow();
-    }
-
-    updateProviderPerformance(provider, responseTime) {
-        // Simple exponential moving average
-        const old = this.providerPerformance.get(provider) || 100;
-        const alpha = 0.3;
-        const newAvg = alpha * responseTime + (1 - alpha) * old;
-        this.providerPerformance.set(provider, newAvg);
-    }
-
-    async onSpaceHashList(context) {
-        const { message, topics } = context;
-        if (!this.providers.includes(message.publicKey)) return;
-        if (topics.includes(this.topic)) {
-            await this.requestTreeFromProvider(message.publicKey);
-        }
-    }
-
-    updateProvideList() {
-        const spaceFiles = this.spaceFileListManager.get(this.topic);
-        const fileEntry = spaceFiles?.[this.spaceFilePath];
-        if (!fileEntry) {
-            this.removeAllProviders();
-            return;
-        }
-
-        const variants = fileEntry[this.rootHash];
-        if (!variants) {
-            this.removeAllProviders();
-            return;
-        }
-
-        const newProviders = Object.keys(variants.peers);
-        const oldSet = new Set(this.providers);
-
-        for (const old of oldSet) {
-            if (!newProviders.includes(old)) {
-                this.removeProvider(old);
-            }
-        }
-
-        this.providers = newProviders;
+        this.assignments.delete(publicKey);
+        this.requeue(assignment);
     }
 }
 
