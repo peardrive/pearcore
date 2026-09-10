@@ -110,7 +110,7 @@ describe('Space File Protocols', () => {
             const fileOneRecord = await createRecord({
                 topic: spaceTopicHash,
                 path: '/file1.txt',
-                rootHash: 'hash1',
+                rootHash: 'a'.repeat(10),
                 timestamp: 1000,
                 publicKey: secondary.publicKey,
                 secretKey: secondary.secretKey
@@ -124,7 +124,7 @@ describe('Space File Protocols', () => {
             const fileTwoRecord = await createRecord({
                 ...fileOneRecord,
                 path: '/file2.txt',
-                rootHash: 'hash2',
+                rootHash: 'b'.repeat(10),
             });
 
             primary.manager.spaceFileList.add(fileOneRecord);
@@ -156,7 +156,7 @@ describe('Space File Protocols', () => {
             const primaryFiles = primary.manager.spaceFileList.get(spaceTopicHash);
             expect(primaryFiles['/file1.txt']).toBeDefined();
 
-            const file1Peers = primaryFiles['/file1.txt']['hash1'].peers;
+            const file1Peers = primaryFiles['/file1.txt']['a'.repeat(10)].peers;
             expect(file1Peers[secondary.publicKey].timestamp).toBe(2000);
 
             const standbyCalls = standby.socket.write.mock.calls;
@@ -175,7 +175,7 @@ describe('Space File Protocols', () => {
             const initialRecord = await createRecord({
                 topic: spaceTopicHash,
                 path: '/file1.txt',
-                rootHash: 'hash1',
+                rootHash: 'a'.repeat(10),
                 timestamp: 1000,
                 publicKey: secondary.publicKey,
                 secretKey: secondary.secretKey
@@ -186,7 +186,7 @@ describe('Space File Protocols', () => {
             const removeRecord = await createRecord({
                 topic: spaceTopicHash,
                 path: '/file1.txt',
-                rootHash: 'hash1',
+                rootHash: 'a'.repeat(10),
                 timestamp: 2000, // newer than the existing 1000
                 publicKey: secondary.publicKey,
                 secretKey: secondary.secretKey
