@@ -1923,6 +1923,33 @@ export class SpaceFileManager {
     }
 
     /**
+     * Add new file to local file registry.
+     * @param {Object} space 
+     * @param {Number} space.id
+     * @param {String} spaceFilePath 
+     * @param {String} fileSourcePath 
+     */
+    async addLocalFile(space, spaceFilePath, fileSourcePath) {
+        const parsed = parseFilePath(spaceFilePath);
+        const registryId = await this.localFileRegistry.add({
+            spaceId: space.id,
+            spacePath: parsed.dir,
+            spaceFilename: parsed.filename,
+            fileSourcePath: fileSourcePath
+        });
+
+        return registryId;
+    }
+
+    /**
+     * Remove local file registry.
+     * @param {Number} registryId - Local file registry ID
+     */
+    async removeLocalFile(registryId) {
+        await this.localFileRegistry.delete(registryId);
+    }
+
+    /**
      * Creates new download task.
      * @param {Object} space - Space object instance including ID.
      * @param {String} spaceFilePath - Full space file path.
