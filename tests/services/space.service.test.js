@@ -35,27 +35,32 @@ describe('spaceService', () => {
     })
 
     describe('update', () => {
-        it('should updates the space and propagate changes to connected peers', async () => {
-            const [primaryCore, secondaryCore] = await Promise.all([
+        let primaryCore;
+        let secondaryCore;
+        let space;
+
+        beforeEach(async () => {
+            [primaryCore, secondaryCore] = await Promise.all([
                 factory.createCore(),
                 factory.createCore()
             ]);
 
-            const space = await primaryCore.space.create({
+            space = await primaryCore.space.create({
                 spaceName: 'original',
                 permissionBroadcast: false
             });
 
-            await factory.condition(async (core, success) => {
-                core.emitter.on(EVENTS.SpaceSync, () => success(), { once: true });
-                
-                try {
-                    await core.space.join(space.sharelink);
-                } catch(error) { /* Do nothing, timeout will handle it. */ }
+            await secondaryCore.space.join(space.sharelink);
+            await new Promise(resolve => {
+                secondaryCore.emitter.on(EVENTS.SpaceSync, () => {
+                    resolve();
+                });
+            });
+        });
 
-            }, { excludeIndices: [0] });
+        it('should updates the space and propagate changes to connected peers', async () => {
 
-            const [ initialSecondarySpaceInstance ] = await secondaryCore.space.list();
+            const [initialSecondarySpaceInstance] = await secondaryCore.space.list();
 
             expect(initialSecondarySpaceInstance.permissionBroadcast).toBe(false);
 
@@ -67,8 +72,8 @@ describe('spaceService', () => {
 
             }, { excludeIndices: [0] });
 
-            const [ updatedSecondarySpaceInstance ] = await secondaryCore.space.list();
-            
+            const [updatedSecondarySpaceInstance] = await secondaryCore.space.list();
+
             expect(updatedSecondarySpaceInstance.permissionBroadcast).toBe(true);
             expect(updatedSecondarySpaceInstance.toObject()).toMatchObject(updatedSpace.toObject());
         });

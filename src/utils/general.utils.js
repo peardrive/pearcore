@@ -61,11 +61,42 @@ export function validateHexString(str) {
  * @param {string} filepath - space file path
  * @returns {Boolean}
  */
-export function validateFilePath(filepath) {
-    if (typeof filepath !== 'string') return false;
-    // Allow: /filename.ext or /dir/subdir/file.ext
-    // Disallow empty, relative, or special chars
-    return /^\/[a-zA-Z0-9_.-]+(\/[a-zA-Z0-9_.-]+)*$/.test(filepath);
+import path from 'path';
+
+/**
+ * Validate a virtual file path.
+ * - Allows optional leading slash (will be stripped for internal checks)
+ * - Rejects control characters, backslashes, empty segments, and '.' / '..'
+ * - Limits length to prevent abuse
+ * - Accepts any printable UTF‑8 characters (extendable)
+ *
+ * @param {string} filepath - The path to validate
+ * @param {number} maxLength - Maximum allowed length (default 2048)
+ * @returns {boolean} - True if valid
+ */
+export function validateFilePath(filepath, maxLength = 2048) {
+  if (typeof filepath !== 'string') return false;
+
+  const trimmed = filepath.trim();
+  if (trimmed.length === 0 || trimmed.length > maxLength) return false;
+
+  if (/[\x00-\x1f\x7f\\]/.test(trimmed)) return false;
+
+  const normalized = path.posix.normalize(trimmed);
+
+  const withoutLeading = normalized.startsWith('/') ? normalized.slice(1) : normalized;
+  const clean = withoutLeading.endsWith('/') ? withoutLeading.slice(0, -1) : withoutLeading;
+
+  if (clean.length === 0) return false;
+
+  const segments = clean.split('/');
+
+  for (const seg of segments) {
+    if (seg.length === 0) return false;
+    if (seg === '.' || seg === '..') return false;
+  }
+
+  return true;
 }
 
 /**
