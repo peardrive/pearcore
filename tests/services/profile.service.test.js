@@ -1,7 +1,7 @@
 import * as EVENTS from '../../src/constants/events.constants.js';
 import { describe, it, beforeEach, afterEach, expect } from "vitest";
 import { CoreFactory } from "../factory.js";
-import { buildTestProfilePayload } from "../general.utils";
+import { buildTestProfilePayload } from "../general.utils.js";
 
 describe('ProfileService', () => {
     let factory = null;

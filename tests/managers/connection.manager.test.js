@@ -1,7 +1,7 @@
 import * as EVENTS from '../../src/constants/events.constants.js';
 import { describe, it, beforeEach, afterEach, expect } from "vitest";
-import { startBootstrapper } from "../../src/utils/network.utils";
-import { buildTestSpacePayload, createManagerInstance, getRandomPort } from "../general.utils";
+import { startBootstrapper } from "../../src/utils/network.utils.js";
+import { buildTestSpacePayload, createManagerInstance, getRandomPort } from "../general.utils.js";
 
 const killBootstapper = (bootstrapper) => {
     bootstrapper.bootstrapperNode.destroy();

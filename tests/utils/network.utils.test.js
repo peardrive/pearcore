@@ -1,8 +1,8 @@
 import os from 'os';
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { connectSwarm, getIPv4, joinSwarmTopic, startBootstrapper } from "../../src/utils/network.utils";
-import { edKeyPairFromSeed, generateRandomSecretKey, hex, hexToUint8, hash } from '../../src/utils/crypto.utils';
-import { getRandomPort } from '../general.utils';
+import { connectSwarm, getIPv4, joinSwarmTopic, startBootstrapper } from "../../src/utils/network.utils.js";
+import { edKeyPairFromSeed, generateRandomSecretKey, hex, hexToUint8, hash } from '../../src/utils/crypto.utils.js';
+import { getRandomPort } from '../general.utils.js';
 
 describe('P2P networking', () => {
     describe('getIPv4', () => {

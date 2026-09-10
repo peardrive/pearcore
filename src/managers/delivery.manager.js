@@ -2,7 +2,7 @@ import { DEFAULT_CHUNK_SIZE } from '../constants/global.constants.js';
 import * as EVENTS from '../constants/events.constants.js';
 import * as MESSAGES from '../constants/messages.constants.js';
 import { createChild } from "../logger.js";
-import { hexToUint8 } from '../utils/crypto.utils';
+import { hexToUint8 } from '../utils/crypto.utils.js';
 import { getFileChunk } from '../utils/files.utils.js';
 import { closeFile, openFile } from '../utils/system.utils.js';
 import { FrameTypes } from './multiplexer.manager.js';

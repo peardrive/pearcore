@@ -5,7 +5,7 @@ import {
     getLeafCount,
     validateMerkleTree,
     verifyMerkleTree
-} from "../../src/utils/merkletree.utils";
+} from "../../src/utils/merkletree.utils.js";
 
 function createStream(chunks) {
     return Readable.from(chunks);

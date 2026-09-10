@@ -8,7 +8,7 @@ import {
 } from "../../src/utils/message.utils.js";
 import { createBaseMessage } from "../../src/utils/protocol.utils.js";
 import { createTempDatabase, generateKeypair } from "../general.utils.js";
-import { now } from "../../src/utils/general.utils";
+import { now } from "../../src/utils/general.utils.js";
 import { hex } from "../../src/utils/crypto.utils.js";
 
 const createMessage = async (overrides = {}) => {

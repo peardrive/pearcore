@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
-import { createManagerInstance } from "../general.utils";
-import { createBaseMessage } from "../../src/utils/protocol.utils";
-import { now } from "../../src/utils/general.utils";
+import { createManagerInstance } from "../general.utils.js";
+import { createBaseMessage } from "../../src/utils/protocol.utils.js";
+import { now } from "../../src/utils/general.utils.js";
 
 describe('ThrottleManager', () => {
     it('should exist within manager stack', async () => {

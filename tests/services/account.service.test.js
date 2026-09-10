@@ -1,7 +1,7 @@
 import { describe, it, beforeEach, afterEach, expect } from 'vitest';
 import { createCore } from '../../src/core';
-import { createAccount } from '../../src/utils/accounts.utils';
-import { makeTempDir, cleanup } from '../general.utils';
+import { createAccount } from '../../src/utils/accounts.utils.js';
+import { makeTempDir, cleanup } from '../general.utils.js';
 
 describe('AccountService', () => {
     let core;
