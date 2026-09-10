@@ -1441,8 +1441,6 @@ export class SequentialWriter {
         if (this.buffer.has(leafIndex)) return false;
         this.buffer.set(leafIndex, chunk);
 
-        console.log('adding buffer: ', leafIndex)
-
         return true;
     }
 
@@ -1791,7 +1789,6 @@ export class SpaceDownloadTask {
         if (this.downloadComplete) return;
         this.downloadComplete = true;
 
-        console.log('finish is being called.')
         await setDownloadAsComplete(this.db, this.registryId);
         await this.stop();
     }
@@ -1806,13 +1803,11 @@ export class SpaceDownloadTask {
         if (chunkHash !== leafHashes[leafIndex].hash) return;
 
         const staged = this.writer.stage(leafIndex, chunk);
-        console.log("staged state: ", staged);
         if (!staged) return;
 
         this.scheduler.markDelivered(leafIndex);
 
         const { status } = await this.writer.flush();
-        console.log('status: ', status);
         if (status === 'complete') {
             await this.finish();
             return;
@@ -1838,7 +1833,6 @@ export class SpaceDownloadTask {
             this.scheduler.assign();
         } catch (error) {
             logger.warn(error);
-            console.log(error)
         } finally {
             this._heartbeatRunning = false;
         }
