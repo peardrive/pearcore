@@ -1,17 +1,18 @@
 import path from "path";
-import { EventEmitter } from "node:events";
-import { describe, expect, it, beforeEach, afterEach, vi } from "vitest";
 import * as EVENTS from '../../src/constants/events.constants.js';
-import { getSpaceTopicHash } from "../../src/utils/space.utils.js";
+import { describe, expect, it, beforeAll, afterAll, beforeEach, afterEach, vi } from "vitest";
 import { CoreFactory } from "../factory.js";
 import { cleanup, createP2PNetwork, generateRandomFile, makeTempDir } from "../general.utils.js";
-import { FileEventBroadcaster, LocalFileRegistry, ProviderList, SpaceFileListManager, SpaceTreePuller } from "../../src/managers/file.manager.js";
+import { FileEventBroadcaster, LeafDeliveryScheduler, LocalFileRegistry, ProviderList, SpaceFileListManager, SpaceTreePuller } from "../../src/managers/file.manager.js";
 import { now } from "../../src/utils/general.utils.js";
 import { createSpaceFileRecordSignature } from "../../src/utils/protocol.utils.js";
-import { generateFileTreeRecord, createWatcher, createfileRegistryRecord, queryFileRegistryRecords, createDownloadRecord, getTemporarySourcePathForSpaceFile, getFileRegistryRecord, getFileMetaHashFromSource } from "../../src/utils/files.utils.js";
-import { createFileStream, deleteFile, fileExists, getFileSize } from "../../src/utils/system.utils.js";
+import { generateFileTreeRecord, queryFileRegistryRecords, createDownloadRecord, getTemporarySourcePathForSpaceFile, getFileRegistryRecord, getFileMetaHashFromSource } from "../../src/utils/files.utils.js";
+import { closeFile, createFileStream, deleteFile, fileExists, getFileSize } from "../../src/utils/system.utils.js";
 import { generateMerkleTree } from "../../src/utils/merkletree.utils.js";
-import { SessionManager } from "../../src/managers/session.manager.js";
+import { hex, randomNonce } from "../../src/utils/crypto.utils.js";
+import { parseFilePath } from "../../src/utils/parsers.utils.js";
+import { getSpaceTopicHash } from "../../src/utils/space.utils.js";
+import { createReadStream } from "fs";
 
 
 const createSignedEvent = async event => {
@@ -873,12 +874,6 @@ describe("ProviderList", () => {
     const ROOT_HASH = 'hash01';
     const TOPIC = "topic1";
 
-    const fileListWith = (peer) => ({
-        [SPACE_FILE_PATH]: {
-            [ROOT_HASH]: { peer }
-        }
-    });
-
     let publicKey;
     let spaceFileListManager;
     let onDrop;
@@ -1100,5 +1095,356 @@ describe('SpaceTreePuler', () => {
         it('should return true for a partial provider (advertised leaf below leafCount - 1)', () => {
             expect(puller.shouldRequest(primaryCore.publicKey, { lastRequestableLeaf: 5 }, 10)).toBe(true);
         });
+    });
+});
+
+describe('LeafDeliveryScheduler', () => {
+
+    let spaceFilePath = 'document.txt';
+    let localFilePath = './file.bin';
+    let rootHash;
+    let factory;
+    let primaryCore;
+    let providerCore;
+    let space;
+    let tempDirectory;
+    let scheduler;
+
+    const setupCore = async (core, params) => {
+        const { rootHash } = params;
+        const spaceFileListManager = core.managers.spaceFileList;
+
+        core.managers.session.session.set('files.broadcastThrottleTime', 0);
+
+        const fileEventBroadcaster = new FileEventBroadcaster(
+            core.emitter,
+            {
+                sessionManager: core.managers.session,
+                socketManager: core.managers.sockets,
+                messageManager: core.managers.message
+            }
+        );
+
+        const localFileRegistry = new LocalFileRegistry(
+            core.emitter,
+            {
+                sessionManager: core.managers.session,
+                spaceFileListManager: core.managers.spaceFileList,
+                fileEventBroadcaster: fileEventBroadcaster
+            }
+        );
+
+        await localFileRegistry.init();
+
+        const providerList = new ProviderList({
+            spaceFileListManager: core.managers.spaceFileList,
+            topic: space.topicHash,
+            spaceFilePath: spaceFilePath,
+            rootHash: rootHash,
+            onDrop: () => { } // void
+        });
+
+        return {
+            ...core,
+            spaceFileListManager,
+            fileEventBroadcaster,
+            localFileRegistry,
+            providerList
+        };
+    };
+
+    beforeAll(async () => {
+        factory = new CoreFactory();
+        await factory.init();
+
+        tempDirectory = await makeTempDir();
+        localFilePath = path.join(tempDirectory, localFilePath);
+        await generateRandomFile(localFilePath, 1); // 1MB - 4 chunks
+
+        const tree = await generateMerkleTree({
+            stream: createFileStream(localFilePath),
+            size: await getFileSize(localFilePath)
+        });
+
+        rootHash = tree.rootHash;
+
+        const core = await factory.createCore('primary');
+        space = await core.space.create({ spaceName: 'deliveryApp' });
+        primaryCore = await setupCore(core, { rootHash });
+
+        const provider = await factory.createCore('provider');
+        providerCore = await setupCore(provider, { rootHash });
+
+        await new Promise(resolve => {
+            providerCore.emitter.on(EVENTS.SpaceSync, () => { resolve() });
+            providerCore.space.join(space.sharelink);
+        });
+
+        const parsed = parseFilePath(spaceFilePath);
+        // index and broadcast the local file
+        await providerCore.localFileRegistry.add({
+            spaceId: space.id,
+            spacePath: parsed.dir,
+            spaceFilename: parsed.filename,
+            fileSourcePath: localFilePath
+        });
+
+        await waitForEvent(primaryCore, EVENTS.SpaceFileEvent);
+
+        primaryCore.providerList.refresh();
+        // manually pass the lastRequestableLeaf parameter for the providerList
+        primaryCore.providerList.setAdvertisedLeaf(providerCore.publicKey, 4);
+    });
+
+    beforeEach(async () => {
+        const downloadKey = hex(randomNonce());
+
+        scheduler = new LeafDeliveryScheduler({
+            sessionManager: primaryCore.managers.session,
+            socketManager: primaryCore.managers.sockets,
+            messageManager: primaryCore.managers.message,
+            connectionManager: primaryCore.managers.connection,
+            providerList: primaryCore.providerList,
+            topic: space.topicHash,
+            spaceFilePath: spaceFilePath,
+            downloadKey: downloadKey
+        });
+    });
+
+    afterEach(() => {
+        // beforeAll wires providerCore's advertised leaf to 4 once but some tests below bump it
+        // or inject extra providers for isolation. therefore put it back so test order doesn't matter.
+        primaryCore.providerList.setAdvertisedLeaf(providerCore.publicKey, 4);
+        primaryCore.providerList.providers.delete('injected-partial-coverage-provider');
+        primaryCore.providerList.providers.delete('injected-full-coverage-provider');
+    });
+
+    afterAll(async () => {
+        await primaryCore.localFileRegistry.stop();
+        await providerCore.localFileRegistry.stop();
+        await factory.cleanup();
+        await cleanup(tempDirectory);
+    });
+
+    describe('assign', () => {
+        it('should assign a provider according to the advertised lastRequestableLeaf', async () => {
+            scheduler.seed(0, 1000); // the range is 4 chunks (256KB each)
+            scheduler.assign();
+
+            const publicKey = providerCore.publicKey;
+            const queue = scheduler.queue;
+            const assignment = scheduler.assignments.get(publicKey);
+
+            expect(queue.length).toBe(1);
+            expect(queue[0]).toEqual([5, 1000]);
+            expect(scheduler.assignments.size).toBe(1);
+            expect(assignment.remaining.size).toBe(5); // couting from index 0 to 4
+        });
+
+        it('should leave the queue untouched when no known provider can currently serve it', () => {
+            scheduler.seed(100, 200);
+            scheduler.assign();
+
+            expect(scheduler.queue).toEqual([[100, 200]]); // queue with single range in it
+            expect(scheduler.assignments.size).toBe(0);
+        });
+    });
+
+    describe('markDelivered', () => {
+        it('should mark leavs for the provider and free it once every leaf has arrived', () => {
+            scheduler.seed(0, 4);
+            scheduler.assign();
+
+            scheduler.markDelivered(0);
+            scheduler.markDelivered(1);
+            scheduler.markDelivered(2);
+            scheduler.markDelivered(3);
+
+            expect(scheduler.assignments.has(providerCore.publicKey)).toBe(true);
+
+            scheduler.markDelivered(4);
+            expect(scheduler.assignments.has(providerCore.publicKey)).toBe(false);
+        });
+    });
+
+    describe('getProviderForLeaf', () => {
+        it('should report the assigned provider for a leaf inside its range', () => {
+            scheduler.seed(0, 4);
+            scheduler.assign();
+
+            expect(scheduler.getProviderForLeaf(2)).toBe(providerCore.publicKey);
+        });
+
+        it('should return null for a leaf that is not assigned to any provider', () => {
+            expect(scheduler.getProviderForLeaf(999)).toBeNull();
+        });
+    });
+
+    describe('releaseProvider', () => {
+        it('should remove to assignment record and requeue the leaves', () => {
+            scheduler.seed(0, 4);
+            scheduler.assign();
+
+            scheduler.markDelivered(0);
+            scheduler.markDelivered(1); // 2, 3, 4 still remains
+
+            scheduler.releaseProvider(providerCore.publicKey);
+
+            expect(scheduler.assignments.has(providerCore.publicKey)).toBe(false);
+            expect(scheduler.queue).toEqual([[2, 4]]);
+        });
+    });
+
+    describe('reclaimStalled', () => {
+        it('should not touch an assignment that is not yet stale', async () => {
+            scheduler.seed(0, 4);
+            scheduler.assign();
+
+            // providerCore's assignment is fresh
+            await expect(scheduler.reclaimStalled()).resolves.toBeUndefined();
+            expect(scheduler.assignments.has(providerCore.publicKey)).toBe(true);
+        });
+
+        it('should not reclaim when the only provider alternative covers just part of the remaining range', async () => {
+            // setting a fake provider with only half the required leaf range
+            const fakeProvider = 'injected-partial-coverage-provider';
+            primaryCore.providerList.providers.set(
+                fakeProvider,
+                { lastRequestableLeaf: 2 }
+            );
+
+            scheduler.seed(0, 4);
+            scheduler.assign();
+
+            const assignment = scheduler.assignments.get(providerCore.publicKey);
+            assignment.requestedAt = Date.now() - 999999; // force it stale
+
+            await scheduler.reclaimStalled();
+
+            // The reclaim should be ignored because the fake provider 
+            // doesn't carry the full leaf range coverage
+            expect(scheduler.assignments.has(providerCore.publicKey)).toBe(true);
+            expect(scheduler.assignments.has(fakeProvider)).toBe(false);
+            expect(scheduler.queue).toEqual([]);
+        });
+
+        it('should reclaim and fully reassign a stalled assignment once an alternative covers the entire remaining range', async () => {
+            primaryCore.providerList.providers.set('injected-full-coverage-provider', { lastRequestableLeaf: 90 });
+
+            scheduler.seed(0, 4);
+            scheduler.assign(); // providerCore takes [0, 4]
+
+            const assignment = scheduler.assignments.get(providerCore.publicKey);
+            assignment.requestedAt = Date.now() - 999999; // force it stale
+
+            await scheduler.reclaimStalled();
+
+            scheduler.assign();
+
+            expect(scheduler.assignments.has(providerCore.publicKey)).toBe(false);
+            const newAssignment = scheduler.assignments.get('injected-full-coverage-provider');
+            expect(newAssignment).toBeDefined();
+            expect([newAssignment.start, newAssignment.end]).toEqual([0, 4]); // whole range should be assigned to new provider
+            expect(scheduler.queue).toEqual([]);
+        });
+    });
+});
+
+describe('SpaceDownloadTask', () => {
+    const SPACE_FILE_PATH = "/document.txt"
+    let factory;
+    let providerCore, downloaderCore;
+    let space;
+    let temporaryDirectory;
+    let providerFilePath, downloadFinalPath;
+    let rootHash;
+    let leafCount;
+    let tree;
+
+    beforeAll(async () => {
+        factory = new CoreFactory();
+        await factory.init();
+
+        providerCore = await factory.createCore('provider');
+        downloaderCore = await factory.createCore('downloader');
+
+        space = await providerCore.space.create({ spaceName: 'download-space' });
+
+        // let provider and the primary cores connect
+        await new Promise((resolve) => {
+            downloaderCore.emitter.once(EVENTS.SpaceSync, resolve);
+            downloaderCore.space.join(space.sharelink);
+        });
+
+        temporaryDirectory = await makeTempDir();
+        providerFilePath = path.join(temporaryDirectory, 'source.bin');
+        downloadFinalPath = path.join(temporaryDirectory, 'downloaded.bin');
+
+        await generateRandomFile(providerFilePath, 1); // 1MB
+
+        // generate the original Merkle tree for the source file
+        const size = await getFileSize(providerFilePath);
+        const stream = createFileStream(providerFilePath);
+        tree = await generateMerkleTree({ stream, size });
+        rootHash = tree.rootHash;
+        leafCount = tree.leafCount || tree.levels[tree.levels.length - 1].length;
+
+        // create the local file registry for the provider
+        const parsed = parseFilePath(SPACE_FILE_PATH);
+        // index and broadcast the local file
+        await providerCore.managers.spaceFiles.localFileRegistry.add({
+            spaceId: space.id,
+            spacePath: parsed.dir,
+            spaceFilename: parsed.filename,
+            fileSourcePath: providerFilePath
+        });
+
+        await waitForEvent(downloaderCore, EVENTS.SpaceFileEvent);
+    });
+
+    afterAll(async () => {
+        await factory.cleanup();
+        await cleanup(temporaryDirectory);
+    });
+
+    beforeEach(async () => {
+        const downloadTasks = downloaderCore.managers.spaceFiles.downloadTasks;
+        for (const [key, task] of downloadTasks) {
+            await task.stop();
+        }
+        downloadTasks.clear();
+
+        const session = downloaderCore.managers.session;
+        session.session.set('download.heartbeatInterval', 200);
+        session.session.set('download.requestTimeout', 500);
+        // small to force multiple requests
+        session.session.set('download.assignedChunkSize', 2);
+        session.session.set('files.broadcastThrottleTime', 0);
+    });
+
+    it('should throw if start is called before setTask or setRecord', async () => {
+        const spaceFileManager = downloaderCore.managers.spaceFiles;
+        const task = spaceFileManager.createDownloadTask();
+        await expect(task.start()).rejects.toThrow('Task initialization failed. Call setRecord() or setTask() first.');
+    });
+
+    it('should successfully download a file from a provider', async () => {
+        const spaceFileManager = downloaderCore.managers.spaceFiles;
+
+        const key = await spaceFileManager.download(space, SPACE_FILE_PATH, rootHash, downloadFinalPath);
+        const downloadTask = spaceFileManager.downloadTasks.get(key);
+
+        await vi.waitFor(() => {
+            expect(downloadTask.downloadComplete).toBe(true);
+        }, { timeout: 5000, interval: 100 });
+
+
+        const size = await getFileSize(downloadFinalPath);
+        const handler = await createReadStream(downloadFinalPath);
+        const { rootHash: finalRootHash } = await generateMerkleTree({ stream: handler, size });
+
+        await closeFile(handler);
+
+        expect(finalRootHash).toBe(rootHash);
     });
 });

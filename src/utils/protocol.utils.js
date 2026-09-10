@@ -622,6 +622,7 @@ const validateEvent = event => {
         if (!isString(filepath) || !validateFilePath(filepath)) return false;
         if (!isString(publicKey) || publicKey.length !== 64) return false;
         if (!validateTimestamp(timestamp)) return false;
+        if (!validateHexString(rootHash)) return false;
         if (
             !isString(signature) ||
             signature.length !== 128 ||

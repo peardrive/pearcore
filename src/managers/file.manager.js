@@ -1,13 +1,13 @@
 import * as EVENTS from '../constants/events.constants.js';
-import { DEFAULT_CHUNK_SIZE } from '../constants/global.constants.js';
-import { isDefined, now } from "../utils/general.utils.js";
+import { isDefined, isNumber, now } from "../utils/general.utils.js";
 import { getSpace, getSpaceTopicHash, getSpaceToTopicMap } from "../utils/space.utils.js";
 import { closeFile, createFileStream, deleteFile, fileExists, getFileSize, openFile, pathJoin } from "../utils/system.utils.js";
 import {
     createSpaceFileEventMessage,
     createSpaceFileRecordSignature,
     createSpaceFileTreeRequestMessage,
-    createSpaceFileContentRequestMessage
+    createSpaceFileContentRequestMessage,
+    createSpaceFileContentCancelMessage
 } from "../utils/protocol.utils.js";
 import {
     deleteFileRecord,
@@ -24,13 +24,14 @@ import {
     getTemporarySourcePathForSpaceFile,
     createDownloadRecord,
     listDownloadRecords,
-    setDownloadAsComplete
+    setDownloadAsComplete,
+    updateDownloadRecord
 } from "../utils/files.utils.js";
 import { generateMerkleTree, verifyMerkleTree } from '../utils/merkletree.utils.js';
 import { parseFilePath } from '../utils/parsers.utils.js';
 import { publicKeyIsAllowedToRead } from '../utils/policy.utils.js';
 import { createChild } from '../logger.js';
-import { hex, randomNonce } from '../utils/crypto.utils.js';
+import { hex, hash, randomNonce } from '../utils/crypto.utils.js';
 
 const logger = createChild('FileManager');
 
@@ -524,8 +525,6 @@ export class LocalFileRegistry {
                 rootHash = registries[0].rootHash;
             }
 
-            const registryIds = registries.map(reg => reg.id);
-
             for (const registry of registries) {
                 const spaceFilePath = pathJoin(registry.spacePath, registry.spaceFilename);
                 const spaceTopicHash = spaceTopicMap.get(registry.spaceId);
@@ -552,10 +551,9 @@ export class LocalFileRegistry {
         }
 
         this.watcher = await createWatcher(sourcePaths);
-        this.watcher.on(WatchTypes.CHANGE, (filePath) => this.onChangeEvent(filePath));
-        this.watcher.on(WatchTypes.DELETE, (filePath) => this.onDeleteEvent(filePath));
+        this.watcher.on(WatchTypes.CHANGE, this.onChangeEvent);
+        this.watcher.on(WatchTypes.DELETE, this.onDeleteEvent);
     }
-
 
     /**
      * Add a new file registry for a local file.
@@ -667,13 +665,14 @@ export class LocalFileRegistry {
     }
 
     async stop() {
-        if (this.watcher) {
-            await this.watcher.close();
-            this.watcher = null;
-        }
-
         for (const [filePath, entry] in this.backoffStates.entries()) {
             clearTimeout(entry.timeout);
+        }
+
+        if (this.watcher) {
+            this.watcher.removeAllListeners();
+            await this.watcher.close();
+            this.watcher = null;
         }
 
         this.pendingAfterIndex.clear();
@@ -972,7 +971,7 @@ export class ProviderList {
     }
 
     /**
-     * 
+     * set lastRequestableLeaf parameter for the provider
      * @param {String} publicKey - Peer's publicKey
      * @param {Number} lastRequestableLeaf - The last leaf index the provider maintains.
      */
@@ -1112,23 +1111,19 @@ export class LeafDeliveryScheduler {
         socketManager,
         messageManager,
         connectionManager,
-        ProviderList,
+        providerList,
         topic,
         spaceFilePath,
-        chunkLeaves,
-        requestTimeoutMs,
-        getDownloadKey
+        downloadKey,
     }) {
         this.sessionManager = sessionManager;
         this.socketManager = socketManager;
         this.messageManager = messageManager;
         this.connectionManager = connectionManager;
-        this.ProviderList = ProviderList;
+        this.providerList = providerList;
         this.topic = topic;
         this.spaceFilePath = spaceFilePath;
-        this.chunkLeaves = chunkLeaves;
-        this.requestTimeoutMs = requestTimeoutMs;
-        this.getDownloadKey = getDownloadKey;
+        this.downloadKey = downloadKey;
 
         /**
          * Queue the leaf index ranges pending for assignment.
@@ -1139,6 +1134,7 @@ export class LeafDeliveryScheduler {
          */
         this.queue = [];               // [[startLeaf, endLeaf], ...] ascending, not yet assigned
         this.assignments = new Map();  // publicKey -> { start, end, remaining: Set<leaf>, requestedAt }
+        this.penalties = new Map(); // publicKey -> counter
     }
 
     get settings() {
@@ -1167,15 +1163,22 @@ export class LeafDeliveryScheduler {
      * @returns {String}
      */
     pickIdleProvider(minLeafIndex) {
-        for (const [publicKey, info] of this.ProviderList.entries()) {
+        let optimalProvider = null;
+        let highestPenalty = null;
+
+        for (const [publicKey, info] of this.providerList.entries()) {
             if (!this.isIdle(publicKey)) continue;
             if (info.lastRequestableLeaf === undefined) continue;
             if (info.lastRequestableLeaf < minLeafIndex) continue;
 
-            return publicKey;
+            const penalty = this.penalties.get(publicKey) || 0;
+            if (highestPenalty === null || penalty < highestPenalty) {
+                optimalProvider = publicKey;
+                highestPenalty = penalty;
+            }
         }
 
-        return null;
+        return optimalProvider;
     }
 
     /**
@@ -1210,7 +1213,9 @@ export class LeafDeliveryScheduler {
     }
 
     /**
-     * Distribute queued ranges to idle providers.
+     * General method to distribute queued ranges to idle providers.
+     * - This method assigns a range of leafs to each provider based on their lastRequestableLeaf value. 
+     * - The maximum allowed range assigned to single provider is capped with `settings.assignedChunkSize`.
      */
     assign() {
         while (this.queue.length > 0) {
@@ -1220,12 +1225,12 @@ export class LeafDeliveryScheduler {
             if (!publicKey) break;
 
             const [start, rangeEnd] = this.queue.shift();
-            const providerLimit = this.ProviderList.get(publicKey).lastRequestableLeaf;
+            const providerLimit = this.providerList.get(publicKey).lastRequestableLeaf;
             const maximumAllowedChunkSize = start + this.settings.assignedChunkSize;
             const end = Math.min(rangeEnd, providerLimit, maximumAllowedChunkSize);
 
             if (end < rangeEnd) {
-                this.queue.unshift([end + 1, rangeEnd``]);
+                this.queue.unshift([end + 1, rangeEnd]);
             }
 
             this.assignRange(publicKey, start, end);
@@ -1246,7 +1251,7 @@ export class LeafDeliveryScheduler {
             spaceFilePath: this.spaceFilePath,
             leafStart: start,
             leafStop: end,
-            downloadKey: this.getDownloadKey(),
+            downloadKey: this.downloadKey,
             publicKey: credentials.publicKey,
             secretKey: credentials.secretKey
         });
@@ -1259,6 +1264,27 @@ export class LeafDeliveryScheduler {
 
         await this.messageManager.sendMessageToSocket(message, sockets[0]);
     }
+
+    /**
+     * Send SpaceFileContentCancel message to provider.
+     * @param {String} publicKey - provider publicKey
+     * @returns {Promise<void>}
+     */
+    async sendCancelRequest(publicKey) {
+        const credentials = await this.sessionManager.getCredentials();
+        const message = await createSpaceFileContentCancelMessage({
+            topic: this.topic,
+            downloadKey: this.downloadKey,
+            publicKey: credentials.publicKey,
+            secretKey: credentials.secretKey
+        });
+
+        const sockets = this.socketManager.getConnectedSockets({ peers: [publicKey], topics: [this.topic] });
+        if (sockets.length > 0) {
+            await this.messageManager.sendMessageToSocket(message, sockets[0]);
+        }
+    }
+
 
     /**
      * Create new assigment delivery range to provider.
@@ -1280,7 +1306,6 @@ export class LeafDeliveryScheduler {
                 logger.warn(`Failed to request SpaceFileContentRequest`, {
                     publicKey,
                     range: { start, end },
-                    message,
                     error
                 });
             });
@@ -1288,6 +1313,24 @@ export class LeafDeliveryScheduler {
         return requestPromise;
     }
 
+    /**
+     * Release the delivery assigment from the provider.
+     * @param {String} publicKey - Provider publicKey
+     * @returns 
+     */
+    releaseProvider(publicKey) {
+        const assignment = this.assignments.get(publicKey);
+        if (!assignment) return;
+
+        this.assignments.delete(publicKey);
+        this.requeue(assignment);
+    }
+
+    /**
+     * Move the provider's delivery assigment as free-to-pick range into queue.
+     * The new inserted range in queue then can be picked by other providers.
+     * @param {Object} assigment - The provider's assignment record.
+     */
     requeue(assigment) {
         const leaves = [...assigment.remaining].sort((a, b) => a - b);
         if (leaves.length === 0) return;
@@ -1313,12 +1356,492 @@ export class LeafDeliveryScheduler {
         this.queue.sort((a, b) => a[0] - b[0]);
     }
 
-    releaseProvider(publicKey) {
-        const assignment = this.assignments.get(publicKey);
-        if (!assignment) return;
+    /**
+     * Cancels any assignment that is past the timeout. This method proceeds only when
+     * there is an idle provider available as alternative.
+     * @returns {Promise<void>}
+     */
+    async reclaimStalled() {
+        if (this.assignments.size === 0) return;
+        // maximum allowed time to finish assigment
+        const staleBefore = now() - this.settings.requestTimeoutMs;
 
-        this.assignments.delete(publicKey);
-        this.requeue(assignment);
+        for (const [publicKey, assignment] of [...this.assignments.entries()]) {
+            if (assignment.requestedAt > staleBefore) continue;
+
+            const latestRemaining = Math.max(...assignment.remaining);
+            const canBeReleased = [...this.providerList.entries()].some(
+                ([providerPublicKey, info]) =>
+                    providerPublicKey != publicKey &&
+                    this.isIdle(providerPublicKey) &&
+                    info.lastRequestableLeaf !== undefined &&
+                    info.lastRequestableLeaf >= latestRemaining
+            );
+
+            // skip the process if the alternative provider
+            // doesn't carry the full coverage for the leaf range.
+            if (!canBeReleased) continue;
+
+            // sending SpaceFileContentCancel to relieve provider from delivery
+            await this.sendCancelRequest(publicKey);
+            // free the leaf range and feed back to queue
+            this.assignments.delete(publicKey);
+            this.requeue(assignment);
+
+            const currentPenalty = this.penalties.get(publicKey) || 0;
+            this.penalties.set(publicKey, currentPenalty + 1);
+        }
+    }
+}
+
+export class SequentialWriter {
+    constructor({
+        db,
+        nextExpectedLeaf,
+        registryId,
+        fileHandler,
+        leafCount
+    }) {
+        this.db = db;
+        this.nextExpectedLeaf = nextExpectedLeaf || 0;
+        this.registryId = registryId || null;
+        this.fileHandler = fileHandler || null;
+        this.leafCount = leafCount || null;
+
+        this.buffer = new Map();
+    }
+
+    open({ registryId, fileHandler, leafCount }) {
+        this.registryId = registryId;
+        this.fileHandler = fileHandler;
+        this.leafCount = leafCount;
+    }
+
+    isReady() {
+        return (
+            this.fileHandler !== null &&
+            this.registryId !== null &&
+            this.leafCount !== null
+        );
+    }
+
+    /**
+     * Inserts the buffer into the Writer's queue
+     * @param {Number} leafIndex 
+     * @param {Buffer} chunk 
+     */
+    stage(leafIndex, chunk) {
+        if (!this.isReady()) return false;
+        if (
+            !isNumber(leafIndex) ||
+            leafIndex < 0 ||
+            leafIndex >= this.leafCount
+        ) return false;
+
+        if (this.buffer.has(leafIndex)) return false;
+        this.buffer.set(leafIndex, chunk);
+
+        console.log('adding buffer: ', leafIndex)
+
+        return true;
+    }
+
+    /**
+     * Write out any contiguous run starting at nextExpectedLeaf.
+     * @returns {Promise<{ status: 'complete'|'progress'|'idle' }>}
+     */
+    async flush() {
+        let wrote = false;
+
+        while (this.buffer.has(this.nextExpectedLeaf)) {
+            const chunk = this.buffer.get(this.nextExpectedLeaf);
+            this.buffer.delete(this.nextExpectedLeaf);
+
+            await updateDownloadRecord(this.db, {
+                registryId: this.registryId,
+                leafIndex: this.nextExpectedLeaf,
+                leafContent: chunk,
+                fileHandler: this.fileHandler
+            });
+
+            this.nextExpectedLeaf++;
+            wrote = true;
+        }
+
+        if (this.nextExpectedLeaf >= this.leafCount) return { status: 'complete' };
+        return wrote ? { status: 'progress' } : { status: 'idle' };
+    }
+
+    async close() {
+        if (this.fileHandler) {
+            await closeFile(this.fileHandler);
+            this.fileHandler = null;
+        }
+    }
+}
+
+export class SpaceDownloadTask {
+    constructor(emitter, managers) {
+        this.emitter = emitter;
+        this.sessionManager = managers.sessionManager;
+        this.spaceFileListManager = managers.spaceFileListManager;
+        this.messageManager = managers.messageManager;
+        this.socketManager = managers.socketManager;
+        this.connectionManager = managers.connectionManager;
+
+        // identity
+        this.registryId = null;
+        this.spaceId = null;
+        this.topic = null;
+        this.spaceFilePath = null;
+        this.rootHash = null;
+        this.finalDestination = null;
+        this.key = null;
+
+        // file / tree
+        this.tempFilePath = null;
+        this.tree = null;
+        this.leafCount = null;
+        this.nextExpectedLeaf = 0;
+
+        this.downloadComplete = false;
+        this.heartbeatTimer = null;
+        this._heartbeatRunning = false;
+
+        this._onProviderEvent = null;
+        this._onTreeResponse = null;
+        this._onHashList = null;
+
+        this.providerList = null;
+        this.puller = null;
+        this.scheduler = null;
+        this.writer = null;
+    }
+
+    get db() {
+        return this.sessionManager.getDatabase().db;
+    }
+
+    get session() {
+        return this.sessionManager.session;
+    }
+
+    get heartbeatIntervalMs() {
+        return this.session.get('download.heartbeatInterval');
+    }
+
+    get requestTimeoutMs() {
+        return this.session.get('download.requestTimeout');
+    }
+
+    /**
+     * Set the download key used to route incoming stream chunks to this task.
+     * @param {string} key - 24-char hex string.
+     */
+    setKey(key) {
+        this.key = key;
+    }
+
+    getKey() {
+        return this.key;
+    }
+
+    _buildStack() {
+        this.providerList = new ProviderList({
+            spaceFileListManager: this.spaceFileListManager,
+            topic: this.topic,
+            spaceFilePath: this.spaceFilePath,
+            rootHash: this.rootHash,
+            onDrop: publicKey => this.scheduler.releaseProvider(publicKey)
+        });
+
+        this.puller = new SpaceTreePuller({
+            sessionManager: this.sessionManager,
+            socketManager: this.socketManager,
+            messageManager: this.messageManager,
+            connectionManager: this.connectionManager,
+            topic: this.topic,
+            spaceFilePath: this.spaceFilePath,
+            rootHash: this.rootHash
+        });
+
+        this.scheduler = new LeafDeliveryScheduler({
+            sessionManager: this.sessionManager,
+            socketManager: this.socketManager,
+            messageManager: this.messageManager,
+            connectionManager: this.connectionManager,
+            providerList: this.providerList,
+            topic: this.topic,
+            spaceFilePath: this.spaceFilePath,
+            downloadKey: this.key
+        });
+    }
+
+    /**
+     * Resume a download from a previously persisted download record.
+     * @param {Object} record
+     * @param {string} record.finalDestination - Final destination path for the downloaded file.
+     * @param {number} record.lastPushedLeaf - The last pushed leaf into the file.
+     * @param {number} record.registryId - The file registry ID
+     */
+    async setRecord(record) {
+        const { finalDestination, lastPushedLeaf, registryId } = record;
+
+        const registry = await getFileRegistryRecord(this.db, registryId);
+        if (!registry) {
+            throw new Error('Registry not found for the download record');
+        }
+
+        const space = await getSpace(this.db, registry.spaceId);
+        if (!space) {
+            throw new Error(`Registry ${registry.id} references unknown space ${registry.spaceId}`);
+        }
+
+        const exists = await fileExists(registry.fileSourcePath);
+        if (!exists) {
+            throw new Error(`Temporary file missing for download resume: ${registry.fileSourcePath}`);
+        }
+
+        this.registryId = registryId;
+        this.spaceId = registry.spaceId;
+        this.topic = getSpaceTopicHash(space);
+        this.spaceFilePath = pathJoin(registry.spacePath, registry.spaceFilename);
+        this.rootHash = registry.rootHash;
+        this.tempFilePath = registry.fileSourcePath;
+        this.finalDestination = finalDestination;
+        this.leafCount = registry.leafCount;
+        this.nextExpectedLeaf = lastPushedLeaf + 1;
+
+        // reuse the cached tree only if it still matches what the registry expects
+        const savedTree = await getFileTreeRecord(this.db, registryId);
+        if (isDefined(savedTree) && savedTree.rootHash === registry.rootHash) {
+            this.tree = savedTree;
+            this.leafCount = savedTree.leafCount;
+        }
+
+        const fileHandler = await openFile(this.tempFilePath);
+
+        this._buildStack();
+        this.writer = new SequentialWriter({
+            db: this.db,
+            registryId: this.registryId,
+            fileHandler,
+            nextExpectedLeaf: this.nextExpectedLeaf,
+            leafCount: this.leafCount
+        });
+
+        if (this.tree) {
+            this.scheduler.seed(this.nextExpectedLeaf, this.leafCount - 1);
+        }
+    }
+
+
+    /**
+     * Start a brand new download.
+     * @param {Object} params
+     * @param {Object} params.space - The space record object
+     * @param {string} params.spaceFilePath - The virtual file path inside space
+     * @param {string} params.rootHash - root hash of the file 
+     * @param {string} params.finalDestination - Final destination path for the downloaded file
+     */
+    async setTask({ space, spaceFilePath, rootHash, finalDestination }) {
+        this.spaceId = space.id;
+        this.topic = getSpaceTopicHash(space);
+        this.spaceFilePath = spaceFilePath;
+        this.rootHash = rootHash;
+        this.finalDestination = finalDestination;
+
+        const { directory, username } = this.sessionManager.getAccount();
+        this.tempFilePath = getTemporarySourcePathForSpaceFile({
+            root: directory,
+            username,
+            spaceFilePath,
+            rootHash,
+            topic: this.topic
+        });
+
+        this.nextExpectedLeaf = 0;
+
+        this._buildStack();
+        // SequentialWriter cannot be initialized yet
+        // due to lack of tree information.
+        // the instance will be created once tree data has been received
+        this.writer = null;
+    }
+
+    async start() {
+        if (!this.spaceFilePath || !this.rootHash) {
+            throw new Error('Task initialization failed. Call setRecord() or setTask() first.');
+        }
+
+        this._onProviderEvent = () => this.providerList.refresh();
+        this._onTreeResponse = ({ message }) => this.onTreeResponse(message).catch(err => logger.warn(err));
+        this._onHashList = context => this.onSpaceHashList(context).catch(err => logger.warn(err));
+
+        this.emitter.on(EVENTS.SpaceFileEvent, this._onProviderEvent);
+        this.emitter.on(EVENTS.SpaceFileTreeResponse, this._onTreeResponse);
+        this.emitter.on(EVENTS.SpaceHashList, this._onHashList);
+
+        this.providerList.refresh();
+
+        await this.heartbeat();
+        this.heartbeatTimer = setInterval(() => this.heartbeat(), this.heartbeatIntervalMs);
+    }
+
+    async stop() {
+        if (this.heartbeatTimer) {
+            clearInterval(this.heartbeatTimer);
+            this.heartbeatTimer = null;
+        }
+
+        if (this._onProviderEvent) {
+            this.emitter.off(EVENTS.SpaceFileEvent, this._onProviderEvent);
+            this.emitter.off(EVENTS.SpaceFileTreeResponse, this._onTreeResponse);
+            this.emitter.off(EVENTS.SpaceHashList, this._onHashList);
+            this._onProviderEvent = null;
+            this._onTreeResponse = null;
+            this._onHashList = null;
+        }
+
+        await this.writer?.close();
+    }
+
+    /**
+     * Event handlers for SpaceHashList messages received from providers.
+     * @param {Object} params
+     * @param {Object} params.message - Received SpaceHashList message
+     * @param {Array<String>} params.topics - Provider's subscribed topics
+     * @returns {Promise<void>}
+     */
+    async onSpaceHashList({ message, topics }) {
+        if (!this.providerList.has(message.publicKey)) return;
+        if (!topics.includes(this.topic)) return;
+
+        const info = this.providerList.get(message.publicKey);
+        if (this.puller.shouldRequest(message.publicKey, info, this.leafCount)) {
+            await this.puller.request(message.publicKey);
+        }
+    }
+
+    /**
+     * Event handler for SpaceFileTreeResponse message received from providers/
+     * @param {Object} message - Received SpaceFileTreeResponse message
+     * @returns {Promise<void>}
+     */
+    async onTreeResponse(message) {
+        const result = this.puller.verify(message);
+        if (!result.succeed) return;
+
+        const { publicKey, tree, lastRequestableLeaf } = result;
+        this.providerList.setAdvertisedLeaf(publicKey, lastRequestableLeaf);
+
+        if (!this.tree) {
+            await this.adoptTree(tree);
+        }
+
+        this.scheduler.assign();
+    }
+
+    /**
+     * Creates the internal download record and seed the download task.
+     * @param {Object} tree - Merkle tree received from SpaceFileTreeRequest response.
+     */
+    async adoptTree(tree) {
+        this.tree = tree;
+        const height = tree.levels.length - 1;
+        this.leafCount = tree.levels[height].length;
+
+        if (!this.registryId) {
+            const parsed = parseFilePath(this.spaceFilePath);
+            const { registryId } = await createDownloadRecord(this.db, {
+                tempFilePath: this.tempFilePath,
+                finalDestination: this.finalDestination,
+                spaceId: this.spaceId,
+                spacePath: parsed.dir,
+                spaceFilename: parsed.filename,
+                rootHash: this.rootHash,
+                leafCount: this.leafCount,
+                height
+            });
+
+            this.registryId = registryId;
+
+        }
+
+        const fileHandler = await openFile(this.tempFilePath);
+        if (!this.writer) {
+            this.writer = new SequentialWriter({
+                db: this.db,
+                registryId: this.registryId,
+                fileHandler,
+                nextExpectedLeaf: this.nextExpectedLeaf,
+                leafCount: this.leafCount
+            });
+        }
+
+        this.writer.open({ registryId: this.registryId, fileHandler, leafCount: this.leafCount });
+        this.scheduler.seed(this.nextExpectedLeaf, this.leafCount - 1);
+    }
+
+    /**
+     * Set the download task as finished and move the downloaded file into final destination.
+     * @returns {Promise<void>}
+     */
+    async finish() {
+        if (this.downloadComplete) return;
+        this.downloadComplete = true;
+
+        console.log('finish is being called.')
+        await setDownloadAsComplete(this.db, this.registryId);
+        await this.stop();
+    }
+
+    async handleChunk(leafIndex, chunk) {
+        if (this.downloadComplete) return;
+
+        const height = this.tree.levels.length - 1;
+        const leafHashes = this.tree.levels[height];
+        const chunkHash = hex(hash(chunk));
+
+        if (chunkHash !== leafHashes[leafIndex].hash) return;
+
+        const staged = this.writer.stage(leafIndex, chunk);
+        console.log("staged state: ", staged);
+        if (!staged) return;
+
+        this.scheduler.markDelivered(leafIndex);
+
+        const { status } = await this.writer.flush();
+        console.log('status: ', status);
+        if (status === 'complete') {
+            await this.finish();
+            return;
+        }
+
+        this.scheduler.assign();
+    }
+
+    async heartbeat() {
+        if (this._heartbeatRunning || this.downloadComplete) return;
+        this._heartbeatRunning = true;
+
+        try {
+            this.providerList.refresh();
+
+            for (const [publicKey, info] of this.providerList.entries()) {
+                if (this.puller.shouldRequest(publicKey, info, this.leafCount)) {
+                    await this.puller.request(publicKey);
+                }
+            }
+
+            await this.scheduler.reclaimStalled();
+            this.scheduler.assign();
+        } catch (error) {
+            logger.warn(error);
+            console.log(error)
+        } finally {
+            this._heartbeatRunning = false;
+        }
     }
 }
 
@@ -1392,7 +1915,7 @@ export class SpaceFileManager {
             const downloadKey = this.generateDownloadKey();
             spaceDownloadTask.setKey(downloadKey);
             // assign the instance to key in order to map incomming streams to dedicated task instance
-            this.downloadTasks.set(spaceDownloadTask, spaceDownloadTask);
+            this.downloadTasks.set(downloadKey, spaceDownloadTask);
             // load the download record and start the task.
             await spaceDownloadTask.setRecord(task);
             await spaceDownloadTask.start();
@@ -1421,6 +1944,7 @@ export class SpaceFileManager {
         });
 
         await spaceDownloadTask.start();
+        return key;
     }
 
     /**
@@ -1432,14 +1956,14 @@ export class SpaceFileManager {
      */
     async handleIncomingStream(socket, data, info) {
         const keyLength = 12; // 12 bytes
-        const keyBuffer = data.slice(0, keyLength);
+        const keyBuffer = data.subarray(0, keyLength);
         const keyHex = hex(keyBuffer);
 
         const task = this.downloadTasks.get(keyHex);
         if (!task) return;
 
         const leafIndex = data.readUInt32BE(keyLength);
-        const chunk = data.slice(keyLength + 4);
+        const chunk = data.subarray(keyLength + 4);
 
         await task.handleChunk(leafIndex, chunk);
     }
