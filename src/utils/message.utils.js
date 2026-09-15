@@ -257,6 +257,16 @@ export async function queryMessageRecord(db, filters = {}) {
 }
 
 /**
+ * Query all message.nonce parameters from database as an array.
+ * @returns {Promise<String[]>} - Array of 24-char hex strings.
+ */
+export async function getNonces(db) {
+  const query = db.select({ nonce: messages.nonce }).from(messages);
+  const result = await query.all();
+  return result.map(record => record.nonce);
+}
+
+/**
  * Inserts new message record into database only if it doesn't already exist.
  * @param {Object} db - Drizzle database instance.
  * @param {Object} params

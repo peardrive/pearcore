@@ -405,11 +405,11 @@ export async function getSpace(db, spaceId) {
  */
 export async function upsertSpace(db, input) {
   if (!input.signature) {
-    throw new Error('Signature is required for Space upsertion.');
+    throw new Error('Signature is required for space upsertion.');
   }
   const isValid = await verifySpaceSignature(input);
   if (!isValid) {
-    throw new Error('Invalid signature for Space upsertion.');
+    throw new Error('Invalid signature for space upsertion.');
   }
 
   const existingQuery = await querySpace(db, {
@@ -612,6 +612,22 @@ export async function listSpaces(db, opts = {}) {
       };
     })
   );
+}
+
+/**
+ * Returns space topic hashes as an array.
+ * @param {Object} db 
+ * @returns {Promise<string[]>}
+ */
+export async function getTopicList(db) {
+  const spaces = await listSpaces(db);
+  const topics = [];
+
+  for (const space of spaces) {
+    topics.push(getSpaceTopicHash(space))
+  }
+
+  return topics;
 }
 
 /**

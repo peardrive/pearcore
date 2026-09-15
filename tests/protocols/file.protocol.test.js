@@ -1,10 +1,10 @@
+import path from 'path';
 import * as EVENTS from '../../src/constants/events.constants.js';
 import * as MESSAGES from '../../src/constants/messages.constants.js';
 import { describe, it, beforeEach, afterEach, expect } from "vitest";
-import { getSpaceTopicHash } from '../../src/utils/space.utils.js';
+import { createSpaceForPublicKey, getSpace, getSpaceTopicHash, upsertSpace } from '../../src/utils/space.utils.js';
 import { createSpaceFileContentRequestMessage, createSpaceFileEventMessage, createSpaceFileRecordSignature, createSpaceFileTreeRequestMessage, validateSpaceFileTreeResponsePayload } from "../../src/utils/protocol.utils.js";
 import { createP2PNetwork, createConnections, buildTestSpacePayload, unframeJson, makeTempDir, cleanup, generateRandomFile } from '../general.utils.js';
-import path from 'path';
 import { createDownloadRecord, createFileIndexRecord, deleteFileRecord, generateFileTreeRecord, getFileChunk, getFileTreeRecord, queryFileRegistryRecords, updateDownloadRecord } from '../../src/utils/files.utils.js';
 import { generateMerkleTree } from '../../src/utils/merkletree.utils.js';
 import { closeFile, createFileStream, fileExists, getFileSize, openFile, pathJoin } from '../../src/utils/system.utils.js';
@@ -13,13 +13,20 @@ import { FrameTypes } from '../../src/managers/multiplexer.manager.js';
 
 describe('Space File Protocols', () => {
     let primary = null;
+    let primaryDB;
     let secondary = null;
+    let secondaryDB;
     let standby = null;
+    let standbyDB;
     let spaceParams = null;
     let spaceTopicHash = null;
 
     beforeEach(async () => {
         [primary, secondary, standby] = await createP2PNetwork(3);
+
+        primaryDB = primary.manager.session.getDatabase().db;
+        secondaryDB = secondary.manager.session.getDatabase().db;
+        standbyDB = standby.manager.session.getDatabase().db;
 
         spaceParams = await buildTestSpacePayload({
             spaceName: 'TestSpace',
@@ -30,9 +37,10 @@ describe('Space File Protocols', () => {
             broadcastWhitelist: [secondary.publicKey],
         });
 
-        const space = await primary.manager.storage.createSpace(spaceParams, primary.secretKey);
-        await secondary.manager.storage.upsertSpace(space);
-        await standby.manager.storage.upsertSpace(space);
+        const { spaceId } = await createSpaceForPublicKey(primaryDB, spaceParams, primary.secretKey);
+        const space = await getSpace(primaryDB, spaceId);
+        await upsertSpace(secondaryDB, space);
+        await upsertSpace(standbyDB, space);
 
         spaceTopicHash = getSpaceTopicHash(spaceParams);
 
@@ -110,7 +118,7 @@ describe('Space File Protocols', () => {
             const fileOneRecord = await createRecord({
                 topic: spaceTopicHash,
                 path: '/file1.txt',
-                rootHash: 'hash1',
+                rootHash: 'a'.repeat(10),
                 timestamp: 1000,
                 publicKey: secondary.publicKey,
                 secretKey: secondary.secretKey
@@ -124,7 +132,7 @@ describe('Space File Protocols', () => {
             const fileTwoRecord = await createRecord({
                 ...fileOneRecord,
                 path: '/file2.txt',
-                rootHash: 'hash2',
+                rootHash: 'b'.repeat(10),
             });
 
             primary.manager.spaceFileList.add(fileOneRecord);
@@ -156,7 +164,7 @@ describe('Space File Protocols', () => {
             const primaryFiles = primary.manager.spaceFileList.get(spaceTopicHash);
             expect(primaryFiles['/file1.txt']).toBeDefined();
 
-            const file1Peers = primaryFiles['/file1.txt']['hash1'].peers;
+            const file1Peers = primaryFiles['/file1.txt']['a'.repeat(10)].peers;
             expect(file1Peers[secondary.publicKey].timestamp).toBe(2000);
 
             const standbyCalls = standby.socket.write.mock.calls;
@@ -175,7 +183,7 @@ describe('Space File Protocols', () => {
             const initialRecord = await createRecord({
                 topic: spaceTopicHash,
                 path: '/file1.txt',
-                rootHash: 'hash1',
+                rootHash: 'a'.repeat(10),
                 timestamp: 1000,
                 publicKey: secondary.publicKey,
                 secretKey: secondary.secretKey
@@ -186,7 +194,7 @@ describe('Space File Protocols', () => {
             const removeRecord = await createRecord({
                 topic: spaceTopicHash,
                 path: '/file1.txt',
-                rootHash: 'hash1',
+                rootHash: 'a'.repeat(10),
                 timestamp: 2000, // newer than the existing 1000
                 publicKey: secondary.publicKey,
                 secretKey: secondary.secretKey

@@ -55,13 +55,15 @@ export class SpaceFileEventHandler extends BaseProtocolHandler {
     }
 
     async handle(socket, message, info) {
-        const topicMap = await this.storageManager.generateSpaceTopicHashMap();
-        const space = topicMap[message.topic];
+        const localTopicList = await getTopicToSpaceMap(this.db);
+        const spaceId = localTopicList.get(message.topic);
 
-        if (!space) {
+        if (!spaceId) {
             await this.messageManager.reject(socket, message, MESSAGES.SPACE_NOT_FOUND_MESSAGE);
             return;
         }
+
+        const space = await getSpace(this.db, spaceId);
 
         if (!publicKeyIsAllowedToBroadcast(message.publicKey, space)) {
             await this.messageManager.reject(socket, message, MESSAGES.BROADCAST_PERMISSION_NOT_ALLOWED_MESSAGE);
@@ -169,13 +171,15 @@ export class SpaceFileTreeRequestHandler extends BaseProtocolHandler {
             return;
         }
 
-        const topicMap = await this.storageManager.generateSpaceTopicHashMap();
-        const space = topicMap[message.topic];
+        const localTopicList = await getTopicToSpaceMap(this.db);
+        const spaceId = localTopicList.get(message.topic);
 
-        if (!space) {
+        if (!spaceId) {
             await this.messageManager.reject(socket, message, MESSAGES.SPACE_NOT_FOUND_MESSAGE);
             return;
         }
+
+        const space = await getSpace(this.db, spaceId);
 
         if (!publicKeyIsAllowedToRead(message.publicKey, space)) {
             await this.messageManager.reject(socket, message, MESSAGES.BROADCAST_PERMISSION_NOT_ALLOWED_MESSAGE);
@@ -240,13 +244,15 @@ export class SpaceFileTreeResponseHandler extends BaseProtocolHandler {
             return;
         }
 
-        const topicMap = await this.storageManager.generateSpaceTopicHashMap();
-        const space = topicMap[message.topic];
+        const localTopicList = await getTopicToSpaceMap(this.db);
+        const spaceId = localTopicList.get(message.topic);
 
-        if (!space) {
+        if (!spaceId) {
             await this.messageManager.reject(socket, message, MESSAGES.SPACE_NOT_FOUND_MESSAGE);
             return;
         }
+
+        const space = await getSpace(this.db, spaceId);
 
         if (!publicKeyIsAllowedToRead(message.publicKey, space)) {
             await this.messageManager.reject(socket, message, MESSAGES.BROADCAST_PERMISSION_NOT_ALLOWED_MESSAGE);

@@ -8,6 +8,7 @@ import { buildTestSpacePayload, createFakeP2PConnection, unframeJson } from "../
 import { BaseProtocolHandler } from "../../src/protocols/base.js";
 import { hex, randomNonce } from "../../src/utils/crypto.utils.js";
 import { getSpaceTopicHash } from "../../src/utils/space.utils.js";
+import { queryMessageRecord } from "../../src/utils/message.utils.js";
 
 describe('MessageManager', () => {
 
@@ -21,6 +22,7 @@ describe('MessageManager', () => {
         it('should send message to socket', async () => {
             const [manager, socket, info] = await createFakeP2PConnection();
             const { publicKey, secretKey } = manager.session.getCredentials();
+            const db = manager.session.getDatabase().db;
 
             const message = await createSpaceHashListMessage({
                 hashList: [],
@@ -33,7 +35,7 @@ describe('MessageManager', () => {
             session.set('messaging.recordMessagesForEvents', []);
 
             await manager.message.sendMessageToSocket(message, socket);
-            const messageRecords = await manager.storage.queryMessages();
+            const messageRecords = await queryMessageRecord(db, {});
 
             expect(socket.write).toHaveBeenCalled();
             expect(messageRecords).toEqual([]);

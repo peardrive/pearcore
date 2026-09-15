@@ -64,13 +64,11 @@ describe('spaceService', () => {
 
             expect(initialSecondarySpaceInstance.permissionBroadcast).toBe(false);
 
-            let updatedSpace;
+            const updatedSpace = await primaryCore.space.update(space, { permissionBroadcast: true });
 
-            await factory.condition(async (core, success) => {
-                core.emitter.on(EVENTS.SpaceSync, () => success(), { once: true });
-                updatedSpace = await primaryCore.space.update(space, { permissionBroadcast: true });
-
-            }, { excludeIndices: [0] });
+            await new Promise(resolve => {
+                secondaryCore.emitter.on(EVENTS.SpaceSync, () => resolve());
+            });
 
             const [updatedSecondarySpaceInstance] = await secondaryCore.space.list();
 

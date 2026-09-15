@@ -4,11 +4,12 @@ import * as MESSAGES from '../../src/constants/messages.constants.js';
 import { initializeManagers } from "../../src/managers/initialization.js";
 import { createSpaceHashListMessage, createSpaceMessage, createSpaceSyncMessage, encryptPayload } from "../../src/utils/protocol.utils.js";
 import { buildTestSpacePayload, createFakeP2PConnection, unframeJson } from "../general.utils.js";
-import { generateSpaceTopic, getSpaceTopicHash } from "../../src/utils/space.utils.js";
+import { createSpace, createSpaceForPublicKey, generateSpaceTopic, getSpace, getSpaceTopicHash, querySpace, updateSpaceForPublicKey, upsertSpace } from "../../src/utils/space.utils.js";
 import { SpaceSyncHandler } from "../../src/protocols/space.protocol.js";
-import { now } from "../../src/utils/general.utils.js";
+import { now, stripIds } from "../../src/utils/general.utils.js";
 import { hex, randomNonce } from "../../src/utils/crypto.utils.js";
 import { createP2PNetwork, createConnections } from '../general.utils.js';
+import { saveShareLink } from "../../src/utils/sharelink.utils.js";
 
 /**
  * In this test subject we use 4 virtual nodes with different purposes:
@@ -20,7 +21,9 @@ import { createP2PNetwork, createConnections } from '../general.utils.js';
  */
 describe('Space Protocols', () => {
     let primary;
+    let primaryDB;
     let secondary;
+    let secondaryDB;
     let standby;
     let outlier;
     let spaceParams;
@@ -40,6 +43,9 @@ describe('Space Protocols', () => {
 
         spaceTopicHash = getSpaceTopicHash(spaceParams);
         createConnections(spaceTopicHash, [primary, secondary, standby, outlier]);
+
+        primaryDB = primary.manager.session.getDatabase().db;
+        secondaryDB = secondary.manager.session.getDatabase().db;
     })
 
     describe('SpaceHashListHandler', () => {
@@ -123,6 +129,31 @@ describe('Space Protocols', () => {
             expect(response.payload.linkedMessageNonce).toEqual(message.nonce);
             expect(response.payload.reason).toEqual(MESSAGES.NO_RELAY_MESSAGE);
         });
+
+        it('should send back SpaceSync message for common space topic', async () => {
+            const { spaceId } = await createSpaceForPublicKey(primaryDB, {
+                spaceName: 'test',
+                publicKey: primary.publicKey
+            }, primary.secretKey);
+
+            const space = await getSpace(primaryDB, spaceId);
+            const topicHash = getSpaceTopicHash(space);
+            const message = await createSpaceHashListMessage({
+                hashList: [topicHash],
+                publicKey: secondary.publicKey,
+                secretKey: secondary.secretKey
+            });
+
+            await primary.manager.message.handleIncomingMessage(
+                secondary.socket,
+                JSON.stringify(message),
+                secondary.info
+            );
+
+            const callStack = secondary.socket.write.mock.calls
+            const response = JSON.parse(unframeJson(callStack[0][0]));
+            expect(response.payload).toEqual(stripIds(space));
+        });
     })
 
     describe('SpaceSyncHandler', () => {
@@ -138,12 +169,13 @@ describe('Space Protocols', () => {
         })
 
         it('should handle FIRST_ENCOUNTER space sync scenario', async () => {
-            const space = await primary.manager.storage.createSpace(spaceParams, primary.secretKey);
-            await secondary.manager.storage.createShareLink(space);
+            const { spaceId } = await createSpaceForPublicKey(primaryDB, spaceParams, primary.secretKey);
+            const space = await getSpace(primaryDB, spaceId);
+            await saveShareLink(secondaryDB, spaceParams);
 
             const message = await createSpaceSyncMessage({
                 topic: spaceTopicHash,
-                space: space,
+                space: stripIds(space),
                 publicKey: primary.publicKey,
                 secretKey: primary.secretKey
             });
@@ -171,14 +203,15 @@ describe('Space Protocols', () => {
         });
 
         it('should handle INDENTICAL space sync scenario', async () => {
-            const space = await primary.manager.storage.createSpace(spaceParams, primary.secretKey);
+            const { spaceId } = await createSpaceForPublicKey(primaryDB, spaceParams, primary.secretKey);
+            const space = await getSpace(primaryDB, spaceId);
 
             // add space information to the second node to trigger INDETICAL scenario
-            await secondary.manager.storage.upsertSpace(space);
+            await upsertSpace(secondaryDB, space);
 
             const message = await createSpaceSyncMessage({
                 topic: spaceTopicHash,
-                space: space,
+                space: stripIds(space),
                 publicKey: primary.publicKey,
                 secretKey: primary.secretKey
             });
@@ -204,19 +237,21 @@ describe('Space Protocols', () => {
         });
 
         it('should handle LOCAL_SPACE_REQUIRE_UPDATE space sync scenario', async () => {
-            const space = await primary.manager.storage.createSpace(spaceParams, primary.secretKey);
+            const { spaceId } = await createSpaceForPublicKey(primaryDB, spaceParams, primary.secretKey);
+            const space = await getSpace(primaryDB, spaceId);
 
             // add space information to the second node to trigger INDETICAL scenario
-            await secondary.manager.storage.upsertSpace(space);
+            const { spaceId: secondarySpaceId } = await upsertSpace(secondaryDB, space);
             // update the space from the primary to maintain newer timestamp
-            await primary.manager.storage.updateSpace({ ...space, ...newerSpaceParams }, primary.secretKey);
-            const [updatedSpace] = await primary.manager.storage.querySpace({
-                spaceName: space.spaceName,
-                publicKey: space.publicKey,
-                nonce: space.nonce
-            });
+            await updateSpaceForPublicKey(
+                primaryDB,
+                spaceId,
+                { ...space, ...newerSpaceParams }, 
+                primary.secretKey
+            );
 
-            const [secondarySpace] = await secondary.manager.storage.listSpaces();
+            const updatedSpace = await getSpace(primaryDB, spaceId);
+            const secondarySpace = await getSpace(secondaryDB, secondarySpaceId);
 
             // ensure that the primary space has newer timestamp and both 
             // nodes already have the original space stored
@@ -225,7 +260,7 @@ describe('Space Protocols', () => {
 
             const message = await createSpaceSyncMessage({
                 topic: spaceTopicHash,
-                space: updatedSpace,
+                space: stripIds(updatedSpace),
                 publicKey: primary.publicKey,
                 secretKey: primary.secretKey
             });
@@ -238,11 +273,8 @@ describe('Space Protocols', () => {
             expect(actionContext).toBe(SpaceSyncHandler.STATES.LOCAL_SPACE_REQUIRE_UPDATE);
 
             // stored space from the secondary should now be updated
-            const [updatedSecondarySpace] = await secondary.manager.storage.listSpaces();
-            expect(updatedSecondarySpace).toEqual(updatedSpace);
-
-            // no reply back to the primary
-            // expect(primary.socket.write.mock.calls.length).toBe(0);
+            const updatedSecondarySpace = await getSpace(secondaryDB, secondarySpaceId);
+            expect(stripIds(updatedSecondarySpace)).toEqual(stripIds(updatedSpace));
 
             // standby should receive message for update
             const standbyCallStack = standby.socket.write.mock.calls;
@@ -257,20 +289,22 @@ describe('Space Protocols', () => {
         });
 
         it('should handle PEER_REQUIRE_UPDATE space sync scenario', async () => {
-            const space = await primary.manager.storage.createSpace(spaceParams, primary.secretKey);
+            const { spaceId } = await createSpaceForPublicKey(primaryDB, spaceParams, primary.secretKey);
+            const space = await getSpace(primaryDB, spaceId);
             const spaceTopic = generateSpaceTopic(space.spaceName, space.publicKey, space.nonce);
 
             // add space information to the second node to trigger INDETICAL scenario
-            await secondary.manager.storage.upsertSpace(space);
+            const { spaceId: secondarySpaceId } = await upsertSpace(secondaryDB, space);
             // update the space from the primary to maintain newer timestamp
-            await primary.manager.storage.updateSpace({ ...space, ...newerSpaceParams }, primary.secretKey);
-            const [primaryUpdatedSpace] = await primary.manager.storage.querySpace({
-                spaceName: space.spaceName,
-                publicKey: space.publicKey,
-                nonce: space.nonce
-            });
+            await updateSpaceForPublicKey(
+                primaryDB, 
+                spaceId, 
+                { ...space, ...newerSpaceParams }, 
+                primary.secretKey
+            );
 
-            const [secondarySpace] = await secondary.manager.storage.listSpaces();
+            const primaryUpdatedSpace = await getSpace(primaryDB, spaceId);
+            const secondarySpace = await getSpace(secondaryDB, secondarySpaceId);
 
             // ensure that the primary space has newer timestamp and both 
             // nodes already have the original space stored
@@ -279,7 +313,7 @@ describe('Space Protocols', () => {
 
             const message = await createSpaceSyncMessage({
                 topic: spaceTopic,
-                space: secondarySpace,
+                space: stripIds(secondarySpace),
                 publicKey: secondary.publicKey,
                 secretKey: secondary.secretKey
             });
@@ -301,8 +335,8 @@ describe('Space Protocols', () => {
 
             // send primary response back to secondary to update the space data
             await secondary.manager.message.handleIncomingMessage(primary.socket, JSON.stringify(secondaryReceivedMessage), primary.info);
-            const [updatedSecondarySpace] = await secondary.manager.storage.listSpaces();
-            expect(updatedSecondarySpace).toEqual(primaryUpdatedSpace);
+            const updatedSecondarySpace = await getSpace(secondaryDB, secondarySpaceId);
+            expect(stripIds(updatedSecondarySpace)).toEqual(stripIds(primaryUpdatedSpace));
 
             // standby should receive message from secondary
             const standbyCallStack = standby.socket.write.mock.calls;
@@ -319,8 +353,9 @@ describe('Space Protocols', () => {
 
     describe('SpaceMessageHandler', () => {
         it('should broadcast message from allowed publicKey', async () => {
-            const space = await primary.manager.storage.createSpace(spaceParams, primary.secretKey);
-
+            const { spaceId } = await createSpaceForPublicKey(primaryDB, spaceParams, primary.secretKey);
+            const space = await getSpace(primaryDB, spaceId);
+            
             const content = { data: 'hello world' };
             const nonce = hex(randomNonce());
             const encryptedContent = await encryptPayload({

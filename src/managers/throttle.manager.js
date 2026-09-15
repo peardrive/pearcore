@@ -1,15 +1,19 @@
 import { now } from "../utils/general.utils.js";
+import { getNonces } from "../utils/message.utils.js";
 
 export class ThrottleManager {
     constructor(emitter, managers) {
         this.sessionManager = managers.sessionManager;
-        this.storageManager = managers.storageManager
 
         this.messageNonceRecord = new Set();
         this.frequencyRecord = new Map();
         this.quarantine = new Map();
 
         setTimeout(() => this.clearFrequencyRecords(), 1000);
+    }
+
+    get db() {
+        return this.sessionManager.getDatabase().db;
     }
 
     get MAX_FREQUENCY_THROTTLE() {
@@ -25,9 +29,9 @@ export class ThrottleManager {
      * @returns {Promise<void>} Resolves when all records loads into the memory.
      */
     async load() {
-        const messageRecords = await this.storageManager.queryMessages({});
-        for (const message of messageRecords) {
-            this.messageNonceRecord.add(message.nonce);
+        const nonces = await getNonces(this.db);
+        for (const nonce of nonces) {
+            this.messageNonceRecord.add(nonce);
         }
     }
 

@@ -3,6 +3,7 @@ import { eq } from 'drizzle-orm'
 import { brotliCompressSync, brotliDecompressSync } from 'zlib';
 import { sharelinks } from '../database/schemas/sharelink.schema.js';
 import { now } from './general.utils.js';
+import { getSpaceTopicHash } from './space.utils.js';
 
 /**
  * Create a share link for a space.
@@ -112,6 +113,22 @@ export async function queryShareLink(db, {spaceName, publicKey, nonce}) {
   }
 
   return await query;
+}
+
+/**
+ * Returns all sharelink topic hashes as an array.
+ * @param {Object} db - Drizzle database instace.
+ * @returns {Promise<Strin[]>}
+ */
+export async function getShareLinkTopics(db) {
+  const sharelinks = await queryShareLink(db, {});
+  const topics = [];
+
+  for (const sharelink of sharelinks) {
+    topics.push(getSpaceTopicHash(sharelink));
+  }
+
+  return topics;
 }
 
 /**

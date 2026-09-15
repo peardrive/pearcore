@@ -5,6 +5,7 @@ import { createSpaceMessage, encryptPayload } from '../utils/protocol.utils.js';
 import { publicKeyIsAllowedToRead } from '../utils/policy.utils.js';
 import { encryptJSON, hex, randomNonce } from '../utils/crypto.utils.js';
 import { SpaceInstance } from './interface.js';
+import { flushMessageRecord, queryMessageRecord } from '../utils/message.utils.js';
 
 export class MessageService {
     constructor(emitter, { managers }) {
@@ -22,6 +23,10 @@ export class MessageService {
                 catch(error) { console.error(error); } // avoid halt
             }
         })
+    }
+
+    get db() {
+        return this.managers.session.getDatabase().db;
     }
 
     assignCallback(message, callback) {
@@ -54,7 +59,7 @@ export class MessageService {
      * @returns {Promise<Array<Object>>} Array of message records
      */
     async list(filters = {}) {
-        const messages = await this.managers.storage.queryMessages(filters);
+        const messages = await queryMessageRecord(this.db, filters);
         return messages;
     }
 
@@ -84,7 +89,7 @@ export class MessageService {
      * @returns {Promise<Array<Object>>} Array of deleted message records
      */
     async flush(filters = {}) {
-        return await this.managers.storage.flushMessages(filters);
+        return await flushMessageRecord(this.db, filters);
     }
 
     /**
