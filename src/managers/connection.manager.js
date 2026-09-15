@@ -55,15 +55,18 @@ export class ConnectionManager {
             });
 
             socket.on('close', () => {
-                this.socketManager.removeSocket(socket);
-                this.muxManager.cleanup(info);
                 this.emitter.emit(EVENTS.Disconnect, { publicKey });
+                try {
+                    this.socketManager.removeSocket(socket);
+                    this.muxManager.cleanup(info);
+                } catch (error) { } // do nothing
             });
             socket.on('error', (err) => {
-                logger.warn(`Socket connection error from peer ${publicKey}`, { error: err });
-                this.socketManager.removeSocket(socket);
-                this.muxManager.cleanup(info);
                 this.emitter.emit(EVENTS.Disconnect, { publicKey });
+                try {
+                    this.socketManager.removeSocket(socket);
+                    this.muxManager.cleanup(info);
+                } catch(error) {} // do nothing
             })
 
             this.socketManager.addSocket(socket, publicKey, topics);
@@ -163,7 +166,7 @@ export class ConnectionManager {
             const { publicKey, secretKey } = this.sessionManager.getCredentials();
             const spaceTopics = await getTopicList(this.db);
             const sharelinkTopics = await getShareLinkTopics(this.db);
-            const topics = [ ...spaceTopics, ...sharelinkTopics ];
+            const topics = [...spaceTopics, ...sharelinkTopics];
 
             const spaceHashListMessage = await createSpaceHashListMessage({
                 hashList: topics,
