@@ -1,43 +1,39 @@
 import * as EVENTS from '../../src/constants/events.constants.js';
-import * as MESSAGES from '../../src/constants/messages.constants.js';
 import { describe, it, expect, beforeEach } from "vitest";
 import { initializeManagers } from "../../src/managers/initialization.js";
+import { getSpaceTopicHash } from '../../src/utils/space.utils.js';
 import { createProfileUpdateMessage } from "../../src/utils/protocol.utils.js";
-import { createFakeP2PConnection, buildTestProfilePayload } from "../general.utils.js";
+import { buildTestProfilePayload, createP2PNetwork, buildTestSpacePayload, createConnections } from "../general.utils.js";
+import { createProfile, createProfileForPublicKey, getProfileByPublicKey, updateProfileForPublicKey } from '../../src/utils/profile.utils.js';
+import { stripIds } from '../../src/utils/general.utils.js';
 
 
 describe('ProfileProtocolHandler', () => {
     const generalTopicHash = 'a'.repeat(64)
-    let primary = {};
-    let secondary = {};
+    let primary;
+    let primaryDB;
+    let secondary;
+    let secondaryDB;
+    let spaceParams;
+    let spaceTopicHash;
 
     beforeEach(async () => {
-        const [primaryManager, primarySocket, primaryInfo] = await createFakeP2PConnection();
-        const [secondaryManager, secondarySocket, secondaryInfo] = await createFakeP2PConnection();
+        [primary, secondary] = await createP2PNetwork(2);
 
-        const { publicKey: primaryPublicKey, secretKey: primarySecretKey } = primaryManager.session.getCredentials();
-        const { publicKey: secondaryPublicKey, secretKey: secondarySecretKey } = secondaryManager.session.getCredentials();
+        spaceParams = await buildTestSpacePayload({
+            spaceName: 'TestSpace',
+            publicKey: primary.publicKey,
+            permissionRead: 1,
+            permissionBroadcast: 1,
+            readWhitelist: [],
+            broadcastWhitelist: [],
+        });
 
-        // 1:1 connection
-        primaryManager.sockets.addSocket(secondarySocket, secondaryPublicKey, [generalTopicHash]);
-        secondaryManager.sockets.addSocket(primarySocket, primaryPublicKey, [generalTopicHash]);
+        spaceTopicHash = getSpaceTopicHash(spaceParams);
+        createConnections(spaceTopicHash, [primary, secondary]);
 
-
-        primary = {
-            manager: primaryManager,
-            socket: primarySocket,
-            info: primaryInfo,
-            publicKey: primaryPublicKey,
-            secretKey: primarySecretKey
-        };
-
-        secondary = {
-            manager: secondaryManager,
-            socket: secondarySocket,
-            info: secondaryInfo,
-            publicKey: secondaryPublicKey,
-            secretKey: secondarySecretKey
-        }
+        primaryDB = primary.manager.session.getDatabase().db;
+        secondaryDB = secondary.manager.session.getDatabase().db;
     })
 
     it('should exist within the protocol map', () => {
@@ -55,7 +51,7 @@ describe('ProfileProtocolHandler', () => {
 
         const message = await createProfileUpdateMessage({
             profile: profile,
-            topics: [ generalTopicHash ],
+            topics: [generalTopicHash],
             publicKey: primary.publicKey,
             secretKey: primary.secretKey
         });
@@ -69,12 +65,12 @@ describe('ProfileProtocolHandler', () => {
         });
 
         await secondary.manager.message.handleIncomingMessage(primary.socket, JSON.stringify(message), primary.info);
-        const profileRecord = await secondary.manager.storage.getProfileByPublicKey(profile.publicKey);
+        const profileRecord = await getProfileByPublicKey(secondaryDB, profile.publicKey);
 
         expect(eventContext).toBeDefined();
         expect(eventContext).toEqual(message);
 
-        expect(profileRecord).toEqual(message.payload.profile);
+        expect(stripIds(profileRecord)).toEqual(message.payload.profile);
     })
 
     it('should update record base on valid ProfileUpdate message', async () => {
@@ -86,20 +82,26 @@ describe('ProfileProtocolHandler', () => {
         };
 
         // generate the base profile payload in the secondary
-        const originalProfile = await secondary.manager.storage.createProfileForPublicKey(profile, secondary.secretKey);
-        
+        const originalProfile = await createProfileForPublicKey(secondaryDB, profile, secondary.secretKey);
+
         // update the recorded profile payload with new parameters
         const newProfileParams = { ...profile, username: 'alice likes pancake' };
-        await secondary.manager.storage.updateProfileForPublicKey(newProfileParams, secondary.secretKey);
+        await updateProfileForPublicKey(
+            secondaryDB,
+            originalProfile.id,
+            newProfileParams,
+            secondary.secretKey
+        );
+
         // fetch the updated payload from the secondary
-        const updatedProfile = await secondary.manager.storage.getProfileByPublicKey(originalProfile.publicKey);
+        const updatedProfile = await getProfileByPublicKey(secondaryDB, originalProfile.publicKey);
 
         // only store the base profile in the primary to differentiate with the newer one
-        await primary.manager.storage.createProfile(originalProfile);
+        await createProfile(primaryDB, originalProfile);
 
         const message = await createProfileUpdateMessage({
-            profile: updatedProfile,
-            topics: [ generalTopicHash ],
+            profile: stripIds(updatedProfile),
+            topics: [generalTopicHash],
             publicKey: secondary.publicKey,
             secretKey: secondary.secretKey
         });
@@ -111,7 +113,7 @@ describe('ProfileProtocolHandler', () => {
 
         // primary with older profile payload will receive updated profile
         await primary.manager.message.handleIncomingMessage(secondary.socket, JSON.stringify(message), secondary.info);
-        const profileRecord = await primary.manager.storage.getProfileByPublicKey(secondary.publicKey);
+        const profileRecord = await getProfileByPublicKey(primaryDB, secondary.publicKey);
 
         // now the profile payload within the primary should also be updated
         expect(profileRecord).toEqual(updatedProfile);

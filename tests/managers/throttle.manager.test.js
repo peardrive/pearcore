@@ -1,7 +1,8 @@
 import { describe, it, expect } from "vitest";
-import { createManagerInstance } from "../general.utils.js";
-import { createBaseMessage } from "../../src/utils/protocol.utils.js";
-import { now } from "../../src/utils/general.utils.js";
+import { createManagerInstance } from "../general.utils";
+import { createBaseMessage } from "../../src/utils/protocol.utils";
+import { createMessageRecord } from "../../src/utils/message.utils";
+import { now } from "../../src/utils/general.utils";
 
 describe('ThrottleManager', () => {
     it('should exist within manager stack', async () => {
@@ -12,6 +13,7 @@ describe('ThrottleManager', () => {
     describe('load', () => {
         it('should load message records from database', async () => {
             const managers = await createManagerInstance();
+            const { db } = managers.session.getDatabase();
             const { publicKey, secretKey } = managers.session.getCredentials();
 
             const messages = [];
@@ -25,7 +27,7 @@ describe('ThrottleManager', () => {
                 });
 
                 messages.push(message);
-                await managers.storage.saveMessageRecord({
+                await createMessageRecord(db, {
                     message: message,
                     senderPublicKey: publicKey,
                     broadcastTimestamp: now(),

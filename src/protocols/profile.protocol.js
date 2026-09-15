@@ -1,6 +1,6 @@
 import * as MESSAGES from '../constants/messages.constants.js';
 import * as EVENTS from '../constants/events.constants.js';
-import { verifyProfileSignature } from "../utils/profile.utils.js";
+import { createProfile, getProfileByPublicKey, updateProfile, verifyProfileSignature } from "../utils/profile.utils.js";
 import { validateProfileUpdateMessagePayload } from "../utils/protocol.utils.js";
 import { hex } from '../utils/crypto.utils.js';
 import { BaseProtocolHandler } from "./base.js";
@@ -22,14 +22,14 @@ export class ProfileProtocolHandler extends BaseProtocolHandler {
             return;
         }
 
-        const existingProfile = await this.storageManager.getProfileByPublicKey(profile.publicKey);
+        const existingProfile = await getProfileByPublicKey(this.db, profile.publicKey);
         if (!existingProfile) {
-            await this.storageManager.createProfile(profile);
+            await createProfile(this.db, profile);
         }
 
         else if (existingProfile.timestamp < profile.timestamp) {
             // the new profile is newer compared to local record.
-            await this.storageManager.updateProfile(profile);
+            await updateProfile(this.db, existingProfile.id, profile);
         }
 
         this.emit(EVENTS.ProfileUpdate, { info, message });

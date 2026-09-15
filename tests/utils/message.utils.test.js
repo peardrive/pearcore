@@ -4,7 +4,8 @@ import {
     createMessageRecord,
     queryMessageRecord,
     flushMessageRecord,
-    pushMessageToHistory
+    pushMessageToHistory,
+    getNonces
 } from "../../src/utils/message.utils.js";
 import { createBaseMessage } from "../../src/utils/protocol.utils.js";
 import { createTempDatabase, generateKeypair } from "../general.utils.js";
@@ -239,6 +240,17 @@ describe('Message Utilities', () => {
             expect(queryResultUnkown.length).toBe(0);
         })
     })
+
+    describe('getNonces', () => {
+        it('should an array of all message nonces', async () => {
+            const result = await getNonces(db);
+            expect(result.length).toBe(5);
+
+            for (let index = 0; index < 5; index++) {
+                expect(result[index]).toBe(`nonce-index-${index}`);
+            }
+        })
+    });
 
     describe('pushMessageToHistory', () => {
         beforeEach(async () => {

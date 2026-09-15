@@ -18,7 +18,6 @@ const logger = createChild('MessageManager');
 
 export class MessageManager {
     constructor(emitter, managers) {
-        this.storageManager = managers.storageManager;
         this.sessionManager = managers.sessionManager;
         this.throttleManager = managers.throttleManager;
         this.socketManager = managers.socketManager;
@@ -29,8 +28,7 @@ export class MessageManager {
     }
 
     get db() {
-        const { db } = this.sessionManager.getDatabase();
-        return db;
+        return this.sessionManager.getDatabase().db;
     }
 
     get messageConfig() {

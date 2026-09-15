@@ -1,7 +1,8 @@
 import * as EVENTS from '../../src/constants/events.constants.js';
 import { describe, it, beforeEach, afterEach, expect } from "vitest";
-import { startBootstrapper } from "../../src/utils/network.utils.js";
-import { buildTestSpacePayload, createManagerInstance, getRandomPort } from "../general.utils.js";
+import { startBootstrapper } from "../../src/utils/network.utils";
+import { buildTestSpacePayload, createManagerInstance, getRandomPort } from "../general.utils";
+import { upsertSpace } from '../../src/utils/space.utils.js';
 
 const killBootstapper = (bootstrapper) => {
     bootstrapper.bootstrapperNode.destroy();
@@ -31,12 +32,15 @@ describe('ConnectionManager', () => {
         primary.session.setBootstrapperEndpoint(bootstrapperEndpoint);
         secondary.session.setBootstrapperEndpoint(bootstrapperEndpoint);
 
+        const primaryDB = primary.session.getDatabase().db;
+        const secondaryDB = secondary.session.getDatabase().db;
+
         const spaceParams = await buildTestSpacePayload({ spaceName: 'Connection Test' });
 
         // one has space record and the other has sharelink record
         // both should join same topic
-        await primary.storage.upsertSpace(spaceParams);
-        await secondary.storage.createShareLink(spaceParams);
+        await upsertSpace(primaryDB, spaceParams);
+        await upsertSpace(secondaryDB, spaceParams);
 
         let primaryConnected = false;
         let secondaryConnected = false;

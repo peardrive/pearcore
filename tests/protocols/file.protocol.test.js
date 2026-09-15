@@ -1,10 +1,10 @@
+import path from 'path';
 import * as EVENTS from '../../src/constants/events.constants.js';
 import * as MESSAGES from '../../src/constants/messages.constants.js';
 import { describe, it, beforeEach, afterEach, expect } from "vitest";
-import { getSpaceTopicHash } from '../../src/utils/space.utils.js';
+import { createSpaceForPublicKey, getSpace, getSpaceTopicHash, upsertSpace } from '../../src/utils/space.utils.js';
 import { createSpaceFileContentRequestMessage, createSpaceFileEventMessage, createSpaceFileRecordSignature, createSpaceFileTreeRequestMessage, validateSpaceFileTreeResponsePayload } from "../../src/utils/protocol.utils.js";
 import { createP2PNetwork, createConnections, buildTestSpacePayload, unframeJson, makeTempDir, cleanup, generateRandomFile } from '../general.utils.js';
-import path from 'path';
 import { createDownloadRecord, createFileIndexRecord, deleteFileRecord, generateFileTreeRecord, getFileChunk, getFileTreeRecord, queryFileRegistryRecords, updateDownloadRecord } from '../../src/utils/files.utils.js';
 import { generateMerkleTree } from '../../src/utils/merkletree.utils.js';
 import { closeFile, createFileStream, fileExists, getFileSize, openFile, pathJoin } from '../../src/utils/system.utils.js';
@@ -13,13 +13,20 @@ import { FrameTypes } from '../../src/managers/multiplexer.manager.js';
 
 describe('Space File Protocols', () => {
     let primary = null;
+    let primaryDB;
     let secondary = null;
+    let secondaryDB;
     let standby = null;
+    let standbyDB;
     let spaceParams = null;
     let spaceTopicHash = null;
 
     beforeEach(async () => {
         [primary, secondary, standby] = await createP2PNetwork(3);
+
+        primaryDB = primary.manager.session.getDatabase().db;
+        secondaryDB = secondary.manager.session.getDatabase().db;
+        standbyDB = standby.manager.session.getDatabase().db;
 
         spaceParams = await buildTestSpacePayload({
             spaceName: 'TestSpace',
@@ -30,9 +37,10 @@ describe('Space File Protocols', () => {
             broadcastWhitelist: [secondary.publicKey],
         });
 
-        const space = await primary.manager.storage.createSpace(spaceParams, primary.secretKey);
-        await secondary.manager.storage.upsertSpace(space);
-        await standby.manager.storage.upsertSpace(space);
+        const { spaceId } = await createSpaceForPublicKey(primaryDB, spaceParams, primary.secretKey);
+        const space = await getSpace(primaryDB, spaceId);
+        await upsertSpace(secondaryDB, space);
+        await upsertSpace(standbyDB, space);
 
         spaceTopicHash = getSpaceTopicHash(spaceParams);
 

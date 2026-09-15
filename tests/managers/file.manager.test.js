@@ -1,4 +1,5 @@
 import path from "path";
+import { createReadStream } from "fs";
 import * as EVENTS from '../../src/constants/events.constants.js';
 import { describe, expect, it, beforeAll, afterAll, beforeEach, afterEach, vi } from "vitest";
 import { CoreFactory } from "../factory.js";
@@ -11,8 +12,6 @@ import { closeFile, createFileStream, deleteFile, fileExists, getFileSize } from
 import { generateMerkleTree } from "../../src/utils/merkletree.utils.js";
 import { hex, randomNonce } from "../../src/utils/crypto.utils.js";
 import { parseFilePath } from "../../src/utils/parsers.utils.js";
-import { getSpaceTopicHash } from "../../src/utils/space.utils.js";
-import { createReadStream } from "fs";
 
 
 const createSignedEvent = async event => {
