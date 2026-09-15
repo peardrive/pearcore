@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { buildTestSpacePayload } from "../general.utils.js";
-import { publicKeyIsAllowedToRead, publicKeyIsAllowedToBroadcast, spaceShouldEncryptMessages } from "../../src/utils/policy.utils";
+import { publicKeyIsAllowedToRead, publicKeyIsAllowedToBroadcast, spaceShouldEncryptMessages } from "../../src/utils/policy.utils.js";
 
 describe('Policy Utilities', () => {
     describe('spaceShouldEncryptMessages', () => {

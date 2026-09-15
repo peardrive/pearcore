@@ -4,6 +4,7 @@ import { CoreFactory } from "../factory.js";
 import { buildTestProfilePayload } from "../general.utils";
 import { createProfile, getProfileByPublicKey, updateProfileForPublicKey } from '../../src/utils/profile.utils.js';
 
+
 describe('ProfileService', () => {
     let factory = null;
 
