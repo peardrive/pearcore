@@ -7,7 +7,7 @@ import { createSpaceFileContentRequestMessage, createSpaceFileEventMessage, crea
 import { createP2PNetwork, createConnections, buildTestSpacePayload, unframeJson, makeTempDir, cleanup, generateRandomFile } from '../general.utils.js';
 import { createDownloadRecord, createFileIndexRecord, deleteFileRecord, generateFileTreeRecord, getFileChunk, getFileTreeRecord, queryFileRegistryRecords, updateDownloadRecord } from '../../src/utils/files.utils.js';
 import { generateMerkleTree } from '../../src/utils/merkletree.utils.js';
-import { closeFile, createFileStream, fileExists, getFileSize, openFile, pathJoin } from '../../src/utils/system.utils.js';
+import { closeFile, createFileStream, fileExists, getFileSize, openFile, posixPathJoin } from '../../src/utils/system.utils.js';
 import { DEFAULT_CHUNK_SIZE } from '../../src/constants/global.constants.js';
 import { FrameTypes } from '../../src/managers/multiplexer.manager.js';
 
@@ -272,7 +272,7 @@ describe('Space File Protocols', () => {
             const message = await createSpaceFileTreeRequestMessage({
                 topic: spaceTopicHash,
                 rootHash: rootHash,
-                spaceFilePath: pathJoin(spacePath, spaceFilename),
+                spaceFilePath: posixPathJoin(spacePath, spaceFilename),
                 publicKey: secondary.publicKey,
                 secretKey: secondary.secretKey
             });
@@ -336,7 +336,7 @@ describe('Space File Protocols', () => {
             const message = await createSpaceFileTreeRequestMessage({
                 topic: spaceTopicHash,
                 rootHash: rootHash,
-                spaceFilePath: pathJoin(spacePath, spaceFilename),
+                spaceFilePath: posixPathJoin(spacePath, spaceFilename),
                 publicKey: secondary.publicKey,
                 secretKey: secondary.secretKey
             });
@@ -404,7 +404,7 @@ describe('Space File Protocols', () => {
         it('should reject when message is a relay', async () => {
             const message = await createSpaceFileContentRequestMessage({
                 topic: spaceTopicHash,
-                spaceFilePath: pathJoin(spacePath, spaceFilename),
+                spaceFilePath: posixPathJoin(spacePath, spaceFilename),
                 leafStart: 0,
                 leafStop: 0,
                 downloadKey: testKey,
@@ -426,7 +426,7 @@ describe('Space File Protocols', () => {
         it('should reject when space not found', async () => {
             const message = await createSpaceFileContentRequestMessage({
                 topic: '0x999999999',
-                spaceFilePath: pathJoin(spacePath, spaceFilename),
+                spaceFilePath: posixPathJoin(spacePath, spaceFilename),
                 leafStart: 0,
                 leafStop: 0,
                 downloadKey: testKey,
@@ -454,7 +454,7 @@ describe('Space File Protocols', () => {
 
             const message = await createSpaceFileContentRequestMessage({
                 topic: spaceTopicHash,
-                spaceFilePath: pathJoin(spacePath, spaceFilename),
+                spaceFilePath: posixPathJoin(spacePath, spaceFilename),
                 leafStart: 0,
                 leafStop: 0,
                 downloadKey: testKey,
@@ -503,7 +503,7 @@ describe('Space File Protocols', () => {
         it('should reject when slice is not available (beyond leaf count)', async () => {
             const message = await createSpaceFileContentRequestMessage({
                 topic: spaceTopicHash,
-                spaceFilePath: pathJoin(spacePath, spaceFilename),
+                spaceFilePath: posixPathJoin(spacePath, spaceFilename),
                 leafStart: leafCount,
                 leafStop: leafCount + 1, // out of leaf index
                 downloadKey: testKey,
@@ -529,7 +529,7 @@ describe('Space File Protocols', () => {
 
             const message = await createSpaceFileContentRequestMessage({
                 topic: spaceTopicHash,
-                spaceFilePath: pathJoin(spacePath, spaceFilename),
+                spaceFilePath: posixPathJoin(spacePath, spaceFilename),
                 leafStart: startLeaf,
                 leafStop: endLeaf,
                 downloadKey: testKey,
