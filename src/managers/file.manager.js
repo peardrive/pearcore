@@ -508,10 +508,29 @@ export class LocalFileRegistry {
             if (batchRequireUpdate) {
                 // calculate the Merkle tree once
                 const size = await getFileSize(sourcePath);
-                const stream = createFileStream(sourcePath);
 
-                tree = await generateMerkleTree({ stream, size });
-                rootHash = tree.rootHash;
+                let stream;
+                try {
+                    // try to generate new Merkle tree
+                    stream = createFileStream(sourcePath);
+                    tree = await generateMerkleTree({ stream, size });
+                    rootHash = tree.rootHash;
+
+                } catch(error) {
+                    // skip the registry group if reading file has failed.
+                    logger.warn('generating new tree failed', {
+                        sourcePath,
+                        error
+                    });
+
+                    continue;
+
+                } finally {
+                    // ensure that the stream is fully closed
+                    if (stream && !stream.destroyed) {
+                        await stream.destroy();
+                    }
+                }
 
                 for (const reg of registries) {
                     await updateFileTreeRecord(this.db, {
@@ -674,7 +693,8 @@ export class LocalFileRegistry {
             await this.watcher.close();
             this.watcher = null;
         }
-
+        
+        this.backoffStates.clear();
         this.pendingAfterIndex.clear();
         this.indexingInProgress.clear();
     }
