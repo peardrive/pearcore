@@ -37,7 +37,7 @@ import { parseFilePath } from './parsers.utils.js';
  *   for the given space file should be placed. The structure is:
  *   `<driveDir>/<topic>/<rootHash>/<spaceFileDir>`.
  */
-export function getTemporarySourcePathForSpaceFile({root, username, topic, spaceFilePath, rootHash}) {
+export function getTemporarySourcePathForSpaceFile({ root, username, topic, spaceFilePath, rootHash }) {
     if (!root || !username || !topic || !spaceFilePath || !rootHash) {
         throw new Error("Invalid parameters for getLocalPathForSpaceFile()");
     }
@@ -480,6 +480,9 @@ export async function getFileChunk(handler, fileSize, leafIndex, chunkSize = DEF
  * @param {string} params.spacePath - Virtual directory path for space.
  * @param {string} params.spaceFilename - Virtual file name for space.
  * @param {number} params.spaceId - ID of space for reference.
+ * @param {Object} params.tree - optional, pass generated Merkle tree if you already obtain it.
+ * @param {Object} params.tree.rootHash - root hash of the generated Merkle tree.
+ * @param {Object} params.tree.levels - Levels of the generated merkle tree (check documentation for generateMerkleTree).
  * @returns {Promise<{registryId: number, rootHash: string, leafCount: number}>} Resolves when the file indexing has been complete.
  */
 export async function generateFileTreeRecord(db, params) {
@@ -497,14 +500,31 @@ export async function generateFileTreeRecord(db, params) {
         throw new Error(`${fileSourcePath} does not exists on disk`);
     }
 
-    const stream = createFileStream(source);
     const size = await getFileSize(source);
+    
+    let tree;
+    let stream;
+    
+    if (params.tree) { tree = params.tree; }
+    else {
+        try {
 
-    const tree = await generateMerkleTree({
-        stream,
-        size,
-        chunkSize: DEFAULT_CHUNK_SIZE,
-    });
+            stream = createFileStream(source);
+            tree = await generateMerkleTree({
+                stream,
+                size,
+                chunkSize: DEFAULT_CHUNK_SIZE,
+            }); 
+
+        } catch(error) {
+            throw new Error(`generating Merkle tree failed for ${fileSourcePath}`);
+
+        } finally {
+            if (stream && !stream.destroyed) {
+                await stream.destroy();
+            }
+        }
+    }
 
     const rootHash = tree.rootHash;
     const leafCount = getLeafCount(size, DEFAULT_CHUNK_SIZE);
@@ -557,7 +577,7 @@ export async function updateFileTreeRecord(db, params) {
         metaHash: metaHash,
         rootHash: tree.rootHash,
         height: height,
-        leafCount: tree.levels[height].length 
+        leafCount: tree.levels[height].length
     });
 
     await createFileIndexRecord(db, registryId, tree);
