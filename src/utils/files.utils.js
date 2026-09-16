@@ -15,6 +15,7 @@ import {
     fileExists,
     getFileSize,
     openFile,
+    readFile,
     closeFile,
     createFileStream
 } from './system.utils.js';
@@ -89,7 +90,7 @@ export async function getFileMetaHash(handler) {
  * @returns {Promise<string>} - Hash as hex string.
  */
 export async function getFileMetaHashFromSource(filePath) {
-    const handler = await openFile(filePath);
+    const handler = await readFile(filePath);
     const metaHash = await getFileMetaHash(handler);
 
     await closeFile(handler);

@@ -1,7 +1,7 @@
 import * as EVENTS from '../constants/events.constants.js';
 import { isDefined, isNumber, now } from "../utils/general.utils.js";
 import { getSpace, getSpaceTopicHash, getSpaceToTopicMap } from "../utils/space.utils.js";
-import { closeFile, createFileStream, deleteFile, fileExists, getFileSize, openFile, pathJoin } from "../utils/system.utils.js";
+import { closeFile, createFileStream, deleteFile, fileExists, getFileSize, openFile, posixPathJoin } from "../utils/system.utils.js";
 import {
     createSpaceFileEventMessage,
     createSpaceFileRecordSignature,
@@ -526,7 +526,7 @@ export class LocalFileRegistry {
             }
 
             for (const registry of registries) {
-                const spaceFilePath = pathJoin(registry.spacePath, registry.spaceFilename);
+                const spaceFilePath = posixPathJoin(registry.spacePath, registry.spaceFilename);
                 const spaceTopicHash = spaceTopicMap.get(registry.spaceId);
 
                 const record = await this.createSignedEvent({
@@ -604,7 +604,7 @@ export class LocalFileRegistry {
 
         const { publicKey, secretKey } = this.sessionManager.getCredentials();
         const spaceTopicHash = getSpaceTopicHash(space);
-        const spaceFilePath = pathJoin(spacePath, spaceFilename);
+        const spaceFilePath = posixPathJoin(spacePath, spaceFilename);
 
         const record = await this.createSignedEvent({
             topic: spaceTopicHash,
@@ -649,7 +649,7 @@ export class LocalFileRegistry {
 
         const { publicKey, secretKey } = this.sessionManager.getCredentials();
         const space = await getSpace(this.db, registry.spaceId);
-        const spaceFilePath = pathJoin(registry.spacePath, registry.spaceFilename);
+        const spaceFilePath = posixPathJoin(registry.spacePath, registry.spaceFilename);
 
         const record = await this.createSignedEvent({
             topic: getSpaceTopicHash(space),
@@ -704,7 +704,7 @@ export class LocalFileRegistry {
 
             if (space) {
                 const spaceTopicHash = getSpaceTopicHash(space);
-                const spaceFilePath = pathJoin(registry.spacePath, registry.spaceFilename);
+                const spaceFilePath = posixPathJoin(registry.spacePath, registry.spaceFilename);
 
                 const record = await this.createSignedEvent({
                     topic: spaceTopicHash,
@@ -755,7 +755,7 @@ export class LocalFileRegistry {
 
             if (space) {
                 const spaceTopicHash = getSpaceTopicHash(space);
-                const spaceFilePath = pathJoin(registry.spacePath, registry.spaceFilename);
+                const spaceFilePath = posixPathJoin(registry.spacePath, registry.spaceFilename);
 
                 const record = await this.createSignedEvent({
                     topic: spaceTopicHash,
@@ -860,7 +860,7 @@ export class LocalFileRegistry {
 
                 if (space) {
                     const spaceTopicHash = getSpaceTopicHash(space);
-                    const spaceFilePath = pathJoin(registry.spacePath, registry.spaceFilename);
+                    const spaceFilePath = posixPathJoin(registry.spacePath, registry.spaceFilename);
 
                     const record = await this.createSignedEvent({
                         topic: spaceTopicHash,
@@ -1603,7 +1603,7 @@ export class SpaceDownloadTask {
         this.registryId = registryId;
         this.spaceId = registry.spaceId;
         this.topic = getSpaceTopicHash(space);
-        this.spaceFilePath = pathJoin(registry.spacePath, registry.spaceFilename);
+        this.spaceFilePath = posixPathJoin(registry.spacePath, registry.spaceFilename);
         this.rootHash = registry.rootHash;
         this.tempFilePath = registry.fileSourcePath;
         this.finalDestination = finalDestination;

@@ -4,7 +4,7 @@ import * as MESSAGES from '../constants/messages.constants.js';
 import { createChild } from "../logger.js";
 import { hexToUint8 } from '../utils/crypto.utils.js';
 import { getFileChunk } from '../utils/files.utils.js';
-import { closeFile, openFile } from '../utils/system.utils.js';
+import { closeFile, readFile } from '../utils/system.utils.js';
 import { FrameTypes } from './multiplexer.manager.js';
 
 const logger = createChild('FileContentDelivery');
@@ -48,7 +48,7 @@ export class FileHandlerCache {
             return entry.handle;
         }
 
-        entry.opening = openFile(filePath);
+        entry.opening = readFile(filePath);
         try {
             const handler = await entry.opening;
             entry.handle = handler;

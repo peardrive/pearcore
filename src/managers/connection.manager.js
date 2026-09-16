@@ -5,7 +5,7 @@ import { connectSwarm, joinSwarmTopic } from "../utils/network.utils.js";
 import { createProfileUpdateMessage, createSpaceHashListMessage } from "../utils/protocol.utils.js";
 import { parseBootstrapAddress } from "../utils/parsers.utils.js";
 import { getTopicList } from '../utils/space.utils.js';
-import { getShareLinkTopics, queryShareLink } from '../utils/sharelink.utils.js';
+import { getShareLinkTopics } from '../utils/sharelink.utils.js';
 import { getProfileByPublicKey } from '../utils/profile.utils.js';
 
 const logger = createChild('ConnectionManager');
