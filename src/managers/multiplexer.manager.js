@@ -1,4 +1,7 @@
+import { createChild } from '../logger.js';
 import { hex } from '../utils/crypto.utils.js';
+
+const logger = createChild('MuxManager');
 
 export const FrameTypes = {
     JSON: 0x01,
@@ -58,8 +61,26 @@ export const FrameTypes = {
  */
 export class MuxManager {
     constructor(emitter) {
+        /**
+         * Used to route frames to data handlers.
+         * FrameType => Async function
+         * @type {Map<number, Promise>}
+         */
         this.routingMap = new Map();
+
+        /**
+         * Accumulates incoming buffers until the chunk is completely received.
+         * PublicKey => Buffer
+         * @type {Map<string, Buffer>}
+         */
         this._buffers = new Map();
+
+        /**
+         * Queues the incoming data to be processed sequentially.
+         * PublicKey => Async task
+         * @type {Map<string, Promise>}
+         */
+        this._queue = new Map();
     }
 
     /**
@@ -81,39 +102,60 @@ export class MuxManager {
      */
     async route(socket, data, info) {
         const publicKey = hex(info.publicKey);
-        let buffer = this._buffers.get(publicKey);
+        const tail = this._queue.get(publicKey) || Promise.resolve();
 
-        if (!buffer) {
-            buffer = Buffer.alloc(0);
+        const next = tail
+            .then(() => this._process(socket, data, info, publicKey))
+            .catch(error => {
+                logger.warn('Error processing data received data', {
+                    publicKey,
+                    error,
+                });
+            });
+
+        this._queue.set(publicKey, next);
+        return next;
+    }
+
+    async _process(socket, data, info, publicKey) {
+        const accumulation = this._buffers.get(publicKey) || Buffer.alloc(0);
+        let buffer = Buffer.concat([accumulation, data]);
+
+        try {
+            while (buffer.length >= 5) {
+                const type = buffer[0];
+                const payloadLength = buffer.readUInt32BE(1);
+                const totalFrameLength = 5 + payloadLength;
+
+                if (buffer.length < totalFrameLength) break;
+
+                const payload = buffer.subarray(5, totalFrameLength);
+                buffer = buffer.subarray(totalFrameLength);
+
+                const handler = this.routingMap.get(type);
+                if (handler) {
+                    handler(socket, payload, info)
+                    .catch(error => {
+                        logger.warn('Handler failed to process the data', {
+                            frameType: type,
+                            publicKey: publicKey
+                        });
+
+                    })
+                } else {
+                    logger.warn('no hanlder has been registered for the frameType', {
+                        frameType: type,
+                        publicKey: publicKey
+                    });
+                }
+            }
+        } catch(error) {
+            logger.warn('failed to run _process()', {
+                publicKey: publicKey,
+                error: error
+            });
+        } finally {
             this._buffers.set(publicKey, buffer);
-        }
-
-        buffer = Buffer.concat([buffer, data]);
-        this._buffers.set(publicKey, buffer);
-
-        let processed = true;
-        while (processed && buffer.length >= 5) {
-            const type = buffer[0];
-            const payloadLength = buffer.readUInt32BE(1);
-            const totalFrames = 5 + payloadLength;
-
-            if (buffer.length < totalFrames) {
-                processed = false;
-                break;
-            }
-
-            const payload = buffer.subarray(5, totalFrames);
-            buffer = buffer.subarray(totalFrames);
-            this._buffers.set(publicKey, buffer);
-
-            const handler = this.routingMap.get(type);
-            if (handler) {
-                await handler(socket, payload, info);
-            }
-
-            else {
-                console.error(`No handler registered for frame type ${type} from publicKey: ${publicKey}`);
-            }
         }
     }
 
@@ -124,6 +166,7 @@ export class MuxManager {
     cleanup(info) {
         const publicKey = hex(info.publicKey);
         this._buffers.delete(publicKey);
+        this._queue.delete(publicKey);
     }
 
     /**
