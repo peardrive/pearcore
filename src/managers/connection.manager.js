@@ -50,13 +50,13 @@ export class ConnectionManager {
 
             socket.on('close', () => {
                 this.socketManager.removeSocket(socket);
-                this.muxManager.cleanup(info);
+                this.muxManager.cleanup(socket);
                 this.emitter.emit(EVENTS.Disconnect, { publicKey });
             });
             socket.on('error', (err) => {
                 logger.warn(`Socket connection error from peer ${publicKey}`, { error: err });
                 this.socketManager.removeSocket(socket);
-                this.muxManager.cleanup(info);
+                this.muxManager.cleanup(socket);
                 this.emitter.emit(EVENTS.Disconnect, { publicKey });
             })
 

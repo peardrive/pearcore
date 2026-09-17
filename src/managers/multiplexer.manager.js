@@ -1,5 +1,6 @@
 import { createChild } from '../logger.js';
 import { hex } from '../utils/crypto.utils.js';
+import { DEFAULT_CHUNK_SIZE } from '../constants/global.constants.js';
 
 const logger = createChild('MuxManager');
 
@@ -8,14 +9,13 @@ export const FrameTypes = {
     STREAM: 0x02
 };
 
-
 /**
  * MuxManager helps to simultaneously handle streaming and message data from socket connections.
  * This class calls 'handler' callback for different data types based on the received map.
  * 
  * @example
  * // Create a MuxManager instance
- * const muxManager = new MuxManager();
+ * const muxManager = new MuxManager(new EventEmitter(), { sessionManager });
  *
  * muxManager.setHandlers([
  *   {
@@ -38,11 +38,11 @@ export const FrameTypes = {
  *   });
  *
  *   socket.on('close', () => {
- *     muxManager.cleanup(info); // free accumulated buffers for this peer
+ *     muxManager.cleanup(socket, info); // free accumulated buffers for this peer
  *   });
  *
  *   socket.on('error', (err) => {
- *     muxManager.cleanup(info);
+ *     muxManager.cleanup(socket, info);
  *   });
  * });
  * 
@@ -60,7 +60,20 @@ export const FrameTypes = {
  *   await muxManager.send(socket, buffer, FrameTypes.STREAM);
  */
 export class MuxManager {
-    constructor(emitter) {
+    constructor(emitter, managers) {
+        this.sessionManager = managers.sessionManager;
+
+        this.frameSizeLimit = new Map([
+            [
+                FrameTypes.JSON,
+                () => this.sessionManager.getMessageConfig().rawLimitSize * 1.20 // 20% tolerance
+            ],
+            [
+                FrameTypes.STREAM,
+                () => DEFAULT_CHUNK_SIZE * 1.50 // add 50% tolerance
+            ],
+        ]);
+
         /**
          * Used to route frames to data handlers.
          * FrameType => Async function
@@ -69,18 +82,10 @@ export class MuxManager {
         this.routingMap = new Map();
 
         /**
-         * Accumulates incoming buffers until the chunk is completely received.
-         * PublicKey => Buffer
-         * @type {Map<string, Buffer>}
+         * Socket => { buffer, tail, closed }
+         * @type {WeakMap<Object, Object>}
          */
-        this._buffers = new Map();
-
-        /**
-         * Queues the incoming data to be processed sequentially.
-         * PublicKey => Async task
-         * @type {Map<string, Promise>}
-         */
-        this._queue = new Map();
+        this.connections = new WeakMap();
     }
 
     /**
@@ -93,6 +98,17 @@ export class MuxManager {
         }
     }
 
+    _getState(socket) {
+        let state = this.connections.get(socket);
+
+        if (!state) {
+            state = { buffer: Buffer.alloc(0), tail: Promise.resolve(), closed: false };
+            this.connections.set(socket, state);
+        }
+
+        return state;
+    }
+
     /**
      * Routes and process all incoming data streams from socket connections.
      * This method will only call the handler once the incoming data in complete (all chunks has been received).
@@ -101,31 +117,56 @@ export class MuxManager {
      * @param {Object} info - Hyperswarm's info object.
      */
     async route(socket, data, info) {
-        const publicKey = hex(info.publicKey);
-        const tail = this._queue.get(publicKey) || Promise.resolve();
+        const state = this._getState(socket);
+        if (state.closed) return Promise.resolve(); //dead end
 
-        const next = tail
-            .then(() => this._process(socket, data, info, publicKey))
+        const publicKey = hex(info.publicKey);
+
+        const next = state.tail
+            .then(() => this._process(socket, data, info, publicKey, state))
             .catch(error => {
-                logger.warn('Error processing data received data', {
+                console.log('Error processing data received data', {
                     publicKey,
                     error,
                 });
             });
 
-        this._queue.set(publicKey, next);
+        state.tail = next;
         return next;
     }
 
-    async _process(socket, data, info, publicKey) {
-        const accumulation = this._buffers.get(publicKey) || Buffer.alloc(0);
-        let buffer = Buffer.concat([accumulation, data]);
+    /**
+     * Disconnect from the socket in case of penalty.
+     * @param {Socket} socket 
+     */
+    async _penalty(socket) {
+        await socket.destroy?.();
+    }
+
+    async _process(socket, data, info, publicKey, state) {
+        let buffer = Buffer.concat([state.buffer, data]);
 
         try {
             while (buffer.length >= 5) {
                 const type = buffer[0];
                 const payloadLength = buffer.readUInt32BE(1);
                 const totalFrameLength = 5 + payloadLength;
+
+                const limitResolver = this.frameSizeLimit.get(type);
+                const maxFrameSize = limitResolver ? limitResolver() : undefined;
+
+                if (maxFrameSize && payloadLength > maxFrameSize) {
+                    console.log('maximum allowed frame size has been violated', {
+                        type: type,
+                        maxFrameSize: maxFrameSize,
+                        totalFrameLength: totalFrameLength,
+                        publicKey: publicKey
+                    });
+
+                    this.cleanup(socket, info);
+                    await this._penalty(socket);
+                    return;
+                }
 
                 if (buffer.length < totalFrameLength) break;
 
@@ -134,39 +175,48 @@ export class MuxManager {
 
                 const handler = this.routingMap.get(type);
                 if (handler) {
-                    handler(socket, payload, info)
-                    .catch(error => {
-                        logger.warn('Handler failed to process the data', {
-                            frameType: type,
-                            publicKey: publicKey
+                    const task = handler(socket, payload, info);
+
+                    await task
+                        .catch(error => {
+                            console.log('handler failed to process the data', {
+                                frameType: type,
+                                publicKey: publicKey
+                            });
+
                         });
 
-                    })
                 } else {
-                    logger.warn('no hanlder has been registered for the frameType', {
+                    console.log('no handler has been registered for the frameType', {
                         frameType: type,
                         publicKey: publicKey
                     });
                 }
             }
-        } catch(error) {
-            logger.warn('failed to run _process()', {
+        } catch (error) {
+            console.log('failed to run _process()', {
                 publicKey: publicKey,
                 error: error
             });
         } finally {
-            this._buffers.set(publicKey, buffer);
+            if (!state.closed) {
+                state.buffer = buffer;
+            }
         }
     }
 
     /**
      * Clean and reset buffer stack for individual socket connection.
-     * @param {Object} info - Hyperswarm's info object.
+     * @param {Object} socket - The socket object.
      */
-    cleanup(info) {
-        const publicKey = hex(info.publicKey);
-        this._buffers.delete(publicKey);
-        this._queue.delete(publicKey);
+    cleanup(socket) {
+        const state = this.connections.get(socket);
+        if (state) {
+            state.closed = true;
+            state.buffer = Buffer.alloc(0);
+        }
+
+        this.connections.delete(socket);
     }
 
     /**
