@@ -1,8 +1,9 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import { MuxManager, FrameTypes } from "../../src/managers/multiplexer.manager.js";
-import { getMockSocket } from "../general.utils.js";
-
-
+import { MuxManager, FrameTypes } from "../../src/managers/multiplexer.manager";
+import { hex } from "../../src/utils/crypto.utils";
+import { getMockSocket } from "../general.utils";
+import { EventEmitter } from "node:stream";
+import { SessionManager } from "../../src/managers/session.manager";
 
 describe('MuxManager', () => {
     let muxManager = null;
@@ -10,7 +11,9 @@ describe('MuxManager', () => {
     let info = null;
 
     beforeEach(() => {
-        muxManager = new MuxManager();
+        const emitter = new EventEmitter();
+        const sessionManager = new SessionManager();
+        muxManager = new MuxManager(emitter, { sessionManager });
         socket = getMockSocket();
         info = {
             publicKey: Buffer.from('mockPublicKey123')
@@ -57,7 +60,7 @@ describe('MuxManager', () => {
             jsonHandler = vi.fn();
             streamHandler = vi.fn();
             muxManager.setHandlers([
-                { type: FrameTypes.JSON, handler: jsonHandler},
+                { type: FrameTypes.JSON, handler: jsonHandler },
                 { type: FrameTypes.STREAM, handler: streamHandler }
             ]);
         });

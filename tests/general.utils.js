@@ -163,7 +163,7 @@ export function createConnections(topicHash, nodes) {
  * @returns {number}
  */
 export function getRandomPort() {
-    return 2000 + Math.floor(Math.random() * 5000);
+    return 2000 + Math.floor(Math.random() * (65000 - 2000 + 1));
 }
 
 /**

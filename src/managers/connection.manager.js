@@ -58,14 +58,14 @@ export class ConnectionManager {
                 this.emitter.emit(EVENTS.Disconnect, { publicKey });
                 try {
                     this.socketManager.removeSocket(socket);
-                    this.muxManager.cleanup(info);
+                    this.muxManager.cleanup(socket);
                 } catch (error) { } // do nothing
             });
             socket.on('error', (err) => {
                 this.emitter.emit(EVENTS.Disconnect, { publicKey });
                 try {
                     this.socketManager.removeSocket(socket);
-                    this.muxManager.cleanup(info);
+                    this.muxManager.cleanup(socket);
                 } catch(error) {} // do nothing
             })
 

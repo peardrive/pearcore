@@ -11,7 +11,7 @@ import { FileContentDeliveryManager } from "./delivery.manager.js";
 export function initializeManagers(emitter) {
     const sessionManager = new SessionManager();
     const socketManager = new SocketManager(emitter);
-    const muxManager = new MuxManager(emitter);
+    const muxManager = new MuxManager(emitter, { sessionManager });
 
     const spaceFileListManager = new SpaceFileListManager(emitter, {
         sessionManager,
