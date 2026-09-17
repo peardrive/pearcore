@@ -82,7 +82,7 @@ export class MuxManager {
         this.routingMap = new Map();
 
         /**
-         * Socket => { buffer, tail, closed }
+         * Socket => { buffer, readQueue, writeQueue closed }
          * @type {WeakMap<Object, Object>}
          */
         this.connections = new WeakMap();
@@ -102,7 +102,13 @@ export class MuxManager {
         let state = this.connections.get(socket);
 
         if (!state) {
-            state = { buffer: Buffer.alloc(0), tail: Promise.resolve(), closed: false };
+            state = { 
+                buffer: Buffer.alloc(0), 
+                readQueue: Promise.resolve(), 
+                writeQueue: Promise.resolve(),
+                closed: false 
+            };
+
             this.connections.set(socket, state);
         }
 
@@ -122,16 +128,16 @@ export class MuxManager {
 
         const publicKey = hex(info.publicKey);
 
-        const next = state.tail
+        const next = state.readQueue
             .then(() => this._process(socket, data, info, publicKey, state))
             .catch(error => {
-                console.log('Error processing data received data', {
+                logger.warn('Error processing data received data', {
                     publicKey,
                     error,
                 });
             });
 
-        state.tail = next;
+        state.readQueue = next;
         return next;
     }
 
@@ -156,7 +162,7 @@ export class MuxManager {
                 const maxFrameSize = limitResolver ? limitResolver() : undefined;
 
                 if (maxFrameSize && payloadLength > maxFrameSize) {
-                    console.log('maximum allowed frame size has been violated', {
+                    logger.warn('maximum allowed frame size has been violated', {
                         type: type,
                         maxFrameSize: maxFrameSize,
                         totalFrameLength: totalFrameLength,
@@ -179,7 +185,7 @@ export class MuxManager {
 
                     await task
                         .catch(error => {
-                            console.log('handler failed to process the data', {
+                            logger.warn('handler failed to process the data', {
                                 frameType: type,
                                 publicKey: publicKey
                             });
@@ -187,14 +193,14 @@ export class MuxManager {
                         });
 
                 } else {
-                    console.log('no handler has been registered for the frameType', {
+                    logger.warn('no handler has been registered for the frameType', {
                         frameType: type,
                         publicKey: publicKey
                     });
                 }
             }
         } catch (error) {
-            console.log('failed to run _process()', {
+            logger.warn('failed to run _process()', {
                 publicKey: publicKey,
                 error: error
             });
@@ -236,6 +242,44 @@ export class MuxManager {
     }
 
     /**
+     * Creates a promise that is only resolved once the socket connection is safe to write.
+     * this mechanism respects the socket bandwidth and avoids buffer pressure building up.
+     * 
+     * @return {Promise<void>}
+     */
+    _waitForDrain(socket) {
+        return new Promise(resolve => {
+            const handler = () => { cleanup(); resolve(); };
+            const cleanup = () => {
+                socket.off('drain', handler);
+                socket.off('close', handler);
+                socket.off('error', handler);
+            };
+
+            socket.once('drain', handler);
+            socket.once('close', handler);
+            socket.once('error', handler);
+        });
+    }
+
+    /**
+     * Write buffer to socket with consideration that if the stream buffer
+     * is maxxed out, then the function waits for the stream to 'drain' before resolving the promise.
+     * @param {Socket} socket 
+     * @param {number} frame 
+     */
+    async _writeFrame(socket, frame) {
+        if (socket.destroyed) {
+            throw new Error('cannot write to a destroyed socket');
+        }
+
+        const canWriteMore = socket.write(frame);
+        if (!canWriteMore) {
+            await this._waitForDrain(socket);
+        }
+    }
+
+    /**
      * Send framed data payload with the corrent type to the socket.
      * @param {Object} socket - The socket object.
      * @param {Buffer|string} data - The data to send for the receiver.
@@ -244,6 +288,12 @@ export class MuxManager {
      */
     async send(socket, data, frameType) {
         const frame = this.createFrame(frameType, data);
-        return socket.write(frame);
+        const state = this._getState(socket);
+
+        const next = state.writeQueue
+            .then(() => this._writeFrame(socket, frame));
+
+        state.writeQueue = next.catch(() => {});
+        return next;
     }
 }
