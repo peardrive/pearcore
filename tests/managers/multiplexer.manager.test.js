@@ -1,6 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { MuxManager, FrameTypes } from "../../src/managers/multiplexer.manager";
-import { hex } from "../../src/utils/crypto.utils";
 import { getMockSocket } from "../general.utils";
 import { EventEmitter } from "node:stream";
 import { SessionManager } from "../../src/managers/session.manager";

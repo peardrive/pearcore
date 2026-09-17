@@ -45,11 +45,23 @@ export async function makeTempDir() {
 }
 
 export function getMockSocket(name = 'mock socket') {
-    return {
-        name: name,
-        write: vi.fn(),
-        destroy: vi.fn()
-    }
+    const emitter = new EventEmitter();
+
+    const socket = {
+        name,
+        destroyed: false,
+        
+        write: vi.fn(() => true),
+        destroy: vi.fn(() => {
+            socket.destroyed = true;
+            emitter.emit('close');
+        }),
+        once: (...args) => emitter.once(...args),
+        off: (...args) => emitter.off(...args),
+        emit: (...args) => emitter.emit(...args),
+    };
+
+    return socket;
 }
 
 /**
