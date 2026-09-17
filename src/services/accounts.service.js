@@ -5,6 +5,7 @@ import {
   createAccount,
   authenticateAccount,
   deleteAccount,
+  createAccountFromMnemonic,
 } from '../utils/accounts.utils.js';
 
 
@@ -61,6 +62,30 @@ export class AccountService {
   }
 
   /**
+   * Recover credentials using mnemonic recovery phrases
+   * @param {String} username - local account's username
+   * @param {String} password - local account's password
+   * @param {String} mnemonic - 12 or 24-word BIP39 mnemonic phrases
+   * @returns {Promise<{
+   *  path: String,
+   *  publicKey: String
+   * }>}
+   */
+  async recover(username, password, mnemonic) {
+    const account = await createAccountFromMnemonic(
+      username, 
+      password,
+      mnemonic,
+      this.root
+    );
+
+    return {
+      path: account.path,
+      publicKey: account.publicKey
+    };
+  }
+
+  /**
    * Authenticates a user with username and password.
    * Loads the Spacebook database and initiates the user's discovery node.
    * @param {string} username - Username to authenticate
@@ -93,6 +118,8 @@ export class AccountService {
     await this.managers.throttle.load();
     // load space file management 
     await this.managers.spaceFiles.init();
+    // load file-content delivery managerment
+    await this.managers.delivery.init();
 
     return {
       username: creds.username,
@@ -107,6 +134,8 @@ export class AccountService {
    */
   async logout() {
     await this.managers.connection.destroy();
+    await this.managers.spaceFiles.stop();
+    await this.managers.delivery.stop();
 
     const { sqlite } = this.managers.session.getDatabase();
     sqlite.close();
@@ -114,7 +143,6 @@ export class AccountService {
     this.managers.session.reset();
     this.managers.throttle.clear();
     this.managers.spaceFileList.clear();
-    await this.managers.spaceFiles.stop();
   }
 
   /**

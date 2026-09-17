@@ -3,11 +3,13 @@ import {
     createMessageFilter,
     createMessageRecord,
     queryMessageRecord,
-    flushMessageRecord
+    flushMessageRecord,
+    pushMessageToHistory,
+    getNonces
 } from "../../src/utils/message.utils.js";
 import { createBaseMessage } from "../../src/utils/protocol.utils.js";
 import { createTempDatabase, generateKeypair } from "../general.utils.js";
-import { now } from "../../src/utils/general.utils";
+import { now } from "../../src/utils/general.utils.js";
 import { hex } from "../../src/utils/crypto.utils.js";
 
 const createMessage = async (overrides = {}) => {
@@ -238,6 +240,35 @@ describe('Message Utilities', () => {
             expect(queryResultUnkown.length).toBe(0);
         })
     })
+
+    describe('getNonces', () => {
+        it('should an array of all message nonces', async () => {
+            const result = await getNonces(db);
+            expect(result.length).toBe(5);
+
+            for (let index = 0; index < 5; index++) {
+                expect(result[index]).toBe(`nonce-index-${index}`);
+            }
+        })
+    });
+
+    describe('pushMessageToHistory', () => {
+        beforeEach(async () => {
+            await flushMessageRecord(db, {}); // clear database
+        });
+
+        it('should avoid insertion of duplicated message', async () => {
+            const message = await createMessage();
+            const senderPublicKey = message.publicKey;
+            const broadcastTimestamp = now();
+
+            await pushMessageToHistory(db, { message, senderPublicKey });
+            await pushMessageToHistory(db, { message, senderPublicKey });
+
+            const messageRecords = await queryMessageRecord(db, {});
+            expect(messageRecords.length).toBe(1);
+        });
+    });
 
     describe('flushMessageRecord', () => {
         it('should delete records matching exact id', async () => {

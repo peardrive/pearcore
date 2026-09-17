@@ -1,21 +1,17 @@
 import { SocketManager } from "./sockets.manager.js";
 import { SessionManager } from "./session.manager.js";
 import { MessageManager } from "./message.manager.js";
-import { StorageManager } from "./storage.manager.js";
-import { ProtocolMapFactory } from "../protocol/map.js";
+import { ProtocolMapFactory } from "../protocols/map.js";
 import { ThrottleManager } from "./throttle.manager.js";
 import { ConnectionManager } from "./connection.manager.js";
 import { MuxManager, FrameTypes } from "./multiplexer.manager.js";
 import { SpaceFileListManager, SpaceFileManager } from "./file.manager.js";
+import { FileContentDeliveryManager } from "./delivery.manager.js";
 
 export function initializeManagers(emitter) {
     const sessionManager = new SessionManager();
     const socketManager = new SocketManager(emitter);
     const muxManager = new MuxManager(emitter, { sessionManager });
-
-    const storageManager = new StorageManager(emitter, {
-        sessionManager
-    });
 
     const spaceFileListManager = new SpaceFileListManager(emitter, {
         sessionManager,
@@ -23,12 +19,10 @@ export function initializeManagers(emitter) {
 
     const throttleManager = new ThrottleManager(emitter, {
         sessionManager,
-        storageManager
     });
 
     const messageManager = new MessageManager(emitter, {
         socketManager,
-        storageManager,
         sessionManager,
         throttleManager,
         muxManager,
@@ -38,7 +32,6 @@ export function initializeManagers(emitter) {
     const connectionManager = new ConnectionManager(emitter, {
         sessionManager,
         socketManager,
-        storageManager,
         messageManager,
         muxManager
     });
@@ -49,6 +42,12 @@ export function initializeManagers(emitter) {
         messageManager,
         connectionManager,
         spaceFileListManager
+    });
+
+    const fileContentDeliveryManager = new FileContentDeliveryManager(emitter, {
+        sessionManager,
+        messageManager,
+        muxManager
     });
 
     muxManager.setHandlers([
@@ -64,11 +63,11 @@ export function initializeManagers(emitter) {
 
     const protocols = ProtocolMapFactory(emitter, {
         socket: socketManager,
-        storage: storageManager,
         session: sessionManager,
         message: messageManager,
         spaceFileList: spaceFileListManager,
         mux: muxManager,
+        delivery: fileContentDeliveryManager
     });
 
     messageManager.setProtocolMap(protocols);
@@ -76,12 +75,12 @@ export function initializeManagers(emitter) {
     return {
         session: sessionManager,
         sockets: socketManager,
-        storage: storageManager,
         throttle: throttleManager,
         mux: muxManager,
         message: messageManager,
         connection: connectionManager,
         spaceFileList: spaceFileListManager,
         spaceFiles: spaceFileManager,
+        delivery: fileContentDeliveryManager
     };
 }

@@ -1,7 +1,10 @@
 import { createChild } from '../logger.js';
-import { deleteSpace, generateSpaceTopic, getSpaceTopicHash, querySpace } from "../utils/space.utils.js";
-import { encodeShareLink, decodeShareLink, queryShareLink, deleteShareLink, saveShareLink } from "../utils/sharelink.utils.js";
+import { createSpaceForPublicKey, deleteSpace, getSpace, getSpaceTopicHash, querySpace, updateSpaceForPublicKey } from "../utils/space.utils.js";
+import { decodeShareLink, queryShareLink, deleteShareLink, saveShareLink } from "../utils/sharelink.utils.js";
+import { createSpaceSyncMessage } from "../utils/protocol.utils.js";
 import { isString } from '../utils/general.utils.js';
+import { SpaceInstance } from './interface.js';
+import { publicKeyIsAllowedToRead } from '../utils/policy.utils.js';
 
 const logger = createChild('SpaceService');
 
@@ -32,28 +35,71 @@ export class SpaceService {
      */
     async create(payload) {
         const { publicKey, secretKey } = this.managers.session.getCredentials();
-        const createSpaceResult = await this.managers.storage.createSpace(
+
+        const { spaceId } = await createSpaceForPublicKey(
+            this.#db,
             { ...payload, publicKey },
             secretKey
         );
 
-        const generatedShareLink = encodeShareLink(createSpaceResult, this.sharelinkPrefix);
-        const generatedTopic = generateSpaceTopic(
-            createSpaceResult.spaceName,
-            createSpaceResult.publicKey,
-            createSpaceResult.nonce
-        );
+        const spaceRecord = await getSpace(this.#db, spaceId);
+        if (!spaceRecord) {
+            throw new Error(`Space creating has failed for this payload: ${payload}`);
+        }
 
-        const spaceTopicHash = getSpaceTopicHash(createSpaceResult)
-        await this.managers.connection.join(spaceTopicHash);
+        const instance = new SpaceInstance(spaceRecord, 'space', this.sharelinkPrefix);
+
+        await this.managers.connection.join(instance.topicHash);
         await this.managers.connection.update();
 
-        return {
-            ...createSpaceResult,
-            sharelink: generatedShareLink,
-            topic: generatedTopic,
-            topicHash: spaceTopicHash
-        };
+        return instance;
+    }
+
+    /**
+     * Updates permission rules for space and broadcast the update to members.
+     * @param {SpaceInstance} space - the original space instance
+     * @param {Object} params - Space configuration parameters
+     * @param {boolean} [params.permissionBroadcast=true] - Whether broadcasting is permissioned
+     * @param {Array<string>} [params.broadcastWhitelist=[]] - Public keys allowed to broadcast
+     * @param {boolean} [params.permissionRead=true] - Whether reading is permissioned
+     * @param {Array<string>} [params.readWhitelist=[]] - Public keys allowed to read
+     * @returns {Promise<SpaceInstance>}
+     */
+    async update(space, params) {
+        const { publicKey, secretKey } = this.managers.session.getCredentials();
+
+        if (space.publicKey !== publicKey) {
+            throw new Error("Space update failed. You can only update self-owned spaces.");
+        }
+
+        const exists = await getSpace(this.#db, space.id);
+        if (!exists) {
+            throw new Error("Space does not exists.");
+        }
+
+        await updateSpaceForPublicKey(this.#db, space.id, params, secretKey);
+
+        const updatedSpace = await getSpace(this.#db, space.id);
+        const topicHash = getSpaceTopicHash(updatedSpace);
+
+        const message = await createSpaceSyncMessage({
+            topic: topicHash,
+            space: updatedSpace,
+            publicKey: publicKey,
+            secretKey: secretKey
+        });
+
+        await this.managers.connection.update();
+
+        const peers = this.managers.sockets.getPeerKeys(key => publicKeyIsAllowedToRead(key, updatedSpace));
+        const sockets = this.managers.sockets.getConnectedSockets({
+            peers: peers, topics: [topicHash]
+        });
+
+        await this.managers.message.broadcastMessageToSockets(message, sockets);
+
+        const instance = new SpaceInstance(updatedSpace, "space");
+        return instance;
     }
 
     /**
@@ -76,97 +122,63 @@ export class SpaceService {
             throw new Error(`Record for sharelink already exists: ${sharelink}`);
         }
 
-        await saveShareLink(this.#db, decoded);
+        const sharelinkRecord = await saveShareLink(this.#db, decoded);
+        const instance = new SpaceInstance(sharelinkRecord, 'sharelink', this.sharelinkPrefix);
 
-        const spaceTopicHash = getSpaceTopicHash(decoded);
-        await this.managers.connection.join(spaceTopicHash);
+        await this.managers.connection.join(instance.topicHash);
         await this.managers.connection.update();
 
-        return decoded;
+        return instance;
     }
 
     /**
-     * Leave a space using the sharelink. Additionally, this methods broadcasts
-     * the updated topic list within connected nodes with the removal the the space.
-     * @param {String} sharelink 
+     * Leaves a space (either full or joined) and removes it from the database.
+     * @param {SpaceInstance} space - The space instance to leave.
+     * @returns {Promise<void>}
+     * @throws {Error} If the instance is invalid or deletion fails.
      */
-    async leave(sharelink) {
-        if (!isString(sharelink)) {
-            throw new Error(`shareLink is invalid: ${sharelink}`);
-        }
-
-        const decoded = decodeShareLink(sharelink);
-        if (!decoded) {
-            throw new Error(`Parsing shareLink failed: ${sharelink}`);
-        }
-
-        const spaceQueryResult = await querySpace(this.#db, decoded);
-        const sharelinkQueryResult = await queryShareLink(this.#db, decoded);
-
-        if (spaceQueryResult.length === 0 && sharelinkQueryResult.length === 0) {
-            throw new Error(`No record found for sharelink: ${sharelink}`);
-        }
-
-        if (spaceQueryResult.length > 0) {
-            for (const space of spaceQueryResult) {
-                await deleteSpace(this.#db, space.id);
-            }
-        }
-
-        if (sharelinkQueryResult.length > 0) {
-            for (const sharelinkRecord of sharelinkQueryResult) {
-                await deleteShareLink(this.#db, sharelinkRecord.id);
-            }
-        }
-
-        const spaceTopicHash = getSpaceTopicHash(decoded);
-        await this.managers.connection.leave(spaceTopicHash);
+    async leave(space) {
+        await this.managers.connection.leave(space.topicHash);
         await this.managers.connection.update();
+
+        try {
+            if (space.isSync) {
+                await deleteSpace(this.#db, space.id);
+            } else {
+                await deleteShareLink(this.#db, space.id);
+            }
+        } catch (error) {
+            return; // race condition: sharelink converts to space record before deletion
+        }
     }
 
     /**
-     * Retrieves a list of spaces from storage, optionally filtered by owner public key.
-     * @param {Object} [options] - Optional filtering parameters
-     * @param {string} [options.publicKey] - Filter spaces by owner's public key (optional)
-     * @returns {Promise<Array<Object>>} Promise resolving to array of space metadata objects
+     * Lists all spaces (both full and joined), with network discovery status.
+     * @param {Object} [params] - Filtering options (same as querySpace/queryShareLink).
+     * @param {string} [params.spaceName]
+     * @param {string} [params.publicKey]
+     * @param {string} [params.nonce]
+     * @returns {Promise<SpaceInstance[]>}
      */
     async list(params = {}) {
-        const spaceQuery = await this.managers.storage.querySpace(params);
-        const spaces = spaceQuery.map(space => {
-            const topic = generateSpaceTopic(space.spaceName, space.publicKey, space.nonce);
-            const topicHash = getSpaceTopicHash(space);
-            const isOnDiscovery = this.managers.connection.discoveryMap.hasOwnProperty(topicHash);
+        const [spaceRows, sharelinkRows] = await Promise.all([
+            querySpace(this.#db, params),
+            queryShareLink(this.#db, params),
+        ]);
 
-            return {
-                ...space,
-                sharelink: encodeShareLink(space, this.sharelinkPrefix),
-                topic: topic,
-                topicHash: topicHash,
-                discoverable: isOnDiscovery,
-                isSync: true
-            };
-        });
+        const instances = [];
 
-        const sharelinksQuery = await this.managers.storage.queryShareLink(params);
-        const sharelinks = sharelinksQuery.map(space => {
-            const topic = generateSpaceTopic(space.spaceName, space.publicKey, space.nonce);
-            const topicHash = getSpaceTopicHash(space);
-            const isOnDiscovery = this.managers.connection.discoveryMap.hasOwnProperty(topicHash);
+        for (const row of spaceRows) {
+            const inst = new SpaceInstance(row, 'space', this.sharelinkPrefix);
+            instances.push(inst);
+        }
 
-            return {
-                ...space,
-                sharelink: encodeShareLink(space, this.sharelinkPrefix),
-                topic: topic,
-                topicHash: topicHash,
-                discoverable: isOnDiscovery,
+        for (const row of sharelinkRows) {
+            const inst = new SpaceInstance(row, 'sharelink', this.sharelinkPrefix);
+            instances.push(inst);
+        }
 
-                // Sharelinks are just spaces that are not initiates using
-                // p2p space syncing. This we use isSync to false to address that fact.
-                isSync: false
-            };
-        });
-
-        return [...spaces, ...sharelinks];
+        return instances;
     }
 
     /**

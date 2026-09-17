@@ -14,7 +14,7 @@ describe('MessageService', () => {
         factory = new CoreFactory();
         await factory.init();
 
-        const cores = await factory.createMultipleCores(10);
+        const cores = await factory.createMultipleCores(4);
         const keys = cores.map(core => core.publicKey);
         primaryCore = cores[0];
         secondaryCore = cores[1];

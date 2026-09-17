@@ -35,14 +35,12 @@ export class SessionManager {
             messaging: {
                 rawLimitSize: messageConstants.MAX_MESSAGE_SIZE,
                 frequencyThrottle: messageConstants.MAX_FREQUENCY_THROTTLE,
-                maxQuarantineTime: messageConstants.MAX_QUARANTINE_TIME, // replace with 1000000
+                maxQuarantineTime: messageConstants.MAX_QUARANTINE_TIME,
                 allowThrottleRejection: messageConstants.ALLOW_THROTTLE_REJECTIONS,
 
                 // limit the number of messages that are stored per event type to prevent
                 // excessive disk consumption and maintain system performance. 
-                recordMessagesForEvents: [
-                    eventConstants.SpaceMessage
-                ]
+                recordMessagesForEvents: []
             },
 
             files: {
@@ -54,10 +52,15 @@ export class SessionManager {
                     // additional delay added per rapid change (e.g., 2s => 4s => 6s ... up to maxDelayMs).
                     backoffIncrement: 2000 // 2 seconds
                 },
-                broadcastThrottleTime: 1000, // 1-second
-                // minimum required leaf count for advertising file availability
-                minLeafCountForAdvertisement: 10,
-                treeRequestInterval: 10000, // 10 seconds
+                broadcastThrottleTime: 1000, // 1-second,
+            },
+
+            download: {
+                heatbeatInterval: 5000, //
+                // The maximum time in miliseconds for provider to finish assigments
+                requestTimeout: 64000, // 64-seconds - 100KB/s for 16MB chunk assigned for delivery
+                // number of leaves assigned to provider each cycle
+                assignedChunkSize: 64 // 64 x 256KB => 16MB
             }
         }
 
@@ -121,6 +124,10 @@ export class SessionManager {
     setMessageConfig(params) {
         const config = this.getMessageConfig();
         this.session.set('messaging', {...config, ...params});
+    }
+
+    getDownloadConfig() {
+        return this.session.download;
     }
 
     _createProxyInterface() {

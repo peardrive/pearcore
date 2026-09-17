@@ -4,7 +4,17 @@ import { createReadStream } from "fs";
 import { DEFAULT_CHUNK_SIZE } from "../constants/global.constants.js";
 
 /**
- * Creates file handler for a given file path.
+ * Creates file handler with read-only flag for a given file path.
+ * @param {string} filePath - The file source path.
+ * @returns {Promise<fs.FileHandle>}
+ */
+export async function readFile(filePath) {
+  const handler = await fs.open(filePath, 'r');
+  return handler;
+}
+
+/**
+ * Creates file handler with read/write flags for a given file path.
  * @param {string} filePath - The file source path.
  * @returns {Promise<fs.FileHandle>}
  */
@@ -31,42 +41,13 @@ export function createFileStream(filePath, chunksize = DEFAULT_CHUNK_SIZE) {
 }
 
 /**
- * Creates async read stream from file handler.
- * @param {fs.FileHandle} handler 
- * @param {number} chunksize 
+ * Returns final joined path in POSIX format.
+ * @param  {...any} paths - all path parameters
+ * @returns {string}
  */
-export function createFileStreamFromHandler(source, chunksize = DEFAULT_CHUNK_SIZE) {
-    // 1. If it's a string → treat as file path
-    if (typeof source === 'string') {
-        return createReadStream(source, { highWaterMark: chunksize });
-    }
-
-    let fd;
-    let dummyPath = 'dummy'; // dummy string to satisfy type check
-
-    // 2. If it's a number → it's a file descriptor
-    if (typeof source === 'number') {
-        fd = source;
-    }
-    // 3. If it's a FileHandle (object with an `fd` property)
-    else if (source && typeof source === 'object' && 'fd' in source && typeof source.fd === 'number') {
-        fd = source.fd;
-    } else {
-        throw new TypeError(
-            'source must be a file path (string), a numeric file descriptor, or a FileHandle object'
-        );
-    }
-
-    // Pass the dummy path (string) and provide the fd in options.
-    // The fd option takes precedence over the path.
-    return createReadStream(dummyPath, {
-        fd,
-        highWaterMark: chunksize,
-        autoClose: false, // caller manages the descriptor lifecycle
-    });
+export function posixPathJoin(...paths) {
+  return path.posix.join(...paths);
 }
-// Joines path parameters in posix style
-export const pathJoin = (...paths) => path.posix.join(...paths);
 
 /**
  * Check if a file or directory exists
@@ -82,24 +63,6 @@ export async function fileExists(path) {
       return false;
     }
     throw error;
-  }
-}
-
-/**
- * Read a file with specified encoding
- * @param {string} filePath - Path to the file
- * @param {string} encoding - Encoding (default: 'utf8')
- * @returns {Promise<string|Buffer>} File content
- */
-export async function readFile(filePath, encoding = 'utf8') {
-  try {
-    const content = await fs.readFile(filePath, encoding);
-    return content;
-  } catch (error) {
-    if (error.code === 'ENOENT') {
-      throw new Error(`File not found: ${filePath}`);
-    }
-    throw new Error(`Failed to read file ${filePath}: ${error.message}`);
   }
 }
 

@@ -1,9 +1,15 @@
-import { createPreloadedProfile } from '../utils/profile.utils.js';
+import { createPreloadedProfile, createProfileForPublicKey, getProfileByPublicKey, queryProfileRecord, updateProfileForPublicKey } from '../utils/profile.utils.js';
 import { createProfileUpdateMessage } from '../utils/protocol.utils.js';
+import { getShareLinkTopics } from '../utils/sharelink.utils.js';
+import { getTopicList } from '../utils/space.utils.js';
 
 export class ProfileService {
   constructor(emitter, { managers }) {
     this.managers = managers;
+  }
+
+  get db() {
+    return this.managers.session.getDatabase().db;
   }
 
   /**
@@ -31,7 +37,7 @@ export class ProfileService {
    * @param {number} [options.offset] - Records to skip (default: 0)
    */
   async list(options = {}) {
-    const profiles = await this.managers.storage.queryProfiles(options);
+    const profiles = await queryProfileRecord(this.db, options);
     return profiles;
   }
 
@@ -41,8 +47,10 @@ export class ProfileService {
    */
   async broadcast() {
     const { publicKey, secretKey } = this.managers.session.getCredentials();
-    const profile = await this.managers.storage.getProfileByPublicKey(publicKey);
-    const topics = await this.managers.storage.getTopicHashList();
+    const profile = await getProfileByPublicKey(this.db, publicKey);
+    const spaceTopics = await getTopicList(this.db);
+    const sharelinkTopics = await getShareLinkTopics(this.db);
+    const topics = [ ...spaceTopics, ...sharelinkTopics ];
 
     if (profile) {
       const message = await createProfileUpdateMessage({
@@ -67,17 +75,17 @@ export class ProfileService {
    */
   async update(profile) {
       const { publicKey, secretKey } = this.managers.session.getCredentials();
-      const profileRecord = await this.managers.storage.getProfileByPublicKey(publicKey);
+      const profileRecord = await getProfileByPublicKey(this.db, publicKey);
 
       if (profileRecord) {
         const payload = { ...profileRecord, ...profile };
-        await this.managers.storage.updateProfileForPublicKey(payload, secretKey);
+        await updateProfileForPublicKey(this.db, profileRecord.id, payload, secretKey);
       }
 
       else {
         const preloadedProfile = createPreloadedProfile(publicKey);
         const payload = { ...preloadedProfile, ...profile }
-        await this.managers.storage.createProfileForPublicKey(payload, secretKey);
+        await createProfileForPublicKey(this.db, payload, secretKey);
       }
 
       return await this.broadcast();
@@ -90,7 +98,7 @@ export class ProfileService {
    */
   async getCurrentProfile() {
     const { publicKey } = this.managers.session.getCredentials();
-    const profile = await this.managers.storage.getProfileByPublicKey(publicKey);
+    const profile = await getProfileByPublicKey(this.db, publicKey);
     return profile;
   }
 }

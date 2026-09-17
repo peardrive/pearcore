@@ -4,6 +4,9 @@ import { hex, hexToUint8 } from "../utils/crypto.utils.js";
 import { connectSwarm, joinSwarmTopic } from "../utils/network.utils.js";
 import { createProfileUpdateMessage, createSpaceHashListMessage } from "../utils/protocol.utils.js";
 import { parseBootstrapAddress } from "../utils/parsers.utils.js";
+import { getTopicList } from '../utils/space.utils.js';
+import { getShareLinkTopics } from '../utils/sharelink.utils.js';
+import { getProfileByPublicKey } from '../utils/profile.utils.js';
 
 const logger = createChild('ConnectionManager');
 
@@ -12,13 +15,16 @@ export class ConnectionManager {
         this.socketManager = managers.socketManager;
         this.messageManager = managers.messageManager;
         this.sessionManager = managers.sessionManager;
-        this.storageManager = managers.storageManager;
         this.muxManager = managers.muxManager;
 
         this.swarmInstance = null;
         this.discoveryMap = {};
 
         this.emitter = emitter;
+    }
+
+    get db() {
+        return this.sessionManager.getDatabase().db;
     }
 
     get connectionConfig() {
@@ -49,15 +55,18 @@ export class ConnectionManager {
             });
 
             socket.on('close', () => {
-                this.socketManager.removeSocket(socket);
-                this.muxManager.cleanup(socket);
                 this.emitter.emit(EVENTS.Disconnect, { publicKey });
+                try {
+                    this.socketManager.removeSocket(socket);
+                    this.muxManager.cleanup(socket);
+                } catch (error) { } // do nothing
             });
             socket.on('error', (err) => {
-                logger.warn(`Socket connection error from peer ${publicKey}`, { error: err });
-                this.socketManager.removeSocket(socket);
-                this.muxManager.cleanup(socket);
                 this.emitter.emit(EVENTS.Disconnect, { publicKey });
+                try {
+                    this.socketManager.removeSocket(socket);
+                    this.muxManager.cleanup(socket);
+                } catch(error) {} // do nothing
             })
 
             this.socketManager.addSocket(socket, publicKey, topics);
@@ -70,9 +79,14 @@ export class ConnectionManager {
             }
         });
 
-        const topicHashList = await this.storageManager.getTopicHashList();
+        const spaceTopics = await getTopicList(this.db);
+        const sharelinkTopics = await getShareLinkTopics(this.db);
 
-        for (const topic of topicHashList) {
+        for (const topic of spaceTopics) {
+            await this.join(topic);
+        }
+
+        for (const topic of sharelinkTopics) {
             await this.join(topic);
         }
     }
@@ -150,7 +164,9 @@ export class ConnectionManager {
     async handshake(socket, info) {
         try {
             const { publicKey, secretKey } = this.sessionManager.getCredentials();
-            const topics = await this.storageManager.getTopicHashList();
+            const spaceTopics = await getTopicList(this.db);
+            const sharelinkTopics = await getShareLinkTopics(this.db);
+            const topics = [...spaceTopics, ...sharelinkTopics];
 
             const spaceHashListMessage = await createSpaceHashListMessage({
                 hashList: topics,
@@ -160,7 +176,7 @@ export class ConnectionManager {
 
             await this.messageManager.sendMessageToSocket(spaceHashListMessage, socket);
 
-            const profile = await this.storageManager.getProfileByPublicKey(publicKey);
+            const profile = await getProfileByPublicKey(this.db, publicKey);
             if (profile) {
                 const profileUpdateMessage = await createProfileUpdateMessage({
                     profile: profile,

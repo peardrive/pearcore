@@ -1,5 +1,6 @@
 import { and, eq, gte, lte, like, asc, desc } from 'drizzle-orm';
 import { messages } from "../database/schemas/message.schema.js";
+import { now } from './general.utils.js';
 
 /**
  * Create database filter conditions for message queries.
@@ -253,6 +254,37 @@ export async function queryMessageRecord(db, filters = {}) {
     .all();
 
   return normalizeMessageRecords(results);
+}
+
+/**
+ * Query all message.nonce parameters from database as an array.
+ * @returns {Promise<String[]>} - Array of 24-char hex strings.
+ */
+export async function getNonces(db) {
+  const query = db.select({ nonce: messages.nonce }).from(messages);
+  const result = await query.all();
+  return result.map(record => record.nonce);
+}
+
+/**
+ * Inserts new message record into database only if it doesn't already exist.
+ * @param {Object} db - Drizzle database instance.
+ * @param {Object} params
+ * @param {Object} params.message - The original message object from the network.
+ * @param {string} params.senderPublicKey - The publicKey of the node which sent the message. (broadcasted)
+ * @returns {Promise<void>} Resolves when the message is either avoided or inserted into the database.
+ */
+export async function pushMessageToHistory(db, { message, senderPublicKey }) {
+  if (!message.nonce) return;
+
+  const previousRecords = await queryMessageRecord(db, { nonce: message.nonce });
+  if (previousRecords.length > 0) return;
+
+  await createMessageRecord(db, {
+    message: message,
+    senderPublicKey: senderPublicKey,
+    broadcastTimestamp: now()
+  });
 }
 
 /**

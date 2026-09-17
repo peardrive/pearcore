@@ -2,10 +2,11 @@ import * as MESSAGES from '../constants/messages.constants.js';
 import * as EVENTS from '../constants/events.constants.js';
 import { hex } from '../utils/crypto.utils.js';
 import { BaseProtocolHandler } from "./base.js";
-import { getSpaceTopicHash, verifySpaceSignature } from '../utils/space.utils.js';
+import { getSpace, getSpaceTopicHash, getTopicToSpaceMap, listSpaces, querySpace, upsertSpace, verifySpaceSignature } from '../utils/space.utils.js';
 import { publicKeyIsAllowedToBroadcast, publicKeyIsAllowedToRead, spaceShouldEncryptMessages } from '../utils/policy.utils.js'
-import { isTimestampEqual, isTimestampNewer, validateHexString } from '../utils/general.utils.js';
+import { isTimestampEqual, isTimestampNewer, stripIds, validateHexString } from '../utils/general.utils.js';
 import { createSpaceFileEventMessage, createSpaceSyncMessage, decryptPayload, validateSpaceHashListPayload, validateSpaceSyncMessagePayload } from "../utils/protocol.utils.js";
+import { deleteShareLink, queryShareLink } from '../utils/sharelink.utils.js';
 
 
 export class SpaceHashListHandler extends BaseProtocolHandler {
@@ -18,34 +19,39 @@ export class SpaceHashListHandler extends BaseProtocolHandler {
             return;
         }
 
-        if (message.publicKey != senderPublicKey) {
+        if (message.publicKey !== senderPublicKey) {
             await this.messageManager.reject(socket, message, MESSAGES.NO_RELAY_MESSAGE);
             return;
         }
 
-        const topicList = message.payload;
-        this.socketManager.addSocket(socket, message.publicKey, topicList);
+        const peerTopicList = message.payload;
+        this.socketManager.addSocket(socket, message.publicKey, peerTopicList);
 
-        const spaceTopicList = await this.storageManager.generateSpaceTopicHashMap();
+        const localTopicList = await getTopicToSpaceMap(this.db);
         const { publicKey, secretKey } = this.sessionManager.getCredentials();
 
-        topicList.forEach(async (topic, index) => {
-            const space = spaceTopicList[topic];
-            if (space) {
-                if (publicKeyIsAllowedToRead(senderPublicKey, space)) {
-                    const spaceSyncMessage = await createSpaceSyncMessage({
-                        topic: topic,
-                        space: space,
-                        publicKey: publicKey,
-                        secretKey: secretKey
-                    });
+        for (const topic of peerTopicList) {
+            const spaceId = localTopicList.get(topic);
 
-                    await this.messageManager.sendMessageToSocket(spaceSyncMessage, socket);
+            if (spaceId) {
+                const space = await getSpace(this.db, spaceId);
+
+                if (space) {
+                    if (publicKeyIsAllowedToRead(senderPublicKey, space)) {
+                        const spaceSyncMessage = await createSpaceSyncMessage({
+                            topic: topic,
+                            space: stripIds(space), // remove primary key from the space payload
+                            publicKey: publicKey,
+                            secretKey: secretKey
+                        });
+
+                        await this.messageManager.sendMessageToSocket(spaceSyncMessage, socket);
+                    }
                 }
             }
-        })
+        }
 
-        this.emit(EVENTS.SpaceHashList, { info, message, topics: topicList });
+        this.emit(EVENTS.SpaceHashList, { info, message, topics: peerTopicList });
     }
 }
 
@@ -135,12 +141,12 @@ export class SpaceSyncHandler extends BaseProtocolHandler {
             return;
         }
 
-        const sharelinkQuery = await this.storageManager.queryShareLink({});
-        const spaceQuery = await this.storageManager.querySpace({
+        const sharelinkQuery = await queryShareLink(this.db, {}); // list all records
+        const spaceQuery = await querySpace(this.db, {
             spaceName: message.payload.spaceName,
             publicKey: message.payload.publicKey,
             nonce: message.payload.nonce,
-        });
+        }); // query all records based on topic parameters
 
         const messageIsDirect = message.publicKey === hex(info.publicKey);
         const isEmpty = (arr) => arr.length === 0;
@@ -148,8 +154,11 @@ export class SpaceSyncHandler extends BaseProtocolHandler {
         if (!isEmpty(sharelinkQuery)) {
             if (isEmpty(spaceQuery)) {
                 // first encouter with space sync - create new space record
-                await this.storageManager.upsertSpace(message.payload);
-                await this.storageManager.deleteShareLink(message.payload);
+                await upsertSpace(this.db, message.payload);
+
+                for (const sharelink of sharelinkQuery) {
+                    await deleteShareLink(this.db, sharelink.id);
+                }
 
                 // broadcast to other nodes - they might also look for first encounter
                 this.emit(EVENTS.SpaceSync, { info, message, action: SpaceSyncHandler.STATES.FIRST_ENCOUNTER });
@@ -164,7 +173,9 @@ export class SpaceSyncHandler extends BaseProtocolHandler {
             }
             else {
                 // there is already space record for this message - just delete the sharelink and continue
-                await this.storageManager.deleteShareLink(message.payload);
+                for (const sharelink of sharelinkQuery) {
+                    await deleteShareLink(this.db, sharelink.id);
+                }
             }
         }
         else {
@@ -181,7 +192,7 @@ export class SpaceSyncHandler extends BaseProtocolHandler {
 
         switch (action) {
             case SpaceSyncHandler.STATES.LOCAL_SPACE_REQUIRE_UPDATE:
-                await this.storageManager.upsertSpace(message.payload);
+                await upsertSpace(this.db, message.payload);
                 this.emit(EVENTS.SpaceSync, { info, message, action: SpaceSyncHandler.STATES.LOCAL_SPACE_REQUIRE_UPDATE });
 
                 await this.broadcastSpaceSyncMessage(message, info);
@@ -230,17 +241,18 @@ export class SpaceSyncHandler extends BaseProtocolHandler {
 
 export class SpaceMessageHandler extends BaseProtocolHandler {
     async handle(socket, message, info) {
-        const topicMap = await this.storageManager.generateSpaceTopicHashMap();
+        const localTopicList = await getTopicToSpaceMap(this.db);
         const messageTopic = message.topic;
-        const space = topicMap[messageTopic];
+        const spaceId = localTopicList.get(messageTopic);
 
-        if (!space) {
+        if (!spaceId) {
             await this.messageManager.reject(socket, message, MESSAGES.SPACE_NOT_FOUND_MESSAGE);
             return;
         }
 
         const senderPublicKey = hex(info.publicKey);
         const messagePublicKey = message.publicKey;
+        const space = await getSpace(this.db, spaceId);
 
         if (!publicKeyIsAllowedToRead(senderPublicKey, space)) {
             await this.messageManager.reject(socket, message, MESSAGES.READ_PERMISSION_NOT_ALLOWED_MESSAGE);

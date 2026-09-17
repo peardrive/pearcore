@@ -2,6 +2,8 @@ import * as EVENTS from '../../src/constants/events.constants.js';
 import { describe, it, beforeEach, afterEach, expect } from "vitest";
 import { CoreFactory } from "../factory.js";
 import { buildTestProfilePayload } from "../general.utils";
+import { createProfile, getProfileByPublicKey, updateProfileForPublicKey } from '../../src/utils/profile.utils.js';
+
 
 describe('ProfileService', () => {
     let factory = null;
@@ -14,13 +16,15 @@ describe('ProfileService', () => {
     describe('list', () => {
         it('should list all profile record', async () => {
             const core = await factory.createCore();
+            const { db } = core.managers.session.getDatabase();
+
             await core.profile.update({
                 username: 'profile list test'
             });
 
             for (let index = 0; index < 10; index++) {
                 const profile = await buildTestProfilePayload({ username: `test:${index}` });
-                await core.managers.storage.createProfile(profile);
+                await createProfile(db, profile);
             }
 
             const profileList = await core.profile.list();
@@ -31,7 +35,7 @@ describe('ProfileService', () => {
     describe('broadcast', () => {
         it('should broadcast updated profile payload to connected nodes', async () => {
             const cores = await factory.createMultipleCores(5);
-            
+
             const primaryCore = cores[0];
             const {
                 publicKey: primaryPublicKey,
@@ -51,10 +55,17 @@ describe('ProfileService', () => {
             const newUseraname = 'updated user name';
 
             // modify the account's profile record in the database
-            await primaryCore.managers.storage.updateProfileForPublicKey({
-                publicKey: primaryPublicKey,
-                username: newUseraname
-            }, primarySecretKey);
+            const primaryDB = primaryCore.managers.session.getDatabase().db;
+            const profileRecord = await getProfileByPublicKey(primaryDB, primaryCore.publicKey);
+            await updateProfileForPublicKey(
+                primaryDB,
+                profileRecord.id,
+                {
+                    publicKey: primaryPublicKey,
+                    username: newUseraname
+                },
+                primarySecretKey
+            );
 
             // broadcast profile record to connected nodes
             await primaryCore.profile.broadcast();

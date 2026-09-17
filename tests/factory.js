@@ -1,5 +1,6 @@
 import { createCore } from "../src/core.js";
 import { startBootstrapper } from "../src/utils/network.utils.js";
+import { createProfileForPublicKey } from "../src/utils/profile.utils.js";
 import { getRandomPort, cleanup, makeTempDir } from "./general.utils.js";
 
 export class CoreFactory {
@@ -52,6 +53,7 @@ export class CoreFactory {
         await core.accounts.authenticate(username, 'testPassword');
 
         const { publicKey, secretKey } = core.managers.session.getCredentials();
+        const { db } = core.managers.session.getDatabase();
 
         const profile = {
             username: username,
@@ -59,7 +61,7 @@ export class CoreFactory {
             profileURL: null,
         }
 
-        await core.managers.storage.createProfileForPublicKey({ ...profile, publicKey }, secretKey);
+        await createProfileForPublicKey(db, { ...profile, publicKey }, secretKey);
 
         const extendedCore = { ...core, root, publicKey, secretKey };
         this.cores.push(extendedCore);

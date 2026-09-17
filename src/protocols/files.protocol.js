@@ -8,7 +8,7 @@ import { getDownloadRecord, getFileChunk, getFileTreeRecord, openFileFromRegistr
 import { verifyMerkleTree } from '../utils/merkletree.utils.js';
 import { getSpace, getSpaceToTopicMap, getTopicToSpaceMap } from '../utils/space.utils.js';
 import { DEFAULT_CHUNK_SIZE } from '../constants/global.constants.js';
-import { closeFile } from '../utils/system.utils.js';
+import { closeFile, fileExists } from '../utils/system.utils.js';
 import {
     createSpaceFileEventMessage,
     validateSpaceFileEventPayload,
@@ -17,6 +17,7 @@ import {
     createSpaceFileTreeResponseMessage,
     validateSpaceFileTreeResponsePayload,
     validateSpaceFileContentRequestPayload,
+    validateSpaceFileContentCancelPayload,
 } from '../utils/protocol.utils.js';
 
 
@@ -54,13 +55,15 @@ export class SpaceFileEventHandler extends BaseProtocolHandler {
     }
 
     async handle(socket, message, info) {
-        const topicMap = await this.storageManager.generateSpaceTopicHashMap();
-        const space = topicMap[message.topic];
+        const localTopicList = await getTopicToSpaceMap(this.db);
+        const spaceId = localTopicList.get(message.topic);
 
-        if (!space) {
+        if (!spaceId) {
             await this.messageManager.reject(socket, message, MESSAGES.SPACE_NOT_FOUND_MESSAGE);
             return;
         }
+
+        const space = await getSpace(this.db, spaceId);
 
         if (!publicKeyIsAllowedToBroadcast(message.publicKey, space)) {
             await this.messageManager.reject(socket, message, MESSAGES.BROADCAST_PERMISSION_NOT_ALLOWED_MESSAGE);
@@ -103,17 +106,16 @@ export class SpaceFileEventHandler extends BaseProtocolHandler {
                         fileList: diff
                     });
 
-
-                    if (Object.keys(diff).length > 0) {
-                        const broadcastStack = this.spaceFileListManager.convertListToStack(diff);
-                        eventStack.push({ action: action, files: broadcastStack });
-                    }
+                    const broadcastStack = this.spaceFileListManager.convertListToStack(diff);
+                    eventStack.push({ action: action, files: broadcastStack });
 
                     break;
 
                 case EVENTS.SpaceFileEventOptions.REMOVE:
 
-                    diff.forEach(record => {
+                    const removeStack = this.spaceFileListManager.convertListToStack(diff);
+
+                    removeStack.forEach(record => {
                         const [filepath, publicKey, timestamp, rootHash, signature] = record;
 
                         this.spaceFileListManager.remove({
@@ -123,16 +125,18 @@ export class SpaceFileEventHandler extends BaseProtocolHandler {
                         });
                     });
 
-                    if (Object.keys(diff).length > 0) {
-                        const broadcastStack = this.spaceFileListManager.convertListToStack(diff);
-                        eventStack.push({ action: action, files: broadcastStack });
+                    if (removeStack.length > 0) {
+                        eventStack.push({ action: action, files: removeStack });
                     }
 
                     break;
+
+                default:
+                    await this.messageManager.reject(socket, message, MESSAGES.INVALID_FILE_EVENT_ACTION_MESSAGE);
+                    return;
             }
         }
 
-        // emit the received message before broadcasting the space
         this.emit(EVENTS.SpaceFileEvent, { info, message });
 
         if (eventStack.length > 0) {
@@ -167,13 +171,15 @@ export class SpaceFileTreeRequestHandler extends BaseProtocolHandler {
             return;
         }
 
-        const topicMap = await this.storageManager.generateSpaceTopicHashMap();
-        const space = topicMap[message.topic];
+        const localTopicList = await getTopicToSpaceMap(this.db);
+        const spaceId = localTopicList.get(message.topic);
 
-        if (!space) {
+        if (!spaceId) {
             await this.messageManager.reject(socket, message, MESSAGES.SPACE_NOT_FOUND_MESSAGE);
             return;
         }
+
+        const space = await getSpace(this.db, spaceId);
 
         if (!publicKeyIsAllowedToRead(message.publicKey, space)) {
             await this.messageManager.reject(socket, message, MESSAGES.BROADCAST_PERMISSION_NOT_ALLOWED_MESSAGE);
@@ -238,13 +244,15 @@ export class SpaceFileTreeResponseHandler extends BaseProtocolHandler {
             return;
         }
 
-        const topicMap = await this.storageManager.generateSpaceTopicHashMap();
-        const space = topicMap[message.topic];
+        const localTopicList = await getTopicToSpaceMap(this.db);
+        const spaceId = localTopicList.get(message.topic);
 
-        if (!space) {
+        if (!spaceId) {
             await this.messageManager.reject(socket, message, MESSAGES.SPACE_NOT_FOUND_MESSAGE);
             return;
         }
+
+        const space = await getSpace(this.db, spaceId);
 
         if (!publicKeyIsAllowedToRead(message.publicKey, space)) {
             await this.messageManager.reject(socket, message, MESSAGES.BROADCAST_PERMISSION_NOT_ALLOWED_MESSAGE);
@@ -259,7 +267,7 @@ export class SpaceFileTreeResponseHandler extends BaseProtocolHandler {
         }
 
         const verificationResult = verifyMerkleTree(message.payload.tree);
-        
+
         if (!verificationResult.isValid) {
             await this.messageManager.reject(socket, message, verificationResult.reason);
         }
@@ -317,35 +325,41 @@ export class SpaceFileContentRequestHandler extends BaseProtocolHandler {
         const maxAvailableLeafs = downloadRecord ? downloadRecord.lastPushedLeaf : registry.leafCount - 1;
 
         const [startLeaf, endLeaf] = slice;
-        
+
         if (startLeaf < 0 || endLeaf > maxAvailableLeafs || startLeaf > endLeaf) {
             await this.messageManager.reject(socket, message, MESSAGES.SLICE_NOT_AVAILABLE_MESSAGE);
             return;
         }
 
-        let fileHandler;
-        try {
-            fileHandler = await openFileFromRegistry(this.db, registry.id);
-        } catch (error) {
-            await this.messageManager.reject(socket, message, MESSAGES.FILE_NOT_ACCESSIBLE_MESSAGE);
+        const taskResult = await this.deliveryManager.createTask({
+            socket,
+            key,
+            filePath: registry.fileSourcePath,
+            startLeaf,
+            endLeaf
+        });
+
+        if (!taskResult.succeed) {
+            await this.messageManager.reject(socket, message, taskResult.reason);
         }
 
-        const keyBuffer = Buffer.from(key, 'hex');
-        console.log(keyBuffer.length)
-        const stats = await fileHandler.stat();
-        const size = stats.size;
-
-        for (let leaf = startLeaf; leaf <= endLeaf; leaf++) {
-            const chunk = await getFileChunk(fileHandler, size, leaf, DEFAULT_CHUNK_SIZE);
-
-            const leafIndexBuffer = Buffer.alloc(4);
-            leafIndexBuffer.writeUInt32BE(leaf, 0);
-
-            const framePayload = Buffer.concat([keyBuffer, leafIndexBuffer, chunk]);
-            await this.sendStreamToSocket(framePayload, socket);
-        }
-
-        await closeFile(fileHandler);
         this.emit(EVENTS.SpaceFileContentRequest, { info, message });
+    }
+}
+
+export class SpaceFileContentCancel extends BaseProtocolHandler {
+    async handle(socket, message, info) {
+        if (message.publicKey !== hex(info.publicKey)) {
+            await this.messageManager.reject(socket, message, MESSAGES.NO_RELAY_MESSAGE);
+            return;
+        }
+
+        const result = validateSpaceFileContentCancelPayload(message);
+        if (!result.isValid) {
+            await this.messageManager.reject(socket, message, result.reason);
+        }
+
+        this.deliveryManager.abortTask(message.payload.key);
+        this.emit(EVENTS.SpaceFileContentCancel, { info, message, key });
     }
 }

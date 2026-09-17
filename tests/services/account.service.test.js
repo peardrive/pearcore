@@ -1,7 +1,7 @@
 import { describe, it, beforeEach, afterEach, expect } from 'vitest';
 import { createCore } from '../../src/core';
-import { createAccount } from '../../src/utils/accounts.utils';
-import { makeTempDir, cleanup } from '../general.utils';
+import { createAccount } from '../../src/utils/accounts.utils.js';
+import { makeTempDir, cleanup } from '../general.utils.js';
 
 describe('AccountService', () => {
     let core;
@@ -67,6 +67,17 @@ describe('AccountService', () => {
             expect(result).toHaveProperty('mnemonic');
         })
     })
+
+    describe('recover', () => {
+        it('should recovery credentials from valid mnemonic', async () => {
+            const info = await core.accounts.create('initialUser', '123');
+            const recovery = await core.accounts.recover('recovered', '123', info.mnemonic);
+            const list = await core.accounts.list();
+
+            expect(recovery.publicKey).toBe(info.publicKey);
+            expect(list.length).toBe(2);
+        });
+    });
 
     describe('authenticate', () => {
         it('should throw if username is invalid', async () => {

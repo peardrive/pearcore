@@ -9,6 +9,7 @@ export class BaseProtocolHandler {
         this.messageManager = managers.message;
         this.spaceFileListManager = managers.spaceFileList;
         this.spaceFileManager = managers.spaceFiles;
+        this.deliveryManager = managers.delivery;
         this.muxManager = managers.mux;
 
         this.emitter = emitter;

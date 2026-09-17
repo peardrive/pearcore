@@ -1,5 +1,4 @@
-import path from "node:path"
-import { pathJoin } from "./system.utils.js"
+import path from "node:path";
 
 /**
  * Safely parse raw data as JSON.

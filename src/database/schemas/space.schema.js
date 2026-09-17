@@ -1,8 +1,6 @@
 import { sqliteTable, text, integer } from "drizzle-orm/sqlite-core";
 import { relations } from "drizzle-orm";
 
-import { spaceMembers } from "./spaceMembers.schema.js";
-
 /**
  * Spaces table definition.
  *
@@ -97,8 +95,7 @@ export const readWhitelist = sqliteTable("read_whitelist", {
  */
 export const spacesRelations = relations(spaces, ({ many }) => ({
   broadcastWhitelist: many(broadcastWhitelist),
-  readWhitelist: many(readWhitelist),
-  members: many(spaceMembers), // many profiles per space (via join table)
+  readWhitelist: many(readWhitelist)
 }));
 
 /**
