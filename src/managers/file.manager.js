@@ -1919,6 +1919,15 @@ export class SpaceFileManager {
         return task;
     }
 
+    /**
+     * Get SpaceDownloadTask instance using key.
+     * @param {string} key 
+     * @returns {SpaceDownloadTask | undefined}
+     */
+    getDownloadTask(key) {
+        return this.downloadTasks.get(key);
+    }
+
     async init() {
         await this.localFileRegistry.init();
 

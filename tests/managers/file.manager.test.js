@@ -3,6 +3,7 @@ import { createReadStream } from "fs";
 import * as EVENTS from '../../src/constants/events.constants.js';
 import { describe, expect, it, beforeAll, afterAll, beforeEach, afterEach, vi } from "vitest";
 import { CoreFactory } from "../factory.js";
+import { exampleFileList, exampleFileStack } from "../samples.js";
 import { cleanup, createP2PNetwork, generateRandomFile, makeTempDir } from "../general.utils.js";
 import { FileEventBroadcaster, LeafDeliveryScheduler, LocalFileRegistry, ProviderList, SpaceFileListManager, SpaceTreePuller } from "../../src/managers/file.manager.js";
 import { now } from "../../src/utils/general.utils.js";
@@ -32,68 +33,6 @@ const waitForEvent = (core, eventName, timeout = 5000) => {
         });
     });
 };
-
-const exampleFileList = {
-    '/doc1.txt': {
-        'hashA1': {
-            peers: {
-                'peerA': { timestamp: 1000, signature: 'sigA1' },
-                'peerB': { timestamp: 1001, signature: 'sigB1' }
-            }
-        },
-        'hashA2': {
-            peers: {
-                'peerC': { timestamp: 1002, signature: 'sigC2' },
-                'peerD': { timestamp: 1003, signature: 'sigD2' }
-            }
-        }
-    },
-
-    '/doc2.pdf': {
-        'hashB1': {
-            peers: {
-                'peerE': { timestamp: 2000, signature: 'sigE1' },
-                'peerF': { timestamp: 2001, signature: 'sigF1' }
-            }
-        },
-        'hashB2': {
-            peers: {
-                'peerG': { timestamp: 2002, signature: 'sigG2' },
-                'peerH': { timestamp: 2003, signature: 'sigH2' }
-            }
-        }
-    },
-
-    '/doc3.zip': {
-        'hashC1': {
-            peers: {
-                'peerI': { timestamp: 3000, signature: 'sigI1' },
-                'peerJ': { timestamp: 3001, signature: 'sigJ1' }
-            }
-        },
-        'hashC2': {
-            peers: {
-                'peerK': { timestamp: 3002, signature: 'sigK2' },
-                'peerL': { timestamp: 3003, signature: 'sigL2' }
-            }
-        }
-    }
-};
-
-const exampleFileStack = [
-    ['/doc1.txt', 'peerA', 1000, 'hashA1', 'sigA1'],
-    ['/doc1.txt', 'peerB', 1001, 'hashA1', 'sigB1'],
-    ['/doc1.txt', 'peerC', 1002, 'hashA2', 'sigC2'],
-    ['/doc1.txt', 'peerD', 1003, 'hashA2', 'sigD2'],
-    ['/doc2.pdf', 'peerE', 2000, 'hashB1', 'sigE1'],
-    ['/doc2.pdf', 'peerF', 2001, 'hashB1', 'sigF1'],
-    ['/doc2.pdf', 'peerG', 2002, 'hashB2', 'sigG2'],
-    ['/doc2.pdf', 'peerH', 2003, 'hashB2', 'sigH2'],
-    ['/doc3.zip', 'peerI', 3000, 'hashC1', 'sigI1'],
-    ['/doc3.zip', 'peerJ', 3001, 'hashC1', 'sigJ1'],
-    ['/doc3.zip', 'peerK', 3002, 'hashC2', 'sigK2'],
-    ['/doc3.zip', 'peerL', 3003, 'hashC2', 'sigL2']
-];
 
 describe("SpaceFileListManager", () => {
     let factory = null;

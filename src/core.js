@@ -3,6 +3,7 @@ import { AccountService } from './services/accounts.service.js';
 import { SpaceService } from './services/space.service.js';
 import { ProfileService } from './services/profile.service.js';
 import { MessageService } from './services/message.service.js';
+import { SpaceDriveService } from './services/drive.service.js';
 
 import { DEFAULT_ACCOUNT_DIR } from './constants/global.constants.js';
 import { initializeManagers } from './managers/initialization.js';
@@ -42,6 +43,7 @@ import { initializeManagers } from './managers/initialization.js';
  *   space: SpaceService,
  *   profile: ProfileService,
  *   messages: MessageService,
+ *   drive: SpaceDriveService,
  *   getPublicKey: Function
  * }>}
  *   A fully initialized service container with authenticated session
@@ -66,6 +68,7 @@ export async function createCore({
   const emitter = new EventEmitter();
   const managers = initializeManagers(emitter);
   const space = new SpaceService(emitter, { managers });
+  const drives = new SpaceDriveService(emitter, { managers });
   const messages = new MessageService(emitter, { managers });
   const profile = new ProfileService(emitter, { managers });
   const accounts = new AccountService(emitter, { 
@@ -89,6 +92,7 @@ export async function createCore({
     emitter,
     managers,
     space,
+    drives,
     messages,
     profile,
     accounts,
