@@ -1,5 +1,5 @@
 import path from "path";
-import { SpaceDownloadTask } from "../managers/file.manager.js";
+import { SpaceDownloadTask } from "../managers/files/components/downlad.js";
 import { SpaceInstance } from "./space.service.js";
 import { posixPathJoin } from "../utils/system.utils.js";
 

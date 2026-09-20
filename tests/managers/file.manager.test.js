@@ -5,14 +5,19 @@ import { describe, expect, it, beforeAll, afterAll, beforeEach, afterEach, vi } 
 import { CoreFactory } from "../factory.js";
 import { exampleFileList, exampleFileStack } from "../samples.js";
 import { cleanup, createP2PNetwork, generateRandomFile, makeTempDir } from "../general.utils.js";
-import { FileEventBroadcaster, LeafDeliveryScheduler, LocalFileRegistry, ProviderList, SpaceFileListManager, SpaceTreePuller } from "../../src/managers/file.manager.js";
 import { now } from "../../src/utils/general.utils.js";
 import { createSpaceFileRecordSignature } from "../../src/utils/protocol.utils.js";
 import { generateFileTreeRecord, queryFileRegistryRecords, createDownloadRecord, getTemporarySourcePathForSpaceFile, getFileRegistryRecord, getFileMetaHashFromSource } from "../../src/utils/files.utils.js";
-import { closeFile, createFileStream, deleteFile, fileExists, getFileSize } from "../../src/utils/system.utils.js";
+import { closeFile, createFileStream, deleteFile, getFileSize } from "../../src/utils/system.utils.js";
 import { generateMerkleTree } from "../../src/utils/merkletree.utils.js";
 import { hex, randomNonce } from "../../src/utils/crypto.utils.js";
 import { parseFilePath } from "../../src/utils/parsers.utils.js";
+
+import { FileEventBroadcaster } from '../../src/managers/files/components/events.js';
+import { LocalFileRegistry } from "../../src/managers/files/components/registry.js";
+import { ProviderList } from '../../src/managers/files/components/providers.js';
+import { SpaceTreePuller } from '../../src/managers/files/components/trees.js';
+import { LeafDeliveryScheduler } from '../../src/managers/files/components/leafs.js';
 
 
 const createSignedEvent = async event => {
