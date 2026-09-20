@@ -136,7 +136,7 @@ export class SpaceFileBrowser {
 
         if (recursive) return current;
 
-        return current.filter(p => !p.slice(base.length).includes('/'));
+        return current.filter(p => !p.slice(base.length).includes('/')).sort();
     }
 
     /**
@@ -186,7 +186,7 @@ export class SpaceFileBrowser {
             }
         }
 
-        return Array.from(directories);
+        return Array.from(directories).sort();
     }
 
     /**

@@ -43,7 +43,7 @@ import { initializeManagers } from './managers/initialization.js';
  *   space: SpaceService,
  *   profile: ProfileService,
  *   messages: MessageService,
- *   drive: SpaceDriveService,
+ *   drives: SpaceDriveService,
  *   getPublicKey: Function
  * }>}
  *   A fully initialized service container with authenticated session
