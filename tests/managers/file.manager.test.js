@@ -8,7 +8,7 @@ import { cleanup, createP2PNetwork, generateRandomFile, makeTempDir } from "../g
 import { now } from "../../src/utils/general.utils.js";
 import { createSpaceFileRecordSignature } from "../../src/utils/protocol.utils.js";
 import { generateFileTreeRecord, queryFileRegistryRecords, createDownloadRecord, getTemporarySourcePathForSpaceFile, getFileRegistryRecord, getFileMetaHashFromSource } from "../../src/utils/files.utils.js";
-import { closeFile, createFileStream, deleteFile, getFileSize } from "../../src/utils/system.utils.js";
+import { closeFile, readFile, createEmptyFile, createFileStream, deleteFile, getFileSize } from "../../src/utils/system.utils.js";
 import { generateMerkleTree } from "../../src/utils/merkletree.utils.js";
 import { hex, randomNonce } from "../../src/utils/crypto.utils.js";
 import { parseFilePath } from "../../src/utils/parsers.utils.js";
@@ -1301,7 +1301,6 @@ describe('SpaceDownloadTask', () => {
     let temporaryDirectory;
     let providerFilePath, downloadFinalPath;
     let rootHash;
-    let leafCount;
     let tree;
 
     beforeAll(async () => {
@@ -1381,13 +1380,14 @@ describe('SpaceDownloadTask', () => {
             expect(downloadTask.downloadComplete).toBe(true);
         }, { timeout: 5000, interval: 100 });
 
-
         const size = await getFileSize(downloadFinalPath);
         const handler = await createReadStream(downloadFinalPath);
         const { rootHash: finalRootHash } = await generateMerkleTree({ stream: handler, size });
 
         await closeFile(handler);
-
+        
+        const progress = downloadTask.getProgress();
         expect(finalRootHash).toBe(rootHash);
+        expect(progress.percent).toBe(100);
     });
 });

@@ -414,7 +414,8 @@ export class SpaceFileManager {
         const leafIndex = data.readUInt32BE(keyLength);
         const chunk = data.subarray(keyLength + 4);
 
-        await task.handleChunk(leafIndex, chunk);
+        const publicKey = hex(info.publicKey);
+        await task.handleChunk(leafIndex, chunk, publicKey);
     }
 
     async stop() {

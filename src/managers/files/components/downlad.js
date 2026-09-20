@@ -16,6 +16,7 @@ import { ProviderList } from './providers.js';
 import { SpaceTreePuller } from './trees.js';
 import { LeafDeliveryScheduler } from './leafs.js';
 import { SequentialWriter } from './writer.js';
+import { ProgressTracker } from './progress.js';
 
 const logger = createChild("SpaceDownloadTask");
 
@@ -114,6 +115,8 @@ export class SpaceDownloadTask {
             spaceFilePath: this.spaceFilePath,
             downloadKey: this.key
         });
+
+        this.tracker = new ProgressTracker({ total: this.leafCount });
     }
 
     /**
@@ -161,6 +164,9 @@ export class SpaceDownloadTask {
         const fileHandler = await openFile(this.tempFilePath);
 
         this._buildStack();
+
+        this.tracker.seed(this.nextExpectedLeaf);
+
         this.writer = new SequentialWriter({
             db: this.db,
             registryId: this.registryId,
@@ -290,6 +296,9 @@ export class SpaceDownloadTask {
         const height = tree.levels.length - 1;
         this.leafCount = tree.levels[height].length;
 
+        this.tracker.setTotal(this.leafCount);
+        this.tracker.seed(this.nextExpectedLeaf);
+
         if (!this.registryId) {
             const parsed = parseFilePath(this.spaceFilePath);
             const { registryId } = await createDownloadRecord(this.db, {
@@ -334,7 +343,14 @@ export class SpaceDownloadTask {
         await this.stop();
     }
 
-    async handleChunk(leafIndex, chunk) {
+    /**
+     * Callback for receiving incoming chunks
+     * @param {Number} leafIndex 
+     * @param {Buffer} chunk 
+     * @param {String} publicKey 
+     * @returns {Promise<void>}
+     */
+    async handleChunk(leafIndex, chunk, publicKey) {
         if (this.downloadComplete) return;
 
         const height = this.tree.levels.length - 1;
@@ -344,6 +360,10 @@ export class SpaceDownloadTask {
         if (chunkHash !== leafHashes[leafIndex].hash) return;
 
         const staged = this.writer.stage(leafIndex, chunk);
+        // if stage=false, then the count will increase contribution pecentage
+        // but not the total completion percentage.
+        this.tracker.record(publicKey, staged);
+
         if (!staged) return;
 
         this.scheduler.markDelivered(leafIndex);
@@ -357,6 +377,10 @@ export class SpaceDownloadTask {
         this.scheduler.assign();
     }
 
+    /**
+     * Internal scheduled callback to process tree adoption and delivery scheduling.
+     * @returns {Promise<void>}
+     */
     async heartbeat() {
         if (this._heartbeatRunning || this.downloadComplete) return;
         this._heartbeatRunning = true;
@@ -377,5 +401,32 @@ export class SpaceDownloadTask {
         } finally {
             this._heartbeatRunning = false;
         }
+    }
+
+    /**
+     * Get snapshot of progress of the download
+     * @returns {{
+     *  percent: Number|null,
+     *  contributions: Array<{ source: string, percent: Number }>
+     * }}
+     */
+    getProgress() {
+        return this.tracker.snapshot();
+    }
+
+    /**
+     * Attach callback function to track the progress of the download
+     * @param {Function} callback 
+     */
+    onProgress(callback) {
+        this.tracker.on('progress', callback);
+    }
+
+    /**
+     * Detach callback from tracker event emitter
+     * @param {Function} callback 
+     */
+    offProgress(callback) {
+        this.tracker.off('progress', callback);
     }
 }
