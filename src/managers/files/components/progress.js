@@ -21,7 +21,7 @@ export class ProgressTracker extends EventEmitter {
         super();
         this.contributions = new Map();
         this.completed = 0;
-        this.total = null;
+        this.total = total;
     }
 
     setTotal(total) {

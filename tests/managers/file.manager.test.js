@@ -810,6 +810,76 @@ describe('LocalFileRegistry', () => {
             );
         });
     });
+
+    describe('progress tracking', () => {
+        it('should have no active trackers when idle', async () => {
+            await localFileRegistry.init();
+            expect(localFileRegistry.progressTrackers.size).toBe(0);
+            expect(localFileRegistry.getProgressTracker(filePath)).not.toBeDefined();
+        });
+
+        it('should track progress while add() is indexing', async () => {
+            await localFileRegistry.init();
+
+            const addPromise = localFileRegistry.add({
+                spaceId: 1,
+                spacePath: '/docs',
+                spaceFilename: 'file.txt',
+                fileSourcePath: filePath
+            });
+
+            await vi.waitFor(() => {
+                expect(localFileRegistry.progressTrackers.has(filePath)).toBe(true);
+            }, { timeout: 3000, interval: 10 });
+
+            const tracker = localFileRegistry.getProgressTracker(filePath);
+
+            const snapshots = [];
+            tracker.on('progress', snapshot => snapshots.push(snapshot));
+
+            await addPromise;
+
+            expect(localFileRegistry.progressTrackers.has(filePath)).toBe(false);
+            expect(localFileRegistry.getProgressTracker(filePath)).not.toBeDefined();
+
+            expect(snapshots.length).toBeGreaterThan(0);
+
+            const last = snapshots[snapshots.length - 1];
+            expect(last.percent).toBe(100);
+            expect(last.contributions).toEqual([{ source: 'local', percent: 100 }]);
+        });
+
+        it('should track progress during scheduled re-indexing after a file change, and dispose it after', async () => {
+            await generateFileTreeRecord(db, {
+                fileSourcePath: filePath,
+                spacePath: '/',
+                spaceFilename: 'file.txt',
+                spaceId: 1
+            });
+
+            const session = core.managers.session;
+            session.session.set('files.localChangeBackoff', {
+                baseDelay: 10,
+                maxDelay: 15,
+                backoffIncrement: 1
+            });
+
+            await localFileRegistry.init();
+
+            await generateRandomFile(filePath, 2);
+            await localFileRegistry.onChangeEvent(filePath);
+
+            await vi.waitFor(() => {
+                expect(localFileRegistry.progressTrackers.has(filePath)).toBe(true);
+            }, { timeout: 3000, interval: 10 });
+
+            await vi.waitFor(() => {
+                expect(localFileRegistry.progressTrackers.has(filePath)).toBe(false);
+            }, { timeout: 3000, interval: 10 });
+
+            expect(localFileRegistry.getProgressTracker(filePath)).not.toBeDefined();
+        });
+    });
 });
 
 describe("ProviderList", () => {
@@ -1329,7 +1399,6 @@ describe('SpaceDownloadTask', () => {
         const stream = createFileStream(providerFilePath);
         tree = await generateMerkleTree({ stream, size });
         rootHash = tree.rootHash;
-        leafCount = tree.leafCount || tree.levels[tree.levels.length - 1].length;
 
         // create the local file registry for the provider
         const parsed = parseFilePath(SPACE_FILE_PATH);
@@ -1385,7 +1454,7 @@ describe('SpaceDownloadTask', () => {
         const { rootHash: finalRootHash } = await generateMerkleTree({ stream: handler, size });
 
         await closeFile(handler);
-        
+
         const progress = downloadTask.getProgress();
         expect(finalRootHash).toBe(rootHash);
         expect(progress.percent).toBe(100);
