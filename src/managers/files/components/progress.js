@@ -12,7 +12,12 @@ import { EventEmitter } from "events";
  * 
  */
 export class ProgressTracker extends EventEmitter {
-    constructor() {
+    /**
+     * 
+     * @param {Object} params
+     * @param {number|undefined} [params.total]
+     */
+    constructor({ total=undefined } = {}) {
         super();
         this.contributions = new Map();
         this.completed = 0;
@@ -37,7 +42,7 @@ export class ProgressTracker extends EventEmitter {
         this.contributions.set(source, (this.contributions.get(source) || 0) + 1);
         if (counted) { this.completed += 1; }
 
-        this.emit('progres', this.snapshot());
+        this.emit('progress', this.snapshot());
     }
 
     /**

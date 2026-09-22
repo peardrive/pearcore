@@ -475,14 +475,15 @@ export async function getFileChunk(handler, fileSize, leafIndex, chunkSize = DEF
 /**
  * Create and insert file tree into database.
  * @param {Object} db - Database instace.
- * @param {Object} params 
- * @param {string} params.fileSourcePath - Local file path.
- * @param {string} params.spacePath - Virtual directory path for space.
- * @param {string} params.spaceFilename - Virtual file name for space.
- * @param {number} params.spaceId - ID of space for reference.
- * @param {Object} params.tree - optional, pass generated Merkle tree if you already obtain it.
- * @param {Object} params.tree.rootHash - root hash of the generated Merkle tree.
- * @param {Object} params.tree.levels - Levels of the generated merkle tree (check documentation for generateMerkleTree).
+ * @param {Object} [params] 
+ * @param {string} [params.fileSourcePath] - Local file path.
+ * @param {string} [params.spacePath] - Virtual directory path for space.
+ * @param {string} [params.spaceFilename] - Virtual file name for space.
+ * @param {number} [params.spaceId] - ID of space for reference.
+ * @param {Function|undefined} [params.onLeaf] - optional callback to track sequential progress of leaf generation (only if params.tree has not passed).
+ * @param {Object} [params.tree] - optional, pass generated Merkle tree if you already obtain it.
+ * @param {Object} [params.tree.rootHash] - root hash of the generated Merkle tree.
+ * @param {Object} [params.tree.levels] - Levels of the generated merkle tree (check documentation for generateMerkleTree).
  * @returns {Promise<{registryId: number, rootHash: string, leafCount: number}>} Resolves when the file indexing has been complete.
  */
 export async function generateFileTreeRecord(db, params) {
@@ -491,6 +492,7 @@ export async function generateFileTreeRecord(db, params) {
         spacePath,
         spaceFilename,
         spaceId,
+        onLeaf
     } = params;
 
     const source = path.resolve(fileSourcePath);
@@ -514,6 +516,7 @@ export async function generateFileTreeRecord(db, params) {
                 stream,
                 size,
                 chunkSize: DEFAULT_CHUNK_SIZE,
+                onLeaf: onLeaf
             }); 
 
         } catch(error) {

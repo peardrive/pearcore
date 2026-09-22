@@ -175,10 +175,10 @@ export class SpaceFileBrowser {
             parts.pop();
 
             if (recursive) {
-                let acc = '';
+                let accumulate = '';
                 for (const part of parts) {
-                    acc = acc ? `${acc}/${part}` : part;
-                    directories.add(acc);
+                    accumulate = accumulate ? `${accumulate}/${part}` : part;
+                    directories.add(accumulate);
                 }
             }
             else if (parts.length > 0) {

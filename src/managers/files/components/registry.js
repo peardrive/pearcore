@@ -14,8 +14,10 @@ import {
     getDownloadRecord,
     getFileRegistryRecord,
 } from "../../../utils/files.utils.js";
-import { generateMerkleTree } from '../../../utils/merkletree.utils.js';
+import { generateMerkleTree, getLeafCount } from '../../../utils/merkletree.utils.js';
 import { createChild } from '../../../logger.js';
+import { ProgressTracker } from './progress.js';
+import { DEFAULT_CHUNK_SIZE } from '../../../constants/global.constants.js';
 
 const logger = createChild('LocalFileRegistry');
 
@@ -27,9 +29,34 @@ export class LocalFileRegistry {
         this.fileEventBroadcaster = fileEventBroadcaster;
 
         this.watcher = null;
-        this.backoffStates = new Map(); // filePath -> { timeout, delay }
-        this.indexingInProgress = new Map(); // filePath -> boolean
-        this.pendingAfterIndex = new Map(); // filePath -> boolean
+
+        /**
+         * Tracks scheduler re-indexing tasks for each file.
+         * @type {Map<string, { timeout: NodeJS.Timeout, delay: number }>}
+         */
+        this.backoffStates = new Map();
+
+        /**
+         * Labels source files that are being actively indexed. (filepath -> state)
+         * this helps the local file-change event to wait until current indexing has complete before
+         * creating new process, potentially create race collision.
+         * @type {Map<string, boolean>}
+         */
+        this.indexingInProgress = new Map();
+
+        /**
+         * Labels source files that received a file-change event while already being indexed,
+         * this helps follow-up indexing pass gets scheduled once the current one finishes.
+         * @type {Map<string, boolean>}
+         */
+        this.pendingAfterIndex = new Map();
+
+        /**
+         * Active progress trackers for in-progress file indexing, tracked by the source file path.
+         * Entries are removed once indexing settles.
+         * @type {Map<string, ProgressTracker>}
+         */
+        this.progressTrackers = new Map();
     }
 
     get db() {
@@ -38,6 +65,10 @@ export class LocalFileRegistry {
 
     get backoffConfig() {
         return this.sessionManager.session.get('files.localChangeBackoff');
+    }
+
+    getProgressTracker(sourceFilePath) {
+        return this.progressTrackers.get(sourceFilePath);
     }
 
     /**
@@ -132,15 +163,24 @@ export class LocalFileRegistry {
             if (batchRequireUpdate) {
                 // calculate the Merkle tree once
                 const size = await getFileSize(sourcePath);
+                const leafCount = getLeafCount(size, DEFAULT_CHUNK_SIZE);
+                const tracker = new ProgressTracker({ total: leafCount });
+
+                this.progressTrackers.set(sourcePath, tracker);
 
                 let stream;
                 try {
                     // try to generate new Merkle tree
                     stream = createFileStream(sourcePath);
-                    tree = await generateMerkleTree({ stream, size });
+                    tree = await generateMerkleTree({
+                        stream,
+                        size,
+                        onLeaf: () => { tracker.record('local') }
+                    });
+
                     rootHash = tree.rootHash;
 
-                } catch(error) {
+                } catch (error) {
                     // skip the registry group if reading file has failed.
                     logger.warn('generating new tree failed', {
                         sourcePath,
@@ -154,6 +194,8 @@ export class LocalFileRegistry {
                     if (stream && !stream.destroyed) {
                         await stream.destroy();
                     }
+
+                    this.progressTrackers.delete(sourcePath);
                 }
 
                 for (const reg of registries) {
@@ -231,18 +273,33 @@ export class LocalFileRegistry {
             throw new Error(`Space not found with id: ${spaceId}`);
         }
 
-        const { registryId, rootHash } = await generateFileTreeRecord(this.db, {
-            fileSourcePath: fileSourcePath,
-            spacePath: spacePath,
-            spaceFilename: spaceFilename,
-            spaceId: spaceId
-        });
+        const size = await getFileSize(fileSourcePath);
+        const leafCount = getLeafCount(size, DEFAULT_CHUNK_SIZE);
+        const tracker = new ProgressTracker({ total: leafCount });
 
-        if (this.watcher) {
-            const watchedFiles = this.watcher.getWatched() || {};
-            if (!Object.keys(watchedFiles).includes(fileSourcePath)) {
-                await this.watcher.add(fileSourcePath);
+        this.progressTrackers.set(fileSourcePath, tracker);
+
+        let registryId, rootHash;
+        try {
+            const result = await generateFileTreeRecord(this.db, {
+                fileSourcePath: fileSourcePath,
+                spacePath: spacePath,
+                spaceFilename: spaceFilename,
+                spaceId: spaceId,
+                onLeaf: () => { tracker.record('local') }
+            });
+
+            registryId = result.registryId;
+            rootHash = result.rootHash;
+
+            if (this.watcher) {
+                const watchedFiles = this.watcher.getWatched() || {};
+                if (!Object.keys(watchedFiles).includes(fileSourcePath)) {
+                    await this.watcher.add(fileSourcePath);
+                }
             }
+        } finally {
+            this.progressTrackers.delete(fileSourcePath);
         }
 
         const { publicKey, secretKey } = this.sessionManager.getCredentials();
@@ -317,10 +374,11 @@ export class LocalFileRegistry {
             await this.watcher.close();
             this.watcher = null;
         }
-        
+
         this.backoffStates.clear();
         this.pendingAfterIndex.clear();
         this.indexingInProgress.clear();
+        this.progressTrackers.clear();
     }
 
     async onChangeEvent(filePath) {
@@ -483,8 +541,22 @@ export class LocalFileRegistry {
             let tree;
             try {
                 const size = await getFileSize(filePath);
-                const stream = await createFileStream(filePath);
-                tree = await generateMerkleTree({ stream, size });
+                const leafCount = getLeafCount(size, DEFAULT_CHUNK_SIZE);
+                const tracker = new ProgressTracker({ total: leafCount });
+
+                this.progressTrackers.set(filePath, tracker);
+
+                try {
+                    const stream = await createFileStream(filePath);
+                    tree = await generateMerkleTree({
+                        stream, 
+                        size, 
+                        onLeaf: () => { tracker.record('local') }
+                    });
+                } finally {
+                    this.progressTrackers.delete(filePath);
+                }
+
             } catch (error) {
                 logger.error('Generating Merkle tree failed during scheduled indexing', {
                     filePath,

@@ -15,15 +15,25 @@ const EMPTY_LEAF_HASH = hash(Buffer.alloc(0));
 
 // Helper function that converts input into hex string if its not null.
 const toHex = buffer => notNull(buffer) ? hex(buffer) : null;
-export const getLeafCount = (fileSize, chunkSize) => fileSize === 0 ? 1 : Math.ceil(fileSize / chunkSize);
+
+/**
+ * Calculate the number of leaf hashes that will be generated for a specific file given the file-size in bytes and the chunk-size
+ * @param {number} fileSize 
+ * @param {number} [chunkSize=DEFAULT_CHUNK_SIZE] 
+ * @returns {number} - total number of leafs.
+ */
+export function getLeafCount(fileSize, chunkSize=DEFAULT_CHUNK_SIZE) {
+    return fileSize === 0 ? 1 : Math.ceil(fileSize / chunkSize);
+}
 
 /**
  * Create Merkle Tree from file stream.
  *
- * @param {Object} params
- * @param {ReadStream} params.stream
- * @param {number} params.size
- * @param {number} params.chunkSize
+ * @param {Object} [params]
+ * @param {ReadStream} [params.stream] - read stream from the file.
+ * @param {number} [params.size] - size of the input file.
+ * @param {number} [params.chunkSize=DEFAULT_CHUNK_SIZE] - size of leaf chunks.
+ * @param {Function|undefined} [params.onLeaf] - optional callback function called to track leaf hash generation
  *
  * @returns {Promise<{
  *   levels: Array,
@@ -34,7 +44,8 @@ export const getLeafCount = (fileSize, chunkSize) => fileSize === 0 ? 1 : Math.c
 export async function generateMerkleTree({
     stream,
     size,
-    chunkSize = DEFAULT_CHUNK_SIZE
+    chunkSize = DEFAULT_CHUNK_SIZE,
+    onLeaf = undefined
 }) {
     if (!isDefined(size) || !isNumber(size) || size < 0) {
         throw new Error("file size is invalid for merkle tree");
@@ -56,19 +67,36 @@ export async function generateMerkleTree({
 
         while (pending.length >= chunkSize) {
             const chunk = pending.subarray(0, chunkSize);
+            const leafHash = hash(chunk);
 
-            leafHashes.push(hash(chunk));
+            leafHashes.push(leafHash);
+            // trigger callback after hash generation
+            if (onLeaf) {
+                const leafIndex = leafHashes.length - 1;
+                onLeaf(leafHash, leafIndex);
+            }
 
             pending = pending.subarray(chunkSize);
         }
     }
 
     if (pending.length > 0) {
+        // append the last pending leaf
+        const lastLeafHash = hash(pending);
         leafHashes.push(hash(pending));
+
+        if (onLeaf) {
+            const leafIndex = leafHashes.length - 1;
+            onLeaf(lastLeafHash, leafIndex);
+        }
     }
 
     if (size === 0) {
         leafHashes.push(EMPTY_LEAF_HASH);
+
+        if (onLeaf) {
+            onLeaf(EMPTY_LEAF_HASH, 0);
+        }
     }
 
     if (leafHashes.length !== leafCount) {
