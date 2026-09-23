@@ -67,6 +67,11 @@ export class LocalFileRegistry {
         return this.sessionManager.session.get('files.localChangeBackoff');
     }
 
+    /**
+     * Get progressTracker instance for active file-indexing process.
+     * @param {string} sourceFilePath - the local file path.
+     * @returns {ProgressTracker}
+     */
     getProgressTracker(sourceFilePath) {
         return this.progressTrackers.get(sourceFilePath);
     }
@@ -247,10 +252,17 @@ export class LocalFileRegistry {
      * @param {string} params.spacePath - Path within the space (directory)
      * @param {string} params.spaceFilename - Filename within the space
      * @param {string} params.fileSourcePath - Absolute local file path
+     * @param {(tracker: ProgressTracker) => void} params.onIndexingStart - optional callback once the file-indexing has begun.
      * @returns {Promise<number>} - The newly created registry ID
      */
     async add(params) {
-        const { spaceId, spacePath, spaceFilename, fileSourcePath } = params;
+        const {
+            spaceId,
+            spacePath,
+            spaceFilename,
+            fileSourcePath,
+            onIndexingStart
+        } = params;
 
         const exists = await fileExists(fileSourcePath);
         if (!exists) {
@@ -281,6 +293,8 @@ export class LocalFileRegistry {
 
         let registryId, rootHash;
         try {
+            onIndexingStart?.(tracker);
+            
             const result = await generateFileTreeRecord(this.db, {
                 fileSourcePath: fileSourcePath,
                 spacePath: spacePath,
@@ -549,8 +563,8 @@ export class LocalFileRegistry {
                 try {
                     const stream = await createFileStream(filePath);
                     tree = await generateMerkleTree({
-                        stream, 
-                        size, 
+                        stream,
+                        size,
                         onLeaf: () => { tracker.record('local') }
                     });
                 } finally {

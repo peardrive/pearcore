@@ -416,7 +416,7 @@ export class SpaceDownloadTask {
 
     /**
      * Attach callback function to track the progress of the download
-     * @param {Function} callback 
+     * @param {() => void} callback 
      */
     onProgress(callback) {
         this.tracker.on('progress', callback);
@@ -424,7 +424,7 @@ export class SpaceDownloadTask {
 
     /**
      * Detach callback from tracker event emitter
-     * @param {Function} callback 
+     * @param {() => void} callback 
      */
     offProgress(callback) {
         this.tracker.off('progress', callback);

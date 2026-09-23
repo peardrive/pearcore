@@ -33,7 +33,7 @@ export function getLeafCount(fileSize, chunkSize=DEFAULT_CHUNK_SIZE) {
  * @param {ReadStream} [params.stream] - read stream from the file.
  * @param {number} [params.size] - size of the input file.
  * @param {number} [params.chunkSize=DEFAULT_CHUNK_SIZE] - size of leaf chunks.
- * @param {Function|undefined} [params.onLeaf] - optional callback function called to track leaf hash generation
+ * @param {() => void} [params.onLeaf] - optional callback function called to track leaf hash generation
  *
  * @returns {Promise<{
  *   levels: Array,

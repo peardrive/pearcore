@@ -153,7 +153,18 @@ export function validateSpaceFilePath(spaceFilePath) {
  * @param {string} params.metaHash - The file metadata hash.
  * @param {number} params.leafCount - Total number of leaf nodes in the Merkle tree.
  * @param {number} params.height - Height (depth) of the Merkle tree. 
- * @returns {Object}
+ * @returns {{
+ *  id: number,
+ *  fileSourcePath: string,
+ *  timestamp: number,
+ *  spaceId: number,
+ *  spacePath: string,
+ *  spaceFilename: string,
+ *  rootHash: string, 
+ *  metaHash: string,
+ *  leafCount: number,
+ *  height: number
+ * }}
  */
 export function buildfileRegistryPayload(params) {
     return {
@@ -182,7 +193,7 @@ export function buildfileRegistryPayload(params) {
  * @param {string} params.metaHash - Hash of the local file's metadata.
  * @param {number} params.leafCount - Number of all leaf node hashes within the merkle tree.
  * @param {number} params.height - Depth value of the merkle tree.
- * @returns {Promise<Object>} Resolves when the record has been inserted into the database
+ * @returns {Promise<{ registryId: number }>} Resolves when the record has been inserted into the database
  */
 export async function createfileRegistryRecord(db, params) {
     const payload = buildfileRegistryPayload(params);
@@ -194,7 +205,18 @@ export async function createfileRegistryRecord(db, params) {
  * Get a single file regitry record by ID.
  * @param {Object} db - Database instance.
  * @param {number} registryId - ID of the file registry.
- * @returns {Promise<Object>}
+ * @returns {{
+ *  id: number,
+ *  fileSourcePath: string,
+ *  timestamp: number,
+ *  spaceId: number,
+ *  spacePath: string,
+ *  spaceFilename: string,
+ *  rootHash: string, 
+ *  metaHash: string,
+ *  leafCount: number,
+ *  height: number
+ * }}
  */
 export async function getFileRegistryRecord(db, registryId) {
     return await db.select()
@@ -503,10 +525,10 @@ export async function generateFileTreeRecord(db, params) {
     }
 
     const size = await getFileSize(source);
-    
+
     let tree;
     let stream;
-    
+
     if (params.tree) { tree = params.tree; }
     else {
         try {
@@ -517,9 +539,9 @@ export async function generateFileTreeRecord(db, params) {
                 size,
                 chunkSize: DEFAULT_CHUNK_SIZE,
                 onLeaf: onLeaf
-            }); 
+            });
 
-        } catch(error) {
+        } catch (error) {
             throw new Error(`generating Merkle tree failed for ${fileSourcePath}`);
 
         } finally {

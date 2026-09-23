@@ -5,6 +5,7 @@ import { hex, randomNonce } from '../../utils/crypto.utils.js';
 import { FileEventBroadcaster } from './components/events.js';
 import { LocalFileRegistry } from './components/registry.js';
 import { SpaceDownloadTask } from './components/downlad.js';
+import { ProgressTracker } from './components/progress.js';
 
 const logger = createChild('FileManager');
 
@@ -350,14 +351,19 @@ export class SpaceFileManager {
      * @param {Number} space.id
      * @param {String} spaceFilePath 
      * @param {String} fileSourcePath 
+     * @param {Object} options
+     * @param {(tracker: ProgressTracker) => void} options.onIndexingStart - optional callback to trigger when the indexing starts
+     * @returns {number}
      */
-    async addLocalFile(space, spaceFilePath, fileSourcePath) {
+    async addLocalFile(space, spaceFilePath, fileSourcePath, options) {
         const parsed = parseFilePath(spaceFilePath);
+        
         const registryId = await this.localFileRegistry.add({
             spaceId: space.id,
             spacePath: parsed.dir,
             spaceFilename: parsed.filename,
-            fileSourcePath: fileSourcePath
+            fileSourcePath: fileSourcePath,
+            onIndexingStart: options.onIndexingStart
         });
 
         return registryId;
@@ -394,6 +400,15 @@ export class SpaceFileManager {
 
         await spaceDownloadTask.start();
         return key;
+    }
+
+    /**
+     * Get progress tracker for local file indexing process.
+     * @param {string} filePath 
+     * @returns {ProgressTracker|undefined}
+     */
+    getIndexingProgress(filePath) {
+        return this.localFileRegistry.getProgressTracker(filePath);
     }
 
     /**

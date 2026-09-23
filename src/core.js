@@ -44,7 +44,7 @@ import { initializeManagers } from './managers/initialization.js';
  *   profile: ProfileService,
  *   messages: MessageService,
  *   drives: SpaceDriveService,
- *   getPublicKey: Function
+ *   getPublicKey: () => string
  * }>}
  *   A fully initialized service container with authenticated session
  *   (if credentials were provided).
