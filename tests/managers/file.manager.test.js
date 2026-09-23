@@ -3,15 +3,21 @@ import { createReadStream } from "fs";
 import * as EVENTS from '../../src/constants/events.constants.js';
 import { describe, expect, it, beforeAll, afterAll, beforeEach, afterEach, vi } from "vitest";
 import { CoreFactory } from "../factory.js";
+import { exampleFileList, exampleFileStack } from "../samples.js";
 import { cleanup, createP2PNetwork, generateRandomFile, makeTempDir } from "../general.utils.js";
-import { FileEventBroadcaster, LeafDeliveryScheduler, LocalFileRegistry, ProviderList, SpaceFileListManager, SpaceTreePuller } from "../../src/managers/file.manager.js";
 import { now } from "../../src/utils/general.utils.js";
 import { createSpaceFileRecordSignature } from "../../src/utils/protocol.utils.js";
 import { generateFileTreeRecord, queryFileRegistryRecords, createDownloadRecord, getTemporarySourcePathForSpaceFile, getFileRegistryRecord, getFileMetaHashFromSource } from "../../src/utils/files.utils.js";
-import { closeFile, createFileStream, deleteFile, fileExists, getFileSize } from "../../src/utils/system.utils.js";
+import { closeFile, readFile, createEmptyFile, createFileStream, deleteFile, getFileSize } from "../../src/utils/system.utils.js";
 import { generateMerkleTree } from "../../src/utils/merkletree.utils.js";
 import { hex, randomNonce } from "../../src/utils/crypto.utils.js";
 import { parseFilePath } from "../../src/utils/parsers.utils.js";
+
+import { FileEventBroadcaster } from '../../src/managers/files/components/events.js';
+import { LocalFileRegistry } from "../../src/managers/files/components/registry.js";
+import { ProviderList } from '../../src/managers/files/components/providers.js';
+import { SpaceTreePuller } from '../../src/managers/files/components/trees.js';
+import { LeafDeliveryScheduler } from '../../src/managers/files/components/leafs.js';
 
 
 const createSignedEvent = async event => {
@@ -32,68 +38,6 @@ const waitForEvent = (core, eventName, timeout = 5000) => {
         });
     });
 };
-
-const exampleFileList = {
-    '/doc1.txt': {
-        'hashA1': {
-            peers: {
-                'peerA': { timestamp: 1000, signature: 'sigA1' },
-                'peerB': { timestamp: 1001, signature: 'sigB1' }
-            }
-        },
-        'hashA2': {
-            peers: {
-                'peerC': { timestamp: 1002, signature: 'sigC2' },
-                'peerD': { timestamp: 1003, signature: 'sigD2' }
-            }
-        }
-    },
-
-    '/doc2.pdf': {
-        'hashB1': {
-            peers: {
-                'peerE': { timestamp: 2000, signature: 'sigE1' },
-                'peerF': { timestamp: 2001, signature: 'sigF1' }
-            }
-        },
-        'hashB2': {
-            peers: {
-                'peerG': { timestamp: 2002, signature: 'sigG2' },
-                'peerH': { timestamp: 2003, signature: 'sigH2' }
-            }
-        }
-    },
-
-    '/doc3.zip': {
-        'hashC1': {
-            peers: {
-                'peerI': { timestamp: 3000, signature: 'sigI1' },
-                'peerJ': { timestamp: 3001, signature: 'sigJ1' }
-            }
-        },
-        'hashC2': {
-            peers: {
-                'peerK': { timestamp: 3002, signature: 'sigK2' },
-                'peerL': { timestamp: 3003, signature: 'sigL2' }
-            }
-        }
-    }
-};
-
-const exampleFileStack = [
-    ['/doc1.txt', 'peerA', 1000, 'hashA1', 'sigA1'],
-    ['/doc1.txt', 'peerB', 1001, 'hashA1', 'sigB1'],
-    ['/doc1.txt', 'peerC', 1002, 'hashA2', 'sigC2'],
-    ['/doc1.txt', 'peerD', 1003, 'hashA2', 'sigD2'],
-    ['/doc2.pdf', 'peerE', 2000, 'hashB1', 'sigE1'],
-    ['/doc2.pdf', 'peerF', 2001, 'hashB1', 'sigF1'],
-    ['/doc2.pdf', 'peerG', 2002, 'hashB2', 'sigG2'],
-    ['/doc2.pdf', 'peerH', 2003, 'hashB2', 'sigH2'],
-    ['/doc3.zip', 'peerI', 3000, 'hashC1', 'sigI1'],
-    ['/doc3.zip', 'peerJ', 3001, 'hashC1', 'sigJ1'],
-    ['/doc3.zip', 'peerK', 3002, 'hashC2', 'sigK2'],
-    ['/doc3.zip', 'peerL', 3003, 'hashC2', 'sigL2']
-];
 
 describe("SpaceFileListManager", () => {
     let factory = null;
@@ -866,6 +810,76 @@ describe('LocalFileRegistry', () => {
             );
         });
     });
+
+    describe('progress tracking', () => {
+        it('should have no active trackers when idle', async () => {
+            await localFileRegistry.init();
+            expect(localFileRegistry.progressTrackers.size).toBe(0);
+            expect(localFileRegistry.getProgressTracker(filePath)).not.toBeDefined();
+        });
+
+        it('should track progress while add() is indexing', async () => {
+            await localFileRegistry.init();
+
+            const addPromise = localFileRegistry.add({
+                spaceId: 1,
+                spacePath: '/docs',
+                spaceFilename: 'file.txt',
+                fileSourcePath: filePath
+            });
+
+            await vi.waitFor(() => {
+                expect(localFileRegistry.progressTrackers.has(filePath)).toBe(true);
+            }, { timeout: 3000, interval: 10 });
+
+            const tracker = localFileRegistry.getProgressTracker(filePath);
+
+            const snapshots = [];
+            tracker.on('progress', snapshot => snapshots.push(snapshot));
+
+            await addPromise;
+
+            expect(localFileRegistry.progressTrackers.has(filePath)).toBe(false);
+            expect(localFileRegistry.getProgressTracker(filePath)).not.toBeDefined();
+
+            expect(snapshots.length).toBeGreaterThan(0);
+
+            const last = snapshots[snapshots.length - 1];
+            expect(last.percent).toBe(100);
+            expect(last.contributions).toEqual([{ source: 'local', percent: 100 }]);
+        });
+
+        it('should track progress during scheduled re-indexing after a file change, and dispose it after', async () => {
+            await generateFileTreeRecord(db, {
+                fileSourcePath: filePath,
+                spacePath: '/',
+                spaceFilename: 'file.txt',
+                spaceId: 1
+            });
+
+            const session = core.managers.session;
+            session.session.set('files.localChangeBackoff', {
+                baseDelay: 10,
+                maxDelay: 15,
+                backoffIncrement: 1
+            });
+
+            await localFileRegistry.init();
+
+            await generateRandomFile(filePath, 2);
+            await localFileRegistry.onChangeEvent(filePath);
+
+            await vi.waitFor(() => {
+                expect(localFileRegistry.progressTrackers.has(filePath)).toBe(true);
+            }, { timeout: 3000, interval: 10 });
+
+            await vi.waitFor(() => {
+                expect(localFileRegistry.progressTrackers.has(filePath)).toBe(false);
+            }, { timeout: 3000, interval: 10 });
+
+            expect(localFileRegistry.getProgressTracker(filePath)).not.toBeDefined();
+        });
+    });
 });
 
 describe("ProviderList", () => {
@@ -1357,7 +1371,6 @@ describe('SpaceDownloadTask', () => {
     let temporaryDirectory;
     let providerFilePath, downloadFinalPath;
     let rootHash;
-    let leafCount;
     let tree;
 
     beforeAll(async () => {
@@ -1386,7 +1399,6 @@ describe('SpaceDownloadTask', () => {
         const stream = createFileStream(providerFilePath);
         tree = await generateMerkleTree({ stream, size });
         rootHash = tree.rootHash;
-        leafCount = tree.leafCount || tree.levels[tree.levels.length - 1].length;
 
         // create the local file registry for the provider
         const parsed = parseFilePath(SPACE_FILE_PATH);
@@ -1437,13 +1449,14 @@ describe('SpaceDownloadTask', () => {
             expect(downloadTask.downloadComplete).toBe(true);
         }, { timeout: 5000, interval: 100 });
 
-
         const size = await getFileSize(downloadFinalPath);
         const handler = await createReadStream(downloadFinalPath);
         const { rootHash: finalRootHash } = await generateMerkleTree({ stream: handler, size });
 
         await closeFile(handler);
 
+        const progress = downloadTask.getProgress();
         expect(finalRootHash).toBe(rootHash);
+        expect(progress.percent).toBe(100);
     });
 });
