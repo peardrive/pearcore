@@ -48,7 +48,6 @@ export class SpaceFileListManager {
                     stack.push([filepath, publicKey, timestamp, rootHash, signature]);
                 }
             }
-
         }
 
         return stack;
@@ -353,6 +352,7 @@ export class SpaceFileManager {
      * @param {String} fileSourcePath 
      * @param {Object} options
      * @param {(tracker: ProgressTracker) => void} options.onIndexingStart - optional callback to trigger when the indexing starts
+     * @param {() => void} options.onComplete - optional callback to trigger when the indexing completed locally.
      * @returns {number}
      */
     async addLocalFile(space, spaceFilePath, fileSourcePath, options) {
@@ -363,7 +363,9 @@ export class SpaceFileManager {
             spacePath: parsed.dir,
             spaceFilename: parsed.filename,
             fileSourcePath: fileSourcePath,
-            onIndexingStart: options.onIndexingStart
+            onIndexingStart: options.onIndexingStart,
+            onCompletion: options.onComplete,
+            onError: options.onError
         });
 
         return registryId;

@@ -253,6 +253,8 @@ export class LocalFileRegistry {
      * @param {string} params.spaceFilename - Filename within the space
      * @param {string} params.fileSourcePath - Absolute local file path
      * @param {(tracker: ProgressTracker) => void} params.onIndexingStart - optional callback once the file-indexing has begun.
+     * @param {() => void} params.onCompletion - optional callback once the file indexing has been complete locally.
+     * @param {(error: Error) => void} params.onError - optional callback once an error has been thrown.
      * @returns {Promise<number>} - The newly created registry ID
      */
     async add(params) {
@@ -261,78 +263,89 @@ export class LocalFileRegistry {
             spacePath,
             spaceFilename,
             fileSourcePath,
-            onIndexingStart
+            onIndexingStart,
+            onCompletion,
+            onError
         } = params;
 
-        const exists = await fileExists(fileSourcePath);
-        if (!exists) {
-            throw new Error(`File does not exists: ${fileSourcePath}`);
-        }
-
-        const existingRecords = await queryFileRegistryRecords(this.db, {
-            spaceId: spaceId,
-            spacePath: spacePath,
-            spaceFilename: spaceFilename,
-            fileSourcePath: fileSourcePath
-        });
-
-        if (existingRecords.length > 0) {
-            throw new Error(`Registry already exists`);
-        }
-
-        const space = await getSpace(this.db, spaceId);
-        if (!space) {
-            throw new Error(`Space not found with id: ${spaceId}`);
-        }
-
-        const size = await getFileSize(fileSourcePath);
-        const leafCount = getLeafCount(size, DEFAULT_CHUNK_SIZE);
-        const tracker = new ProgressTracker({ total: leafCount });
-
-        this.progressTrackers.set(fileSourcePath, tracker);
-
-        let registryId, rootHash;
         try {
-            onIndexingStart?.(tracker);
-            
-            const result = await generateFileTreeRecord(this.db, {
-                fileSourcePath: fileSourcePath,
+            const exists = await fileExists(fileSourcePath);
+            if (!exists) {
+                throw new Error(`File does not exists: ${fileSourcePath}`);
+            }
+
+            const existingRecords = await queryFileRegistryRecords(this.db, {
+                spaceId: spaceId,
                 spacePath: spacePath,
                 spaceFilename: spaceFilename,
-                spaceId: spaceId,
-                onLeaf: () => { tracker.record('local') }
+                fileSourcePath: fileSourcePath
             });
 
-            registryId = result.registryId;
-            rootHash = result.rootHash;
-
-            if (this.watcher) {
-                const watchedFiles = this.watcher.getWatched() || {};
-                if (!Object.keys(watchedFiles).includes(fileSourcePath)) {
-                    await this.watcher.add(fileSourcePath);
-                }
+            if (existingRecords.length > 0) {
+                throw new Error(`Registry already exists`);
             }
-        } finally {
-            this.progressTrackers.delete(fileSourcePath);
+
+            const space = await getSpace(this.db, spaceId);
+            if (!space) {
+                throw new Error(`Space not found with id: ${spaceId}`);
+            }
+
+            const size = await getFileSize(fileSourcePath);
+            const leafCount = getLeafCount(size, DEFAULT_CHUNK_SIZE);
+            const tracker = new ProgressTracker({ total: leafCount });
+
+            this.progressTrackers.set(fileSourcePath, tracker);
+
+            let registryId, rootHash;
+            try {
+                onIndexingStart?.(tracker);
+
+                const result = await generateFileTreeRecord(this.db, {
+                    fileSourcePath: fileSourcePath,
+                    spacePath: spacePath,
+                    spaceFilename: spaceFilename,
+                    spaceId: spaceId,
+                    onLeaf: () => { tracker.record('local') }
+                });
+
+                registryId = result.registryId;
+                rootHash = result.rootHash;
+
+                if (this.watcher) {
+                    const watchedFiles = this.watcher.getWatched() || {};
+                    if (!Object.keys(watchedFiles).includes(fileSourcePath)) {
+                        await this.watcher.add(fileSourcePath);
+                    }
+                }
+            } finally {
+                this.progressTrackers.delete(fileSourcePath);
+            }
+
+            const { publicKey, secretKey } = this.sessionManager.getCredentials();
+            const spaceTopicHash = getSpaceTopicHash(space);
+            const spaceFilePath = posixPathJoin(spacePath, spaceFilename);
+
+            const record = await this.createSignedEvent({
+                topic: spaceTopicHash,
+                path: spaceFilePath,
+                publicKey,
+                secretKey,
+                timestamp: now(),
+                rootHash,
+            });
+
+            this.spaceFileListManager.add(record);
+            this.fileEventBroadcaster.add(EVENTS.SpaceFileEventOptions.ADD, record);
+
+            // trigger completion callback
+            onCompletion?.(registryId);
+
+            return registryId;
+
+        } catch(error) {
+
+            onError?.(error);
         }
-
-        const { publicKey, secretKey } = this.sessionManager.getCredentials();
-        const spaceTopicHash = getSpaceTopicHash(space);
-        const spaceFilePath = posixPathJoin(spacePath, spaceFilename);
-
-        const record = await this.createSignedEvent({
-            topic: spaceTopicHash,
-            path: spaceFilePath,
-            publicKey,
-            secretKey,
-            timestamp: now(),
-            rootHash,
-        });
-
-        this.spaceFileListManager.add(record);
-        this.fileEventBroadcaster.add(EVENTS.SpaceFileEventOptions.ADD, record);
-
-        return registryId;
     }
 
     /**

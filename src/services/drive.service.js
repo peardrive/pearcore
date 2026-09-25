@@ -98,8 +98,10 @@ export class LocalFileEntry extends GenericFileEntry {
     #rootHash = null;
     #settled = false;
     #tracker = null;
-    #settlementPromise = null;
-    #lastError = null;
+    #error = null;
+    #onIndexingCallback;
+    #onCompletionCallback;
+    #onErrorCallback;
 
     /**
      * @param {Object} params
@@ -111,8 +113,6 @@ export class LocalFileEntry extends GenericFileEntry {
      * @param {SessionManager} params.sessionManager
      * @param {string} params.fileSourcePath - absolute local file path backing this entry
      * @param {string} params.rootHash - The root hash of the local file registry.
-     * @param {ProgressTracker} params.tracker - the progress tracker for file indexing.
-     * @param {Promise<number>} params.settlement - the underlying promise to resolve when the registry is created.
      */
     constructor(params) {
         super(params);
@@ -124,27 +124,6 @@ export class LocalFileEntry extends GenericFileEntry {
         if (params.rootHash) {
             this.#rootHash = params.rootHash;
             this.#settled = true;
-        }
-
-        if (params.settlement) {
-            this.#settlementPromise = params.settlement
-                .then(async (registryId) => {
-                    this.#tracker = null;
-
-                    await this.settle(registryId);
-                    return {
-                        filePath: this.#fileSourcePath,
-                        registryId: this.#registryId,
-                        rootHash: this.#rootHash
-                    };
-                }).catch((error) => {
-                    this.#tracker = null;
-                    this.#lastError = error;
-
-                    throw error;
-                });
-
-            this.#settlementPromise.catch(() => { });
         }
     }
 
@@ -233,7 +212,18 @@ export class LocalFileEntry extends GenericFileEntry {
      * @returns {{percent:number|null, contributions:Array}|null}
      */
     get indexingProgress() {
-        return this._spaceFileManager.getIndexingProgress(this.#fileSourcePath);
+        return this.#tracker?.snapshot();
+    }
+
+    /**
+     * Set indexing event emitter for the entry.
+     * @param {ProgressTracker} tracker 
+     */
+    setIndexingTracker(tracker) {
+        this.#tracker = tracker;
+        if (this.#onIndexingCallback) {
+            tracker.on('progress', this.#onIndexingCallback);
+        }
     }
 
     /**
@@ -241,9 +231,21 @@ export class LocalFileEntry extends GenericFileEntry {
      * @param {(result: { filePath: string, registryId: number, rootHash: string }) => void} callback 
      */
     onIndexing(callback) {
+        this.#onIndexingCallback = callback;
+        this.#tracker?.on('progress', callback);
+    }
+
+    offIndexingCallback() {
         if (this.#tracker) {
-            this.#tracker.on('progress', callback);
+            this.#tracker.off('progress', this.#onIndexingCallback);
         }
+    }
+
+    /**
+     * Triggers callback for `onComplete()`
+     */
+    triggerCompletion() {
+        return this.#onCompletionCallback?.();
     }
 
     /**
@@ -252,11 +254,20 @@ export class LocalFileEntry extends GenericFileEntry {
      */
     onComplete(callback) {
         if (this.#settled) {
-            callback({ filePath: this.#fileSourcePath, registryId: this.#registryId, rootHash: this.#rootHash });
+            callback();
             return;
         }
-        // failures will be accumulated in onError, we ignore them here.
-        this.#settlementPromise?.then(callback, () => { });
+        
+        this.#onCompletionCallback = callback;
+    }
+
+    /**
+     * 
+     * @param {Error} error 
+     */
+    triggerError(error) {
+        this.#onErrorCallback?.(error);
+        this.#error = error;
     }
 
     /**
@@ -264,20 +275,18 @@ export class LocalFileEntry extends GenericFileEntry {
      * @param {(result: {filePath:string, error:Error}) => void} callback
      */
     onError(callback) {
-        if (this.#lastError) {
-            callback({ filePath: this.#fileSourcePath, error: this.#lastError });
-            return;
+        if (this.#error) {
+            callback(this.#error);
         }
-        this.#settlementPromise?.then(() => { }, (error) =>
-            callback({ filePath: this.#fileSourcePath, error })
-        );
+
+        this.#onErrorCallback = callback;
     }
 }
 
 /**
  * Lazy proxy interface for file hierarchy navigation
  */
-export class SpaceFileBrowser {
+export class SpaceDriveBrowser {
     #path;
     #spaceInstance;
     #spaceFileListManager;
@@ -364,26 +373,6 @@ export class SpaceFileBrowser {
         const base = this.normalize(this.#path);
         const virtualPath = posixPathJoin('/', base, spaceFilePath);
 
-        let tracker = null;
-        let resolveStarted;
-        const started = new Promise(resolve => { resolveStarted = resolve });
-
-        const settlement = this.#spaceFileManager.addLocalFile(
-            this.#spaceInstance,
-            virtualPath,
-            localFilePath,
-            {
-                onIndexingStart: (progressTracker) => {
-                    tracker = progressTracker;
-                    resolveStarted();
-                }
-            }
-        );
-
-        settlement.catch(() => { });
-
-        await Promise.race([started, settlement]);
-
         const entry = new LocalFileEntry({
             path: virtualPath,
             fileSourcePath: localFilePath,
@@ -391,9 +380,29 @@ export class SpaceFileBrowser {
             spaceFileListManager: this.#spaceFileListManager,
             spaceFileManager: this.#spaceFileManager,
             sessionManager: this.#sessionManager,
-            tracker,
-            settlement
         });
+
+        this.#spaceFileManager.addLocalFile(
+            this.#spaceInstance,
+            virtualPath,
+            localFilePath,
+            {
+                // pass the progress event emitter to the entry
+                onIndexingStart: (tracker) => {
+                    entry.setIndexingTracker(tracker);
+                },
+                // settle the entry and then trigger completion callback
+                onComplete: (registryId) => {
+                    entry.settle(registryId)
+                        .then(() => { entry.triggerCompletion(); })
+                        .catch(() => {});
+                },
+                // pass the error object from indexing to the entry
+                onError: (error) => {
+                    entry.triggerError(error);
+                }
+            }
+        );
 
         return entry;
     }
@@ -433,13 +442,13 @@ export class SpaceFileBrowser {
     /**
      * Change directory to new sub-directory.
      * @param {string} subpath
-     * @returns {SpaceFileBrowser}
+     * @returns {SpaceDriveBrowser}
      */
     cd(subpath) {
         const base = this.normalize(this.#path);
         const joined = posixPathJoin('/', base, subpath ?? '/');
 
-        return new SpaceFileBrowser({
+        return new SpaceDriveBrowser({
             spaceInstance: this.#spaceInstance,
             path: joined,
             spaceFileListManager: this.#spaceFileListManager,
@@ -447,7 +456,7 @@ export class SpaceFileBrowser {
             sessionManager: this.#sessionManager
         });
     }
-} 
+}
 
 export class SpaceDriveService {
     constructor(emitter, { managers }) {
@@ -459,10 +468,10 @@ export class SpaceDriveService {
     /**
      * Get file browser for a given space.
      * @param {SpaceInstance} space - the space record.
-     * @returns {SpaceFileBrowser}
+     * @returns {SpaceDriveBrowser}
      */
     get(space) {
-        const browser = new SpaceFileBrowser({
+        const browser = new SpaceDriveBrowser({
             path: '/',
             spaceInstance: space,
             spaceFileListManager: this.spacefileListManager,

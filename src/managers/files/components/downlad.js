@@ -29,6 +29,10 @@ export class SpaceDownloadTask {
         this.socketManager = managers.socketManager;
         this.connectionManager = managers.connectionManager;
 
+        // state
+        this.downloadComplete = false;
+        this._onCompleteCallback = null;
+
         // identity
         this.registryId = null;
         this.spaceId = null;
@@ -341,6 +345,10 @@ export class SpaceDownloadTask {
 
         await setDownloadAsComplete(this.db, this.registryId);
         await this.stop();
+
+        try {
+            this._onCompleteCallback?.();
+        } catch (error) {} // fire and forget
     }
 
     /**
@@ -428,5 +436,18 @@ export class SpaceDownloadTask {
      */
     offProgress(callback) {
         this.tracker.off('progress', callback);
+    }
+
+    /**
+     * Attach callback function to track when the download completes.
+     * @param {() => void} callback 
+     */
+    onComplete(callback) {
+        if (this.downloadComplete) {
+            callback();
+            return;
+        }
+
+        this._onCompleteCallback = callback;
     }
 }
