@@ -1,4 +1,6 @@
 import { SessionManager } from "../../../managers/session.manager.js";
+import { queryFileRegistryRecords } from "../../../utils/files.utils.js";
+import { parseFilePath } from "../../../utils/parsers.utils.js";
 import { posixPathJoin } from "../../../utils/system.utils.js";
 import { SpaceInstance } from "../../space.service.js";
 import { SpaceFileEntry, LocalFileEntry } from "./entries.js";
@@ -202,8 +204,47 @@ export class LocalDriveBrowser extends GenericDriveBrowser {
      * @param {string} localFilePath 
      */
     async getFile(spaceFilePath) {
-        const rootHash = this._spaceFiles[spaceFilePath];
-        console.log(rootHash)
+        const { publicKey } = this._sessionManager.getCredentials();
+        const { db } = this._sessionManager.getDatabase();
+        const variants = this._spaceFiles[spaceFilePath];
+
+        if (!variants) return;
+
+        for (const [variant, info] of Object.entries(variants)) {
+
+            for (const provider of Object.keys(info.peers)) {
+
+                if (publicKey === provider) {
+
+                    const parsed = parseFilePath(spaceFilePath);
+                    const query = await queryFileRegistryRecords(db, {
+                        spaceFilename: parsed.filename,
+                        spacePath: parsed.dir,
+                        rootHash: variant,
+                        spaceId: this._spaceInstance.id
+                    });
+
+                    if (query.length === 0) return;
+                    const registry = query[0];
+
+                    const base = this.normalize(this._path);
+                    const virtualPath = posixPathJoin('/', base, spaceFilePath);
+
+                    const entry = new LocalFileEntry({
+                        path: virtualPath,
+                        fileSourcePath: registry.fileSourcePath,
+                        spaceInstance: this._spaceInstance,
+                        spaceFileListManager: this._spaceFileListManager,
+                        spaceFileManager: this._spaceFileManager,
+                        sessionManager: this._sessionManager,
+                    });
+
+                    await entry.settle(registry.id);
+
+                    return entry;
+                }
+            }
+        }
     }
 
     /**

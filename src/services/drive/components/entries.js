@@ -176,6 +176,18 @@ export class LocalFileEntry extends GenericFileEntry {
     }
 
     /**
+     * Get rootHash of file registry as the only variant in array (to follow `SpaceFileEntry`).
+     * @returns {Array<string>}
+     */
+    get variants() {
+        if (this.rootHash) {
+            return [ this.rootHash ];
+        }
+
+        return [];
+    }
+
+    /**
      * Whether this node currently has its own registry broadcasted to space.
      * @returns {boolean}
      */

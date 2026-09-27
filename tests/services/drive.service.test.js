@@ -401,4 +401,36 @@ describe('SpaceDriveService', () => {
             });
         });
     });
+
+    describe('LocalDriveBrowser', () => {
+        it('should list local registeries in files', async () => {
+            const spacePath = '/mixed/mine.txt';
+            const entry = await primaryDrive.addFile(spacePath, filePath);
+
+            const waitForIndexing = new Promise(resolve => {
+                entry.onComplete(resolve);
+            });
+
+            await waitForIndexing;
+
+            expect(primaryDrive.local().files({ recursive: true })).toContain(spacePath);
+        });
+
+        it('getFile() should return the local file entry', async () => {
+            const spacePath = '/mixed/mine02.txt';
+            const entry = await secondaryDrive.addFile(spacePath, filePath);
+
+            const waitForIndexing = new Promise(resolve => {
+                entry.onComplete(resolve);
+            });
+
+            await waitForIndexing;
+
+            const localEntry = await secondaryDrive.local().getFile(spacePath);
+            expect(localEntry.path).toBe(spacePath);
+            expect(localEntry.fileSourcePath).toBe(filePath);
+            expect(localEntry.exists).toBe(true);
+            expect(localEntry.rootHash).toBeDefined();
+        });
+    });
 });
