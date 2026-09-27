@@ -4,7 +4,7 @@ import { getSpaceTopicHash } from "../utils/space.utils.js"
 import { createSpaceMessage, encryptPayload } from '../utils/protocol.utils.js';
 import { publicKeyIsAllowedToRead } from '../utils/policy.utils.js';
 import { encryptJSON, hex, randomNonce } from '../utils/crypto.utils.js';
-import { SpaceInstance } from './interface.js';
+import { SpaceInstance } from './space.service.js';
 import { flushMessageRecord, queryMessageRecord } from '../utils/message.utils.js';
 
 export class MessageService {

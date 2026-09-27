@@ -56,7 +56,7 @@ export class SessionManager {
             },
 
             download: {
-                heatbeatInterval: 5000, //
+                heatbeatInterval: 5000,
                 // The maximum time in miliseconds for provider to finish assigments
                 requestTimeout: 64000, // 64-seconds - 100KB/s for 16MB chunk assigned for delivery
                 // number of leaves assigned to provider each cycle

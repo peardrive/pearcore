@@ -5,7 +5,7 @@ import { ProtocolMapFactory } from "../protocols/map.js";
 import { ThrottleManager } from "./throttle.manager.js";
 import { ConnectionManager } from "./connection.manager.js";
 import { MuxManager, FrameTypes } from "./multiplexer.manager.js";
-import { SpaceFileListManager, SpaceFileManager } from "./file.manager.js";
+import { SpaceFileListManager, SpaceFileManager } from "./files/files.manager.js";
 import { FileContentDeliveryManager } from "./delivery.manager.js";
 
 export function initializeManagers(emitter) {

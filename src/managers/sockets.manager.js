@@ -186,7 +186,7 @@ export class SocketManager {
     /**
      * Returns all connected peer keys, optionally filtered.
      * 
-     * @param {Function} filter - (peerkey) => condition. 
+     * @param {(string) => boolean} filter - (peerkey) => condition. 
      * @returns {String[]} Array of peer keys.
      */
     getPeerKeys(filter = null) {
