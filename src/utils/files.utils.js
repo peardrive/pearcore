@@ -542,7 +542,7 @@ export async function generateFileTreeRecord(db, params) {
             });
 
         } catch (error) {
-            throw new Error(`generating Merkle tree failed for ${fileSourcePath}`);
+            throw new Error(`Generating Merkle tree failed for ${fileSourcePath}`, { cause: error });
 
         } finally {
             if (stream && !stream.destroyed) {

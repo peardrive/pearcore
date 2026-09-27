@@ -4,7 +4,7 @@ import { parseFilePath } from '../../utils/parsers.utils.js';
 import { hex, randomNonce } from '../../utils/crypto.utils.js';
 import { FileEventBroadcaster } from './components/events.js';
 import { LocalFileRegistry } from './components/registry.js';
-import { SpaceDownloadTask } from './components/downlad.js';
+import { SpaceDownloadTask } from './components/download.js';
 import { ProgressTracker } from './components/progress.js';
 
 const logger = createChild('FileManager');
@@ -78,6 +78,63 @@ export class SpaceFileListManager {
         }
 
         return fileList;
+    }
+
+    /**
+     * Returns a copy of the topic's file list containing only the entries
+     * for which `filter` returns `true`. The returned structure matches
+     * `get(topic)`.
+     *
+     * @param {string} topic - Space topic hash.
+     * @param {(record: {
+     *   topic: string,
+     *   path: string,
+     *   rootHash: string,
+     *   publicKey: string,
+     *   timestamp: number,
+     *   signature?: string
+     * }) => boolean} filter - Predicate applied to each record.
+     * @returns {Object} Filtered file list in the standard shape.
+     */
+    query(topic, filter) {
+        const spaceFiles = this.spaceFileMap[topic];
+        if (!spaceFiles) return {};
+
+        const result = {};
+
+        for (const [path, variants] of Object.entries(spaceFiles)) {
+
+            for (const [rootHash, variant] of Object.entries(variants)) {
+
+                const peers = variant.peers || {};
+
+                for (const [publicKey, info] of Object.entries(peers)) {
+
+                    const record = {
+                        topic,
+                        path,
+                        rootHash,
+                        publicKey,
+                        timestamp: info.timestamp,
+                        signature: info.signature
+                    };
+
+                    if (!filter(record)) continue;
+
+                    if (!result[path]) { result[path] = {}; }
+                    if (!result[path][rootHash]) {
+                        result[path][rootHash] = { peers: {} };
+                    }
+
+                    result[path][rootHash].peers[publicKey] = {
+                        timestamp: info.timestamp,
+                        signature: info.signature
+                    };
+                }
+            }
+        }
+
+        return result;
     }
 
     /**

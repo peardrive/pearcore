@@ -14,7 +14,7 @@ import { createChild } from '../../../logger.js';
 import { hex, hash } from '../../../utils/crypto.utils.js';
 import { ProviderList } from './providers.js';
 import { SpaceTreePuller } from './trees.js';
-import { LeafDeliveryScheduler } from './leafs.js';
+import { LeafDeliveryScheduler } from './scheduler.js';
 import { SequentialWriter } from './writer.js';
 import { ProgressTracker } from './progress.js';
 
@@ -71,11 +71,7 @@ export class SpaceDownloadTask {
     }
 
     get heartbeatIntervalMs() {
-        return this.session.get('download.heartbeatInterval');
-    }
-
-    get requestTimeoutMs() {
-        return this.session.get('download.requestTimeout');
+        return this.session.get('download.heatbeatInterval');
     }
 
     /**
@@ -405,6 +401,7 @@ export class SpaceDownloadTask {
             await this.scheduler.reclaimStalled();
             this.scheduler.assign();
         } catch (error) {
+            console.log(error)
             logger.warn(error);
         } finally {
             this._heartbeatRunning = false;

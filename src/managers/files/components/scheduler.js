@@ -266,7 +266,7 @@ export class LeafDeliveryScheduler {
     async reclaimStalled() {
         if (this.assignments.size === 0) return;
         // maximum allowed time to finish assigment
-        const staleBefore = now() - this.settings.requestTimeoutMs;
+        const staleBefore = now() - this.settings.requestTimeout;
 
         for (const [publicKey, assignment] of [...this.assignments.entries()]) {
             if (assignment.requestedAt > staleBefore) continue;

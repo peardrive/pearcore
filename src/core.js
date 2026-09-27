@@ -3,7 +3,7 @@ import { AccountService } from './services/accounts.service.js';
 import { SpaceService } from './services/space.service.js';
 import { ProfileService } from './services/profile.service.js';
 import { MessageService } from './services/message.service.js';
-import { SpaceDriveService } from './services/drive.service.js';
+import { SpaceDriveService } from './services/drive/drive.service.js';
 
 import { DEFAULT_ACCOUNT_DIR } from './constants/global.constants.js';
 import { initializeManagers } from './managers/initialization.js';

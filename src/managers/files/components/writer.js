@@ -46,6 +46,7 @@ export class SequentialWriter {
             leafIndex >= this.leafCount
         ) return false;
 
+        if (leafIndex < this.nextExpectedLeaf) return false
         if (this.buffer.has(leafIndex)) return false;
         this.buffer.set(leafIndex, chunk);
 
