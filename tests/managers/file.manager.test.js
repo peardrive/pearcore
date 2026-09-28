@@ -17,7 +17,7 @@ import { FileEventBroadcaster } from '../../src/managers/files/components/events
 import { LocalFileRegistry } from "../../src/managers/files/components/registry.js";
 import { ProviderList } from '../../src/managers/files/components/providers.js';
 import { SpaceTreePuller } from '../../src/managers/files/components/trees.js';
-import { LeafDeliveryScheduler } from '../../src/managers/files/components/leafs.js';
+import { LeafDeliveryScheduler } from '../../src/managers/files/components/scheduler.js';
 
 
 const createSignedEvent = async event => {
