@@ -241,8 +241,9 @@ export class LocalFileRegistry {
         }
 
         this.watcher = await createWatcher(sourcePaths);
-        this.watcher.on(WatchTypes.CHANGE, this.onChangeEvent);
-        this.watcher.on(WatchTypes.DELETE, this.onDeleteEvent);
+        // bound: chokidar calls these with the watcher as `this`, which crashed the process on the first change
+        this.watcher.on(WatchTypes.CHANGE, this.onChangeEvent.bind(this));
+        this.watcher.on(WatchTypes.DELETE, this.onDeleteEvent.bind(this));
     }
 
     /**
