@@ -246,6 +246,8 @@ export class LocalFileRegistry {
             sourcePaths.push(sourcePath);
         }
 
+        if (this.sessionManager.session.get('files.watchLocalChanges') === false) return; // the host watches; it calls onChangeEvent/onDeleteEvent itself
+
         this.watcher = await createWatcher(sourcePaths);
         // bound: chokidar calls these with the watcher as `this`, which crashed the process on the first change
         this.watcher.on(WatchTypes.CHANGE, this.onChangeEvent.bind(this));

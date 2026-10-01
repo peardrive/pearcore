@@ -44,6 +44,10 @@ export class SessionManager {
             },
 
             files: {
+                // Watch every registered file with chokidar for changes and deletions.
+                // An application that runs its own watcher (one recursive handle per shared
+                // folder) turns this off: one handle per directory of a large share hits EMFILE.
+                watchLocalChanges: true,
                 localChangeBackoff: {
                     // minimum wait time before hashing a changed file. Resets on each new change.
                     baseDelay: 500, //500ms
