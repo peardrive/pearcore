@@ -159,7 +159,14 @@ export class SpaceSyncHandler extends BaseProtocolHandler {
             return;
         }
 
-        const sharelinkQuery = await queryShareLink(this.db, {}); // list all records
+        // Only the link for THIS space counts. Matching any pending link (a) adopted a
+        // peer's record for a space we never asked for, while an unrelated link of ours
+        // waited for approval, and (b) deleted every pending link on any sync, so a link
+        // joined seconds ago vanished before the space's owner ever heard about it.
+        const { spaceName, publicKey: spacePublicKey, nonce } = message.payload;
+        const sharelinkQuery = (await queryShareLink(this.db, {})).filter((l) =>
+            l.spaceName === spaceName && l.publicKey === spacePublicKey && l.nonce === nonce
+        );
         const spaceQuery = await querySpace(this.db, {
             spaceName: message.payload.spaceName,
             publicKey: message.payload.publicKey,

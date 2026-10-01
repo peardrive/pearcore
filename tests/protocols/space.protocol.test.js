@@ -9,7 +9,7 @@ import { SpaceSyncHandler } from "../../src/protocols/space.protocol.js";
 import { now, stripIds } from "../../src/utils/general.utils.js";
 import { hex, randomNonce } from "../../src/utils/crypto.utils.js";
 import { createP2PNetwork, createConnections } from '../general.utils.js';
-import { saveShareLink } from "../../src/utils/sharelink.utils.js";
+import { saveShareLink, queryShareLink } from "../../src/utils/sharelink.utils.js";
 
 /**
  * In this test subject we use 4 virtual nodes with different purposes:
@@ -167,6 +167,32 @@ describe('Space Protocols', () => {
                 timestamp: now() // newer space timestamp
             };
         })
+
+        it('should not adopt a space we hold no link for, and keep unrelated pending links', async () => {
+            const { spaceId } = await createSpaceForPublicKey(primaryDB, spaceParams, primary.secretKey);
+            const space = await getSpace(primaryDB, spaceId);
+
+            // the secondary waits on a link for a DIFFERENT space
+            const other = { spaceName: 'another-space', publicKey: primary.publicKey, nonce: hex(randomNonce()) };
+            await saveShareLink(secondaryDB, other);
+
+            const message = await createSpaceSyncMessage({
+                topic: spaceTopicHash,
+                space: stripIds(space),
+                publicKey: primary.publicKey,
+                secretKey: primary.secretKey
+            });
+
+            let actionContext = null;
+            secondary.manager.emitter.on(EVENTS.SpaceSync, ({ action }) => { actionContext = action; });
+            await secondary.manager.message.handleIncomingMessage(primary.socket, JSON.stringify(message), primary.info);
+
+            // not ours: no first encounter, no space record
+            expect(actionContext).toBe(null);
+            expect((await querySpace(secondaryDB, spaceParams)).length).toBe(0);
+            // and the unrelated link is still pending
+            expect((await queryShareLink(secondaryDB, {})).length).toBe(1);
+        });
 
         it('should handle FIRST_ENCOUNTER space sync scenario', async () => {
             const { spaceId } = await createSpaceForPublicKey(primaryDB, spaceParams, primary.secretKey);
