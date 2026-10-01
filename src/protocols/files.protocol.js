@@ -211,6 +211,14 @@ export class SpaceFileTreeRequestHandler extends BaseProtocolHandler {
         }
 
         const registry = registryQuery[0];
+
+        // a registry row survives a source that is offline (unmounted volume, network share);
+        // say so here rather than after the requester has asked for content
+        if (!(await fileExists(registry.fileSourcePath))) {
+            await this.messageManager.reject(socket, message, MESSAGES.FILE_NOT_ACCESSIBLE_MESSAGE);
+            return;
+        }
+
         const tree = await getFileTreeRecord(this.db, registry.id);
 
         let lastRequestableLeaf = 0;

@@ -7,7 +7,7 @@ import { createSpaceFileContentRequestMessage, createSpaceFileEventMessage, crea
 import { createP2PNetwork, createConnections, buildTestSpacePayload, unframeJson, makeTempDir, cleanup, generateRandomFile } from '../general.utils.js';
 import { createDownloadRecord, createFileIndexRecord, deleteFileRecord, generateFileTreeRecord, getFileChunk, getFileTreeRecord, queryFileRegistryRecords, updateDownloadRecord } from '../../src/utils/files.utils.js';
 import { generateMerkleTree } from '../../src/utils/merkleTree.utils.js';
-import { closeFile, createFileStream, fileExists, getFileSize, openFile, posixPathJoin } from '../../src/utils/system.utils.js';
+import { closeFile, createFileStream, deleteFile, fileExists, getFileSize, openFile, posixPathJoin } from '../../src/utils/system.utils.js';
 import { DEFAULT_CHUNK_SIZE } from '../../src/constants/global.constants.js';
 import { FrameTypes } from '../../src/managers/multiplexer.manager.js';
 
@@ -291,6 +291,29 @@ describe('Space File Protocols', () => {
 
             expect(responseStatus.isValid).toBe(true);
             expect(primaryResponse.payload.tree.rootHash).toEqual(rootHash);
+        });
+
+        it('should reject with FILE_NOT_ACCESSIBLE when the registered source is not on disk', async () => {
+            await deleteFile(filePath); // the volume went away; the registry row stays
+
+            const message = await createSpaceFileTreeRequestMessage({
+                topic: spaceTopicHash,
+                rootHash: rootHash,
+                spaceFilePath: posixPathJoin(spacePath, spaceFilename),
+                publicKey: secondary.publicKey,
+                secretKey: secondary.secretKey
+            });
+
+            await primary.manager.message.handleIncomingMessage(
+                secondary.socket,
+                JSON.stringify(message),
+                secondary.info
+            );
+
+            const secondaryCalls = secondary.socket.write.mock.calls;
+            expect(secondaryCalls.length).toBe(1);
+            const response = JSON.parse(unframeJson(secondaryCalls[0][0]));
+            expect(response.payload.reason).toBe(MESSAGES.FILE_NOT_ACCESSIBLE_MESSAGE);
         });
 
         it('should response with the last downloaded leaf for partially download file', async () => {
