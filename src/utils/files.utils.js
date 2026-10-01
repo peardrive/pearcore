@@ -529,7 +529,11 @@ export async function generateFileTreeRecord(db, params) {
     let tree;
     let stream;
 
-    if (params.tree) { tree = params.tree; }
+    // a tree computed earlier (hash once) is only good while the file's metadata is unchanged
+    const metaHash = await getFileMetaHashFromSource(source);
+    const givenTreeIsCurrent = params.tree && (!params.metaHash || params.metaHash === metaHash);
+
+    if (givenTreeIsCurrent) { tree = params.tree; }
     else {
         try {
 
@@ -553,8 +557,6 @@ export async function generateFileTreeRecord(db, params) {
 
     const rootHash = tree.rootHash;
     const leafCount = getLeafCount(size, DEFAULT_CHUNK_SIZE);
-
-    const metaHash = await getFileMetaHashFromSource(source);
 
     const { registryId } = await createfileRegistryRecord(db, {
         fileSourcePath: source,

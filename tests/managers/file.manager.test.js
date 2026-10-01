@@ -1,5 +1,6 @@
 import path from "path";
 import { createReadStream } from "fs";
+import { writeFile } from "fs/promises";
 import * as EVENTS from '../../src/constants/events.constants.js';
 import { describe, expect, it, beforeAll, afterAll, beforeEach, afterEach, vi } from "vitest";
 import { CoreFactory } from "../factory.js";
@@ -9,7 +10,7 @@ import { now } from "../../src/utils/general.utils.js";
 import { createSpaceFileRecordSignature } from "../../src/utils/protocol.utils.js";
 import { generateFileTreeRecord, queryFileRegistryRecords, createDownloadRecord, getTemporarySourcePathForSpaceFile, getFileRegistryRecord, getFileMetaHashFromSource } from "../../src/utils/files.utils.js";
 import { closeFile, readFile, createEmptyFile, createFileStream, deleteFile, getFileSize } from "../../src/utils/system.utils.js";
-import { generateMerkleTree } from "../../src/utils/merkletree.utils.js";
+import { generateMerkleTree } from "../../src/utils/merkleTree.utils.js";
 import { hex, randomNonce } from "../../src/utils/crypto.utils.js";
 import { parseFilePath } from "../../src/utils/parsers.utils.js";
 
@@ -531,7 +532,7 @@ describe('LocalFileRegistry', () => {
 
     describe('init', () => {
 
-        it('should load existing registries and add them to SpaceFileList and broadcast to network', async () => {
+        it('should load existing registries into SpaceFileList without re-broadcasting unchanged files', async () => {
             const { registryId } = await generateFileTreeRecord(db, {
                 fileSourcePath: filePath,
                 spacePath: '/',
@@ -550,14 +551,34 @@ describe('LocalFileRegistry', () => {
             expect(addedRecord.path).toBe('/file.txt');
             expect(addedRecord.rootHash).toBeDefined();
 
-            expect(broadcastSpy).toHaveBeenCalled(1);
+            // the file is as it was when registered: peers that hold the list already have it,
+            // and new peers receive the list with the space sync. No event is broadcast.
+            expect(broadcastSpy).not.toHaveBeenCalled();
+        });
+
+        it('should re-broadcast a registry whose file changed while offline', async () => {
+            const { registryId } = await generateFileTreeRecord(db, {
+                fileSourcePath: filePath,
+                spacePath: '/',
+                spaceFilename: 'file.txt',
+                spaceId: 1
+            });
+
+            await new Promise(resolve => setTimeout(resolve, 20));
+            await writeFile(filePath, 'changed while the registry was not running');
+
+            const broadcastSpy = vi.spyOn(localFileRegistry.fileEventBroadcaster, 'add');
+
+            await localFileRegistry.init();
+
+            expect(broadcastSpy).toHaveBeenCalledTimes(1);
             expect(broadcastSpy).toHaveBeenCalledWith(
                 EVENTS.SpaceFileEventOptions.ADD,
                 expect.objectContaining({ path: '/file.txt' })
             );
         });
 
-        it('should delete registry if the source file does not exist', async () => {
+        it('should keep the registry when the source file is missing at init (offline, not deleted)', async () => {
             const { registryId } = await generateFileTreeRecord(db, {
                 fileSourcePath: filePath,
                 spacePath: '/',
@@ -566,10 +587,19 @@ describe('LocalFileRegistry', () => {
             });
 
             await deleteFile(filePath);
+
+            const addSpy = vi.spyOn(core.managers.spaceFileList, 'add');
+            const broadcastSpy = vi.spyOn(localFileRegistry.fileEventBroadcaster, 'add');
+
             await localFileRegistry.init();
 
+            // the row survives (an unmounted volume must not become a REMOVE to every peer),
+            // but nothing is announced for a file we cannot serve right now
             const list = await queryFileRegistryRecords(db, {});
-            expect(list.length).toBe(0);
+            expect(list.length).toBe(1);
+            expect(list[0].id).toBe(registryId);
+            expect(addSpy).not.toHaveBeenCalled();
+            expect(broadcastSpy).not.toHaveBeenCalled();
         });
 
         it('should skip registry if download record exists', async () => {
@@ -739,6 +769,51 @@ describe('LocalFileRegistry', () => {
     });
 
     describe('add', () => {
+        it('should use a precomputed tree when the file metadata still matches (hash once)', async () => {
+            await localFileRegistry.init();
+
+            const size = await getFileSize(filePath);
+            const stream = createFileStream(filePath);
+            const tree = await generateMerkleTree({ stream, size });
+            const metaHash = await getFileMetaHashFromSource(filePath);
+
+            // a tree the caller computed earlier, marked so we can tell it was the one stored
+            const given = { ...tree, rootHash: 'f'.repeat(64) };
+
+            const registryId = await localFileRegistry.add({
+                spaceId: 1,
+                spacePath: '/docs',
+                spaceFilename: 'file.txt',
+                fileSourcePath: filePath,
+                tree: given,
+                metaHash
+            });
+
+            const registry = await getFileRegistryRecord(db, registryId);
+            expect(registry.rootHash).toBe(given.rootHash);
+        });
+
+        it('should ignore a precomputed tree whose metadata hash is stale', async () => {
+            await localFileRegistry.init();
+
+            const size = await getFileSize(filePath);
+            const stream = createFileStream(filePath);
+            const tree = await generateMerkleTree({ stream, size });
+            const given = { ...tree, rootHash: 'f'.repeat(64) };
+
+            const registryId = await localFileRegistry.add({
+                spaceId: 1,
+                spacePath: '/docs',
+                spaceFilename: 'file.txt',
+                fileSourcePath: filePath,
+                tree: given,
+                metaHash: 'stale'
+            });
+
+            const registry = await getFileRegistryRecord(db, registryId);
+            expect(registry.rootHash).toBe(tree.rootHash);
+        });
+
         it('should create new registry and broadcast to the space', async () => {
             const addSpy = vi.spyOn(localFileRegistry.spaceFileListManager, 'add');
             const broadcastSpy = vi.spyOn(localFileRegistry.fileEventBroadcaster, 'add');

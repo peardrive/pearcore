@@ -110,13 +110,14 @@ export class LocalFileRegistry {
         const sourcePaths = [];
 
         for (const [sourcePath, registries] of groups) {
-            // delete the registry if the local file does not exists anymore
+            // A source that is not on disk right now is offline, not gone: an external volume
+            // that has not mounted yet, a network share that is down. Deleting the rows here
+            // (and broadcasting REMOVE for each) turned every such boot into index loss for every
+            // peer. Keep the rows, announce nothing; the watcher's delete event handles a real
+            // deletion once the application sees one.
             const sourceFileExists = await fileExists(sourcePath);
             if (!sourceFileExists) {
-                for (const registry of registries) {
-                    await deleteFileRecord(this.db, registry.id);
-                }
-
+                logger.debug('source offline at init, keeping registry', { sourcePath, count: registries.length });
                 continue;
             }
 
@@ -230,11 +231,16 @@ export class LocalFileRegistry {
 
                 // add the record to the local file list
                 this.spaceFileListManager.add(record);
-                // advertise the registry to the space
-                this.fileEventBroadcaster.add(
-                    EVENTS.SpaceFileEventOptions.ADD,
-                    record
-                );
+                // Advertise only what changed. Re-signing and broadcasting every registered
+                // file at boot sent the whole registry to every connected peer on each start
+                // (190 KB for 611 records in the lab; megabytes for a 25k-row registry).
+                // Peers learn an unchanged registry through the SpaceSync file-list push.
+                if (batchRequireUpdate) {
+                    this.fileEventBroadcaster.add(
+                        EVENTS.SpaceFileEventOptions.ADD,
+                        record
+                    );
+                }
             }
 
             sourcePaths.push(sourcePath);
@@ -253,6 +259,8 @@ export class LocalFileRegistry {
      * @param {string} params.spacePath - Path within the space (directory)
      * @param {string} params.spaceFilename - Filename within the space
      * @param {string} params.fileSourcePath - Absolute local file path
+     * @param {Object} [params.tree] - a Merkle tree already computed for this file (hash once); used only while params.metaHash still matches the file
+     * @param {string} [params.metaHash] - the file metadata hash the tree was computed under
      * @param {(tracker: ProgressTracker) => void} params.onIndexingStart - optional callback once the file-indexing has begun.
      * @param {() => void} params.onCompletion - optional callback once the file indexing has been complete locally.
      * @param {(error: Error) => void} params.onError - optional callback once an error has been thrown.
@@ -264,6 +272,8 @@ export class LocalFileRegistry {
             spacePath,
             spaceFilename,
             fileSourcePath,
+            tree,
+            metaHash,
             onIndexingStart,
             onCompletion,
             onError
@@ -306,6 +316,8 @@ export class LocalFileRegistry {
                     spacePath: spacePath,
                     spaceFilename: spaceFilename,
                     spaceId: spaceId,
+                    tree: tree,
+                    metaHash: metaHash,
                     onLeaf: () => { tracker.record('local') }
                 });
 
@@ -393,7 +405,7 @@ export class LocalFileRegistry {
     }
 
     async stop() {
-        for (const [filePath, entry] in this.backoffStates.entries()) {
+        for (const [filePath, entry] of this.backoffStates.entries()) {
             clearTimeout(entry.timeout);
         }
 
