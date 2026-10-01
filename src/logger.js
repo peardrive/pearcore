@@ -48,6 +48,11 @@ const transport = isTest
       ],
     })
 
+// pino's transport is a worker thread; a write error (ENOSPC was the field case) emits
+// 'error' with no listener, which throws at the top level and kills the process.
+// Logging degrades; it never takes a running sync down with it.
+if (transport) transport.on('error', (err) => { try { console.error('[pearcore] logger transport error:', err?.message ?? err) } catch {} });
+
 function wrap(logger) {
   const levels = ['trace', 'debug', 'info', 'warn', 'error', 'fatal'];
 
