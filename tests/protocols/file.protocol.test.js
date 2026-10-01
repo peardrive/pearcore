@@ -6,7 +6,7 @@ import { createSpaceForPublicKey, getSpace, getSpaceTopicHash, upsertSpace } fro
 import { createSpaceFileContentRequestMessage, createSpaceFileEventMessage, createSpaceFileRecordSignature, createSpaceFileTreeRequestMessage, validateSpaceFileTreeResponsePayload } from "../../src/utils/protocol.utils.js";
 import { createP2PNetwork, createConnections, buildTestSpacePayload, unframeJson, makeTempDir, cleanup, generateRandomFile } from '../general.utils.js';
 import { createDownloadRecord, createFileIndexRecord, deleteFileRecord, generateFileTreeRecord, getFileChunk, getFileTreeRecord, queryFileRegistryRecords, updateDownloadRecord } from '../../src/utils/files.utils.js';
-import { generateMerkleTree } from '../../src/utils/merkletree.utils.js';
+import { generateMerkleTree } from '../../src/utils/merkleTree.utils.js';
 import { closeFile, createFileStream, fileExists, getFileSize, openFile, posixPathJoin } from '../../src/utils/system.utils.js';
 import { DEFAULT_CHUNK_SIZE } from '../../src/constants/global.constants.js';
 import { FrameTypes } from '../../src/managers/multiplexer.manager.js';

@@ -4,7 +4,7 @@ import * as cryptoUtils from '../../src/utils/crypto.utils.js';
 import * as protocolUtils from '../../src/utils/protocol.utils.js';
 import { generateSpaceSecret } from '../../src/utils/space.utils.js';
 import { buildTestProfilePayload, generateKeypair } from '../general.utils.js';
-import { generateMerkleTree } from '../../src/utils/merkletree.utils.js';
+import { generateMerkleTree } from '../../src/utils/merkleTree.utils.js';
 import { Readable } from 'stream';
 
 const { hex } = cryptoUtils;

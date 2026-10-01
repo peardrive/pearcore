@@ -3,7 +3,7 @@ import { createReadStream } from 'fs';
 import { DEFAULT_CHUNK_SIZE } from '../../src/constants/global.constants.js';
 import { describe, it, afterEach, beforeEach, expect } from "vitest";
 import { createSpace } from '../../src/utils/space.utils.js';
-import { generateMerkleTree, getLeafCount, validateMerkleTree, verifyMerkleTree } from '../../src/utils/merkletree.utils.js';
+import { generateMerkleTree, getLeafCount, validateMerkleTree, verifyMerkleTree } from '../../src/utils/merkleTree.utils.js';
 import { cleanup, makeTempDir, generateRandomFile, createTempDatabase, buildTestSpacePayload, createNestedFiles } from '../general.utils.js';
 import { createFileStream, fileExists, getFileSize, openFile, closeFile } from '../../src/utils/system.utils.js';
 import { validateHexString } from '../../src/utils/general.utils.js';

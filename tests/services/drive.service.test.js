@@ -7,7 +7,7 @@ import { exampleFileHierarchy } from '../samples.js';
 import { cleanup, generateRandomFile, makeTempDir } from "../general.utils.js";
 import { LocalFileEntry } from "../../src/services/drive/components/entries.js";
 import { createFileStream, fileExists, getFileSize } from "../../src/utils/system.utils.js";
-import { generateMerkleTree } from "../../src/utils/merkletree.utils.js";
+import { generateMerkleTree } from "../../src/utils/merkleTree.utils.js";
 import { now } from "../../src/utils/general.utils.js";
 
 describe('SpaceDriveService', () => {
