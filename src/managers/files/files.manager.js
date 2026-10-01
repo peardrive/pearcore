@@ -7,6 +7,8 @@ import { LocalFileRegistry } from './components/registry.js';
 import { SpaceDownloadTask } from './components/download.js';
 import { ProgressTracker } from './components/progress.js';
 
+const isEmptyObject = (o) => { for (const _ in o) return false; return true; };
+
 const logger = createChild('FileManager');
 
 export class SpaceFileListManager {
@@ -230,12 +232,14 @@ export class SpaceFileListManager {
         }
 
         // cleanup file path if no variant has been left
-        if (Object.keys(variants).length === 0) {
+        // (an emptiness test, not a key copy: Object.keys on a 250k-file space per removal
+        // pinned the event loop for half an hour when a 30k-file folder was unshared)
+        if (isEmptyObject(variants)) {
             delete spaceFiles[path];
         }
 
         // remove topic from the map if left empty
-        if (Object.keys(spaceFiles).length === 0) {
+        if (isEmptyObject(spaceFiles)) {
             delete this.spaceFileMap[topic];
         }
     }
