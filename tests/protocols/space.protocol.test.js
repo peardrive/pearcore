@@ -241,7 +241,26 @@ describe('Space Protocols', () => {
             const space = await getSpace(primaryDB, spaceId);
             await upsertSpace(secondaryDB, space);
 
-            // the secondary holds one file in this topic
+            // each sync carries a fresh nonce, as a peer re-syncing after a wake does
+            // (the receiver drops repeated nonces before any handler runs)
+            const sync = async () => {
+                const message = await createSpaceSyncMessage({
+                    topic: spaceTopicHash,
+                    space: stripIds(space),
+                    publicKey: primary.publicKey,
+                    secretKey: primary.secretKey,
+                    nonce: hex(randomNonce())
+                });
+                await secondary.manager.message.handleIncomingMessage(primary.socket, JSON.stringify(message), primary.info);
+            };
+            const countFileEvents = () => primary.socket.write.mock.calls
+                .map(([frame]) => JSON.parse(unframeJson(frame)))
+                .filter((m) => m.type === EVENTS.SpaceFileEvent).length;
+
+            // nothing registered yet: an empty list is not sent, and does not use up the one push
+            await sync();
+            expect(countFileEvents()).toBe(0);
+
             secondary.manager.spaceFileList.add({
                 topic: spaceTopicHash,
                 path: '/file.txt',
@@ -251,22 +270,11 @@ describe('Space Protocols', () => {
                 signature: 'sig'
             });
 
-            const message = await createSpaceSyncMessage({
-                topic: spaceTopicHash,
-                space: stripIds(space),
-                publicKey: primary.publicKey,
-                secretKey: primary.secretKey
-            });
-
-            const countFileEvents = () => primary.socket.write.mock.calls
-                .map(([frame]) => JSON.parse(unframeJson(frame)))
-                .filter((m) => m.type === EVENTS.SpaceFileEvent).length;
-
             // three identical syncs on the same socket: one list
-            await secondary.manager.message.handleIncomingMessage(primary.socket, JSON.stringify(message), primary.info);
+            await sync();
             expect(countFileEvents()).toBe(1);
-            await secondary.manager.message.handleIncomingMessage(primary.socket, JSON.stringify(message), primary.info);
-            await secondary.manager.message.handleIncomingMessage(primary.socket, JSON.stringify(message), primary.info);
+            await sync();
+            await sync();
             expect(countFileEvents()).toBe(1);
         });
 

@@ -107,11 +107,13 @@ export class SpaceSyncHandler extends BaseProtocolHandler {
         let sent = this.sentFileLists.get(socket);
         if (!sent) { sent = new Set(); this.sentFileLists.set(socket, sent); }
         if (sent.has(topic)) return;
-        sent.add(topic);
 
         const { publicKey, secretKey } = this.sessionManager.getCredentials();
         const fileList = this.spaceFileListManager.get(topic);
+        // nothing to send yet: do not count it as sent, so a peer that syncs before our first
+        // registration still gets the list on a later sync
         if (!fileList || Object.keys(fileList).length === 0) return;
+        sent.add(topic);
         const fileStack = this.spaceFileListManager.convertListToStack(fileList);
 
         const message = await createSpaceFileEventMessage({
