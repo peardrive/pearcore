@@ -196,7 +196,10 @@ export class SpaceFileTreeRequestHandler extends BaseProtocolHandler {
         const { spaceFilePath, rootHash } = message.payload;
         const parsedSpacePath = parseFilePath(spaceFilePath);
 
+        // scoped to the requested space: a file shared only in another space must not
+        // reveal its tree (size, leaf hashes) to members of this one
         const registryQuery = await queryFileRegistryRecords(this.db, {
+            spaceId: spaceId,
             rootHash: rootHash,
             spacePath: parsedSpacePath.dir,
             spaceFilename: parsedSpacePath.filename,
