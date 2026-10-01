@@ -181,16 +181,17 @@ export class MuxManager {
 
                 const handler = this.routingMap.get(type);
                 if (handler) {
-                    const task = handler(socket, payload, info);
-
-                    await task
-                        .catch(error => {
-                            logger.warn('handler failed to process the data', {
-                                frameType: type,
-                                publicKey: publicKey
-                            });
-
+                    // a handler may be sync or async, and may throw either way; a failure in one
+                    // frame must not abort the loop (every frame after it in the buffer would be lost)
+                    try {
+                        await handler(socket, payload, info);
+                    } catch (error) {
+                        logger.warn('handler failed to process the data', {
+                            frameType: type,
+                            publicKey: publicKey,
+                            error: error?.message ?? error
                         });
+                    }
 
                 } else {
                     logger.warn('no handler has been registered for the frameType', {
