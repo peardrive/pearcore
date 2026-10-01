@@ -1,5 +1,5 @@
 import { createSpaceFileTreeRequestMessage } from "../../../utils/protocol.utils.js";
-import { verifyMerkleTree } from '../../../utils/merkletree.utils.js';
+import { verifyMerkleTree } from '../../../utils/merkleTree.utils.js';
 import { createChild } from '../../../logger.js';
 
 const logger = createChild("SpaceTreePuller");

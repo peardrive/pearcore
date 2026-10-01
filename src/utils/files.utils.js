@@ -7,7 +7,7 @@ import { eq, and, asc, isNotNull } from 'drizzle-orm';
 import { hex, hash, canonicalStringify } from './crypto.utils.js';
 import { DEFAULT_CHUNK_SIZE } from '../constants/global.constants.js';
 import { isDefined, isNumber, isString, now } from './general.utils.js';
-import { generateMerkleTree, getLeafCount } from './merkletree.utils.js';
+import { generateMerkleTree, getLeafCount } from './merkleTree.utils.js';
 import { downloadRecord, fileIndex, fileRegistry } from '../database/schemas/file.schema.js';
 import {
     createDirectory,

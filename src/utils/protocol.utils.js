@@ -2,7 +2,7 @@ import * as EVENTS from "../constants/events.constants.js";
 import { validateSpaceContext } from './space.utils.js';
 import { validateProfileContext } from "./profile.utils.js";
 import { validateSpaceFilePath } from "./files.utils.js";
-import { validateMerkleTree } from "./merkletree.utils.js";
+import { validateMerkleTree } from "./merkleTree.utils.js";
 import {
     hex,
     hash,

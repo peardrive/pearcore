@@ -14,7 +14,7 @@ import {
     getDownloadRecord,
     getFileRegistryRecord,
 } from "../../../utils/files.utils.js";
-import { generateMerkleTree, getLeafCount } from '../../../utils/merkletree.utils.js';
+import { generateMerkleTree, getLeafCount } from '../../../utils/merkleTree.utils.js';
 import { createChild } from '../../../logger.js';
 import { ProgressTracker } from './progress.js';
 import { DEFAULT_CHUNK_SIZE } from '../../../constants/global.constants.js';
