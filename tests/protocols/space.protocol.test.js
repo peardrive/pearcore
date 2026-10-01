@@ -236,6 +236,40 @@ describe('Space Protocols', () => {
             expect(outlierCallStack.length).toBe(0);
         });
 
+        it('should send the file list to a socket once per session, not on every identical sync', async () => {
+            const { spaceId } = await createSpaceForPublicKey(primaryDB, spaceParams, primary.secretKey);
+            const space = await getSpace(primaryDB, spaceId);
+            await upsertSpace(secondaryDB, space);
+
+            // the secondary holds one file in this topic
+            secondary.manager.spaceFileList.add({
+                topic: spaceTopicHash,
+                path: '/file.txt',
+                rootHash: 'a'.repeat(64),
+                publicKey: secondary.publicKey,
+                timestamp: now(),
+                signature: 'sig'
+            });
+
+            const message = await createSpaceSyncMessage({
+                topic: spaceTopicHash,
+                space: stripIds(space),
+                publicKey: primary.publicKey,
+                secretKey: primary.secretKey
+            });
+
+            const countFileEvents = () => primary.socket.write.mock.calls
+                .map(([frame]) => JSON.parse(unframeJson(frame)))
+                .filter((m) => m.type === EVENTS.SpaceFileEvent).length;
+
+            // three identical syncs on the same socket: one list
+            await secondary.manager.message.handleIncomingMessage(primary.socket, JSON.stringify(message), primary.info);
+            expect(countFileEvents()).toBe(1);
+            await secondary.manager.message.handleIncomingMessage(primary.socket, JSON.stringify(message), primary.info);
+            await secondary.manager.message.handleIncomingMessage(primary.socket, JSON.stringify(message), primary.info);
+            expect(countFileEvents()).toBe(1);
+        });
+
         it('should handle LOCAL_SPACE_REQUIRE_UPDATE space sync scenario', async () => {
             const { spaceId } = await createSpaceForPublicKey(primaryDB, spaceParams, primary.secretKey);
             const space = await getSpace(primaryDB, spaceId);
