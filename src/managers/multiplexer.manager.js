@@ -186,11 +186,21 @@ export class MuxManager {
                     try {
                         await handler(socket, payload, info);
                     } catch (error) {
-                        logger.warn('handler failed to process the data', {
-                            frameType: type,
-                            publicKey: publicKey,
-                            error: error?.message ?? error
-                        });
+                        // one line per peer per minute: a peer sending frames that throw must not
+                        // be able to turn the log into the denial of service
+                        const nowMs = Date.now();
+                        const last = state.lastHandlerWarn ?? 0;
+                        state.suppressedHandlerWarns = (state.suppressedHandlerWarns ?? 0) + 1;
+                        if (nowMs - last >= 60_000) {
+                            logger.warn('handler failed to process the data', {
+                                frameType: type,
+                                publicKey: publicKey,
+                                error: error?.message ?? error,
+                                occurrences: state.suppressedHandlerWarns
+                            });
+                            state.lastHandlerWarn = nowMs;
+                            state.suppressedHandlerWarns = 0;
+                        }
                     }
 
                 } else {
