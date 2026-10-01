@@ -130,9 +130,10 @@ export class ConnectionManager {
     async leave(spaceTopicHash) {
         if (this.isDiscoverable(spaceTopicHash)) {
             const discovery = this.discoveryMap[spaceTopicHash];
-            await discovery.destroy();
-
             delete this.discoveryMap[spaceTopicHash];
+
+            // the DHT unannounce can take as long as the announce did; nothing here depends on it
+            discovery.destroy().catch(() => {});
         }
     }
 

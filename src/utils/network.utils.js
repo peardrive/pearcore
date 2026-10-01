@@ -154,7 +154,10 @@ export async function joinSwarmTopic(
     lookup: client
   });
 
-  await discovery.flushed();
+  // The announce reaching the DHT is unbounded on a slow network (six minutes seen).
+  // Callers need the discovery now, so hash lists and space.join()/create() do not wait
+  // on it; the swarm keeps announcing in the background either way.
+  discovery.flushed().catch(() => {});
 
   return discovery;
 }
