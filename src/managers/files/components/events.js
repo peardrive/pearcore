@@ -114,11 +114,14 @@ export class FileEventBroadcaster {
                 secretKey: secretKey
             });
 
+            // peerFilter: an optional host predicate on top of the read permission, for an
+            // application that already tells some peers about its files another way
             const peers = this.socketManager.getPeerKeys(
-                publicKey => publicKeyIsAllowedToRead(publicKey, space)
+                publicKey => publicKeyIsAllowedToRead(publicKey, space) && (!this.peerFilter || this.peerFilter(publicKey))
             );
 
             const sockets = this.socketManager.getConnectedSockets({ peers: peers, topics: [topicHash] });
+            if (sockets.length === 0) continue;
             await this.messageManager.broadcastMessageToSockets(message, sockets);
         }
 
