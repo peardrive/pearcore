@@ -56,6 +56,8 @@ export class SpaceHashListHandler extends BaseProtocolHandler {
 }
 
 export class SpaceSyncHandler extends BaseProtocolHandler {
+    // socket -> Set<topic> already sent to it this session (a WeakMap: forgotten with the socket)
+    sentFileLists = new WeakMap();
 
     static STATES = {
         FIRST_ENCOUNTER: 'first_encounter',
@@ -93,9 +95,23 @@ export class SpaceSyncHandler extends BaseProtocolHandler {
         await this.messageManager.broadcastMessageToSockets(message, sockets);
     }
 
+    /**
+     * Sends our view of the topic's file list to a socket, once per socket and topic.
+     * Every direct SpaceSync used to trigger a full replay, even when the space record was
+     * identical: one reconnect or wake meant one whole list per topic in each direction
+     * (measured: 5 MB in 50 s after a laptop wake, with file streams queued behind it).
+     * A peer that already received the list keeps it current through SpaceFileEvents; a
+     * new socket (reconnect, restart) is a new session and gets the list again.
+     */
     async sendSpaceFileListContextToSocket(socket, topic) {
+        let sent = this.sentFileLists.get(socket);
+        if (!sent) { sent = new Set(); this.sentFileLists.set(socket, sent); }
+        if (sent.has(topic)) return;
+        sent.add(topic);
+
         const { publicKey, secretKey } = this.sessionManager.getCredentials();
         const fileList = this.spaceFileListManager.get(topic);
+        if (!fileList || Object.keys(fileList).length === 0) return;
         const fileStack = this.spaceFileListManager.convertListToStack(fileList);
 
         const message = await createSpaceFileEventMessage({
