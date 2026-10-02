@@ -80,6 +80,9 @@ export function parseSpaceTopic(topic) {
  */
 export function parseFilePath(filePath) {
     const normalized = filePath.replace(/\\/g, '/');
-    const parsed = path.parse(normalized);
-    return { dir: parsed.dir || '', filename: parsed.base };
+    // posix.dirname/basename rather than path.parse: Bare's path module has no parse(),
+    // and space paths are posix anyway. dirname('a.txt') is '.', which parse() reported as ''.
+    const base = path.posix.basename(normalized);
+    const dir = path.posix.dirname(normalized);
+    return { dir: dir === '.' ? '' : dir, filename: base };
 }
