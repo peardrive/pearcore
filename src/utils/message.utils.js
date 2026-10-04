@@ -94,7 +94,7 @@ function getMessageOrderExpression(filters = {}) {
 function getPaginationLimits(filters = {}) {
   const limit = Math.min(typeof filters.limit === 'number' && filters.limit > 0 ? filters.limit : 100, 1000);
   const offset = typeof filters.offset === 'number' && filters.offset >= 0 ? filters.offset : 0;
-  
+
   return { limit, offset };
 }
 
@@ -125,16 +125,17 @@ function normalizeMessageRecords(records) {
  * @param {string} params.message.payload - Stringified JSON content
  * @param {string} params.senderPublicKey - Immediate sender's public key
  * @param {number} params.timestamp - When message was received/broadcasted
- * @returns {Object} Complete message payload ready for signing/verification
- * @returns {string} returns.type - Message type
- * @returns {string} returns.topic - Message topic
- * @returns {number} returns.isRelay - 0 if sender=owner, 1 if sender≠owner (relay)
- * @returns {string} returns.senderPublicKey - Immediate sender's public key
- * @returns {number} returns.broadcastTimestamp - When message was broadcasted
- * @returns {number} returns.messageTimestamp - When message was originally created
- * @returns {string} returns.nonce - Unique message identifier
- * @returns {string} returns.messageOwnerPublicKey - Original creator's public key
- * @returns {string} returns.payload - Stringified JSON content
+ * @returns {{
+ *   type: string,
+ *   topic: string,
+ *   isRelay: number,
+ *   senderPublicKey: string,
+ *   broadcastTimestamp: number,
+ *   messageTimestamp: number,
+ *   nonce: string,
+ *   messageOwnerPublicKey: string,
+ *   payload: string
+ * }} Complete message payload ready for signing/verification
  */
 export function buildMessageRecordPayload({
   message,
@@ -238,7 +239,7 @@ export async function createMessageRecord(db, {
  */
 export async function queryMessageRecord(db, filters = {}) {
   const conditions = createMessageFilter(filters);
-  
+
   const orderExpr = getMessageOrderExpression(filters);
   const { limit, offset } = getPaginationLimits(filters);
 
@@ -313,14 +314,14 @@ export async function pushMessageToHistory(db, { message, senderPublicKey }) {
  */
 export async function flushMessageRecord(db, filters = {}) {
   const conditions = createMessageFilter(filters);
-  
+
   const deleteLimit = Math.min(typeof filters.limit === 'number' && filters.limit > 0 ? filters.limit : 100, 1000);
-  
+
   let query = db.delete(messages);
   if (conditions.length > 0) {
     query = query.where(and(...conditions));
   }
-  
+
   const results = await query
     .returning()
     .limit(deleteLimit)
