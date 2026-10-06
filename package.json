@@ -7,7 +7,8 @@
   "scripts": {
     "start": "node src/index.js run",
     "test": "cross-env NODE_ENV=test vitest",
-    "db:generate": "drizzle-kit generate:sqlite --config=drizzle.config.js"
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "drizzle-kit migrate"
   },
   "keywords": [
     "p2p",
@@ -26,7 +27,7 @@
     "@typescript-eslint/eslint-plugin": "^8.46.3",
     "@typescript-eslint/parser": "^8.46.3",
     "cross-env": "^10.1.0",
-    "drizzle-kit": "^0.18.1",
+    "drizzle-kit": "^0.31.11",
     "eslint": "^9.39.0",
     "jest": "^30.2.0",
     "nodemon": "^3.1.10",
@@ -43,6 +44,7 @@
     "better-sqlite3": "^12.4.6",
     "bip39": "^3.1.0",
     "bs58": "^6.0.0",
+    "canonicalize": "^5.1.0",
     "chalk": "^5.6.2",
     "chokidar": "^5.0.0",
     "dotenv": "^17.2.3",
