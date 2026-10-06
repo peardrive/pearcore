@@ -1,6 +1,4 @@
-import { sqliteTable, text, integer } from "drizzle-orm/sqlite-core";
-import { relations } from "drizzle-orm";
-import { index, uniqueIndex } from "drizzle-orm/gel-core";
+import { sqliteTable, text, integer, index, uniqueIndex } from "drizzle-orm/sqlite-core";
 
 /**
  * Messages table definition.
@@ -60,9 +58,11 @@ export const messages = sqliteTable("messages", {
   signature: text("signature").notNull(),
   payload: text("payload").notNull(),
 
-}, (table) => (
-  {
-    messageIdUq: uniqueIndex("messages_message_id_unique").on(table.messageId),
-    rangeIndex: index("message_space_range_index").on(table.spaceId, table.messageTimestamp, table.messageId)
-  }
-));
+}, (table) => [
+  uniqueIndex("messages_message_id_unique").on(table.messageId),
+  index("message_space_range_index").on(
+    table.spaceId,
+    table.messageTimestamp,
+    table.messageId
+  )
+]);

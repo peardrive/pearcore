@@ -19,6 +19,7 @@ import {
   isBooleanOrBinary
 } from './general.utils.js';
 import { deleteFileRecord, queryFileRegistryRecords } from './files.utils.js';
+import { flushMessageRecords } from './message.utils.js';
 
 /**
  * Generate a Hyperswarm topic name for a space
@@ -205,6 +206,7 @@ export async function verifySpaceSignature(space) {
  * @param {boolean} input.permissionRead
  * @param {string[]} input.readWhitelist
  * @param {string} input.signature
+ * @returns {Promise<{ spaceId: number }>}
  */
 export async function createSpace(db, input) {
   const insertedSpace = await db.insert(spaces).values({
@@ -302,7 +304,13 @@ export async function updateSpace(db, spaceId, input) {
  * Signs the full input payload using the Ed25519 secret key.
  *
  * @param {Object} db - Drizzle DB instace
- * @param {Object} input - The space payload
+ * @param {Object} input
+ * @param {string} input.spaceName
+ * @param {string} input.publicKey
+ * @param {boolean} input.permissionBroadcast
+ * @param {string[]} input.broadcastWhitelist
+ * @param {boolean} input.permissionRead
+ * @param {string[]} input.readWhitelist
  * @param {Uint8Array} secretKey - Ed25519 secret key (Uint8Array)
  */
 export async function createSpaceForPublicKey(db, input, secretKey) {
@@ -677,6 +685,8 @@ export async function deleteSpace(db, spaceId) {
   for (const registry of fileRegisteries) {
     await deleteFileRecord(db, registry.id);
   }
+
+  await flushMessageRecords(db, { spaceId: spaceId });
 
   await db.delete(broadcastWhitelist)
     .where(eq(broadcastWhitelist.spaceId, spaceId));

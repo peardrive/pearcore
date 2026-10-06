@@ -5,7 +5,7 @@ import { createSpaceMessage, encryptPayload } from '../utils/protocol.utils.js';
 import { publicKeyIsAllowedToRead } from '../utils/policy.utils.js';
 import { encryptJSON, hex, randomNonce } from '../utils/crypto.utils.js';
 import { SpaceInstance } from './space.service.js';
-import { flushMessageRecord, queryMessageRecord } from '../utils/message.utils.js';
+import { flushMessageRecords, queryMessageRecord } from '../utils/message.utils.js';
 
 export class MessageService {
     constructor(emitter, { managers }) {
@@ -89,7 +89,7 @@ export class MessageService {
      * @returns {Promise<Array<Object>>} Array of deleted message records
      */
     async flush(filters = {}) {
-        return await flushMessageRecord(this.db, filters);
+        return await flushMessageRecords(this.db, filters);
     }
 
     /**

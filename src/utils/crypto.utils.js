@@ -7,6 +7,44 @@ import { ed25519 } from '@noble/curves/ed25519.js';
 import { chacha20poly1305 } from '@noble/ciphers/chacha.js';
 import { randomBytes, utf8ToBytes, hexToBytes, bytesToHex } from '@noble/hashes/utils.js';
 
+/**
+ * Create 8 bytes big-indiand Uint8 array from 64-bit number.
+ * @param {Number} value 
+ * @returns {Uint8Array}
+ */
+export function u64(value) {
+  const out = new Uint8Array(8);
+  new DataView(out.buffer).setBigUint64(0, BigInt(value), false);
+  return out;
+}
+
+/**
+ * Concatenate multiple buffers into single Uint8Array.
+ * @param  {...Uint8Array} arrays 
+ * @returns {Uint8Array}
+ */
+export function concatBytes(...arrays) {
+  let total = 0;
+
+  for (const arr of arrays) {
+    if (!(arr instanceof Uint8Array)) {
+      throw new Error(`ConcatBytes received unexpected input: ${arr}`);
+    }
+
+    total += arr.length;
+  }
+
+  const buffer = new Uint8Array(total);
+
+  let offset = 0;
+  for (const arr of arrays) {
+    buffer.set(arr, offset);
+    offset += arr.length;
+  }
+
+  return buffer;
+}
+
 export function bytesToUtf8(bytes) {
   return b4a.toString(bytes, 'utf8')
 }

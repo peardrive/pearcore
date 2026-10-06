@@ -114,8 +114,6 @@ export class AccountService {
 
     // loads the p2p discovery for the account
     await this.managers.connection.init();
-    // setup message throttler memory
-    await this.managers.throttle.load();
     // load space file management 
     await this.managers.spaceFiles.init();
     // load file-content delivery managerment
