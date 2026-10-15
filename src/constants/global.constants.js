@@ -1,7 +1,17 @@
 import os from 'os';
 import path from 'path';
 
+/**
+ * Default chunk size for Merkle Tree (file indexing).
+ */
 export const DEFAULT_CHUNK_SIZE = 256 * 1024; // 256KB
+
+/**
+ * Default batch size to load samples from the database.
+ * This parameter is explicitly used for message sync.
+ */
+export const DEFAULT_READ_BATCH_SIZE = 256;
+
 
 /**
  * Default logging level

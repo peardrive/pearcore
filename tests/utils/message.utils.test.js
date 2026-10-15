@@ -4,10 +4,16 @@ import {
     queryMessageRecord,
     flushMessageRecords,
     pushMessageToHistory,
+    computeRangeFingerprint,
+    computeRangeBuckets,
+    countMessagesInRange,
+    listMessageIdsInRange,
+    getMessageSnapshotRowId,
+    getMessagesByIds,
 } from "../../src/utils/message.utils.js";
 import { createBaseMessage } from "../../src/utils/protocol.utils.js";
 import { cleanup, createTempDatabase, generateKeypair } from "../general.utils.js";
-import { now } from "../../src/utils/general.utils.js";
+import { isNumber, now, validateHexString } from "../../src/utils/general.utils.js";
 import { hex, randomNonce } from "../../src/utils/crypto.utils.js";
 import { createSpaceForPublicKey } from "../../src/utils/space.utils.js";
 
@@ -66,12 +72,99 @@ describe('Message Utilities', () => {
             });
 
             expect(result).toHaveProperty('id');
-            expect(result.type).toBe(message.type);
-            expect(result.senderPublicKey).toBe(senderPublicKey);
-            expect(result.broadcastTimestamp).toBe(broadcastTimestamp);
-            expect(result.messageTimestamp).toBe(message.timestamp);
-            expect(result.nonce).toBe(message.nonce);
-            expect(result.ownerPublicKey).toBe(message.publicKey);
+            expect(result).toHaveProperty('messageId');
+            expect(isNumber(result.id)).toBe(true);
+            expect(validateHexString(result.messageId)).toBe(true);
+        });
+    });
+
+    describe('Range reconciliation', () => {
+        const insertMany = async (count, startTimestamp = 1000) => {
+            const rows = [];
+            for (let index = 0; index < count; index++) {
+                const nonce = hex(randomNonce());
+
+                const message = await createMessage({
+                    nonce: nonce,
+                    timestamp: startTimestamp + Math.floor(index / 2), // pairs should share timestamp
+                    payload: { index },
+                });
+
+                const record = await createMessageRecord(db, {
+                    message: message, 
+                    spaceId: spaceId, 
+                    senderPublicKey: message.publicKey, 
+                    broadcastTimestamp: now(),
+                });
+
+                rows.push({ ...message, ...record });
+            }
+            return rows.sort((a, b) => a.timestamp - b.timestamp || (a.messageId < b.messageId ? -1 : 1));
+        };
+
+        it('should count and list IDs in ascending (timestamp, messageId) order', async () => {
+            const rows = await insertMany(9, 1000);
+            const lowerBound = { timestamp: rows[2].timestamp, messageId: rows[2].messageId };
+            const upperBound = { timestamp: rows[7].timestamp, messageId: rows[7].messageId };
+
+            expect(await countMessagesInRange(db, { spaceId })).toBe(9);
+            expect(await countMessagesInRange(db, { spaceId, lowerBound, upperBound })).toBe(5);
+            expect(await listMessageIdsInRange(db, { spaceId, lowerBound, upperBound, batchSize: 2 }))
+                .toEqual(rows.slice(2, 7).map(r => r.messageId));
+        });
+
+        it('should freeze the visible set with maxRowId', async () => {
+            await insertMany(4, 1000);
+            const snapshot = await getMessageSnapshotRowId(db, spaceId);
+            const before = await computeRangeFingerprint(db, { spaceId, maxRowId: snapshot });
+
+            await insertMany(3, 500); // older timestamps, inserted later
+
+            expect(await countMessagesInRange(db, { spaceId, maxRowId: snapshot })).toBe(4);
+            expect(await computeRangeFingerprint(db, { spaceId, maxRowId: snapshot })).toBe(before);
+            expect(await computeRangeFingerprint(db, { spaceId })).not.toBe(before);
+        });
+
+        it('should return 0 as snapshot of an empty space', async () => {
+            expect(await getMessageSnapshotRowId(db, spaceId)).toBe(0);
+        });
+
+        it('should split a range into contiguous buckets with matching fingerprints', async () => {
+            const rows = await insertMany(23);
+            const buckets = await computeRangeBuckets(db, { spaceId, bucketCount: 4, batchSize: 3 });
+
+            expect(buckets).toHaveLength(4);
+            expect(buckets.map(b => b.count)).toEqual([6, 6, 6, 5]);
+            expect(buckets.at(-1).upperBound).toBeNull();
+            expect(buckets[0].upperBound.messageId).toBe(rows[6].messageId);
+
+            let lowerBound = null;
+            for (const bucket of buckets) {
+                const fingerprint = await computeRangeFingerprint(db, { spaceId, lowerBound, upperBound: bucket.upperBound });
+                expect(fingerprint).toBe(bucket.fingerprint);
+                lowerBound = bucket.upperBound;
+            }
+        });
+
+        it('should create fewer buckets than requested for small ranges', async () => {
+            await insertMany(3);
+            const buckets = await computeRangeBuckets(db, { spaceId, bucketCount: 16 });
+            expect(buckets.map(b => b.count)).toEqual([1, 1, 1]);
+
+            const empty = await computeRangeBuckets(db, { spaceId: spaceId + 1000, bucketCount: 16 });
+            expect(empty).toHaveLength(1);
+            expect(empty[0].count).toBe(0);
+        });
+
+        it('should load records by message IDs', async () => {
+            const rows = await insertMany(5);
+            const records = await getMessagesByIds(db, {
+                spaceId,
+                messageIds: [rows[3].messageId, rows[1].messageId, rows[1].messageId],
+                batchSize: 1,
+            });
+
+            expect(records.map(r => r.messageId)).toEqual([rows[1].messageId, rows[3].messageId]);
         });
     });
 
