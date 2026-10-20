@@ -33,14 +33,32 @@ export class SessionManager {
 
             // all static variables related to p2p messaging
             messaging: {
-                rawLimitSize: messageConstants.MAX_MESSAGE_SIZE,
-                frequencyThrottle: messageConstants.MAX_FREQUENCY_THROTTLE,
-                maxQuarantineTime: messageConstants.MAX_QUARANTINE_TIME,
-                allowThrottleRejection: messageConstants.ALLOW_THROTTLE_REJECTIONS,
+                // maximum allowed buffer size for incoming json payload to be processed
+                rawLimitSize: 10 * 1024 * 1024, // 10MB as default
+                // number of messages in on minute to hit the throttling point for connected peer
+                frequencyThrottle: 256,
+                // the quarantine time that throttled peer is not allowed to any new send message.
+                maxQuarantineTime: 500,
+                /**
+                 * send rejection message to quarantine peer as a form of notification.
+                 * set to `false` to avoid potential abuse in un-trusted enviroment.
+                 */
+                allowThrottleRejection: true,
 
                 // limit the number of messages that are stored per event type to prevent
                 // excessive disk consumption and maintain system performance. 
-                recordMessagesForEvents: []
+                recordMessagesForEvents: [],
+
+                reconciliation: {
+                    //  ranges holding fewer messages than this value are sent as id list instead of range splits.
+                    idListThreshold: 32,
+                    // number of sub-ranges a mismatch range is split into.
+                    bucketCount: 16,
+                    // mixumum ranges allowed within single message
+                    maxRanges: 1024,
+                    // maximum number of exchanges rounds for single session
+                    maxRounds: 64
+                }
             },
 
             files: {

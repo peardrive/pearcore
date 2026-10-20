@@ -12,7 +12,6 @@ export const DEFAULT_CHUNK_SIZE = 256 * 1024; // 256KB
  */
 export const DEFAULT_READ_BATCH_SIZE = 256;
 
-
 /**
  * Default logging level
  * use "debug" for more detailed logs which helps debugging
