@@ -1,6 +1,6 @@
 import * as EVENTS from '../../src/constants/events.constants.js';
 import path from "path";
-import { describe, beforeEach, afterEach, it, expect } from "vitest";
+import { describe, beforeEach, afterEach, afterEach, it, expect } from "vitest";
 import { cleanup, createP2PNetwork, generateRandomFile, makeTempDir } from '../general.utils.js';
 import { FileHandlerCache } from "../../src/managers/delivery.manager.js";
 import { hex, hexToUint8, randomNonce } from "../../src/utils/crypto.utils.js";
@@ -105,6 +105,11 @@ describe("FileContentDeliveryManager", () => {
 
     afterEach(async () => {
         await deliveryManager.stop();
+
+        const { sqlite } = manager.session.getDatabase();
+        await sqlite.close();
+
+        await cleanup(manager.root);
         await cleanup(rootDirectory);
     });
 

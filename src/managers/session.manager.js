@@ -86,6 +86,14 @@ export class SessionManager {
         this._createProxyInterface();
     }
 
+    set(...params) {
+        return this.session.set(...params);
+    }
+
+    get(...params) {
+        return this.session.get(...params);
+    }
+
     reset() {
         this.session = this.STATIC_SESSION;
     }

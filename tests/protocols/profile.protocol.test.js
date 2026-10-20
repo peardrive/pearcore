@@ -1,15 +1,27 @@
 import * as EVENTS from '../../src/constants/events.constants.js';
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { stripIds } from '../../src/utils/general.utils.js';
 import { initializeManagers } from "../../src/managers/initialization.js";
 import { getSpaceTopicHash } from '../../src/utils/space.utils.js';
 import { createProfileUpdateMessage } from "../../src/utils/protocol.utils.js";
-import { buildTestProfilePayload, createP2PNetwork, buildTestSpacePayload, createConnections } from "../general.utils.js";
-import { createProfile, createProfileForPublicKey, getProfileByPublicKey, updateProfileForPublicKey } from '../../src/utils/profile.utils.js';
-import { stripIds } from '../../src/utils/general.utils.js';
+import {
+    buildTestProfilePayload,
+    createP2PNetwork,
+    buildTestSpacePayload,
+    createConnections,
+    cleanup
+} from "../general.utils.js";
+import { 
+    createProfile, 
+    createProfileForPublicKey, 
+    getProfileByPublicKey, 
+    updateProfileForPublicKey 
+} from '../../src/utils/profile.utils.js';
 
 
 describe('ProfileProtocolHandler', () => {
     const generalTopicHash = 'a'.repeat(64)
+    let nodes;
     let primary;
     let primaryDB;
     let secondary;
@@ -18,7 +30,8 @@ describe('ProfileProtocolHandler', () => {
     let spaceTopicHash;
 
     beforeEach(async () => {
-        [primary, secondary] = await createP2PNetwork(2);
+        nodes = await createP2PNetwork(2);
+        [primary, secondary] = nodes;
 
         spaceParams = await buildTestSpacePayload({
             spaceName: 'TestSpace',
@@ -35,6 +48,15 @@ describe('ProfileProtocolHandler', () => {
         primaryDB = primary.manager.session.getDatabase().db;
         secondaryDB = secondary.manager.session.getDatabase().db;
     })
+
+    afterEach(async () => {
+        for (const node of nodes) {
+            const { sqlite } = node.manager.session.getDatabase();
+            await sqlite.close();
+
+            await cleanup(node.manager.root);
+        }
+    });
 
     it('should exist within the protocol map', () => {
         const managers = initializeManagers();

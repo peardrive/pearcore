@@ -23,22 +23,6 @@ export const NegentropyStates = {
     FAILED: 'failed',
 };
 
-export const NEGENTROPY_DEFAULTS = Object.freeze({
-    // ranges holding fewer messages than this are sent as an ID list instead of being split.
-    idListThreshold: 32,
-    // number of sub-ranges a mismatched range is split into.
-    bucketCount: 16,
-    // hard limit of exchanged rounds, protects against misbehaving peers.
-    maxRounds: 64,
-    // max number of ranges accepted in a single incoming message.
-    maxRanges: 1024,
-    // max number of IDs accepted in a single incoming ID_LIST range.
-    maxIdListSize: 4096,
-});
-
-const HEX_64 = /^[0-9a-f]{64}$/;
-const HEX_32 = /^[0-9a-f]{32}$/;
-
 export class NegentropySyncError extends Error {
     /**
      * @param {string} code - Machine readable error code.
@@ -51,16 +35,10 @@ export class NegentropySyncError extends Error {
     }
 }
 
-
 /**
  * The smallest unit of message-history synchronization: reconciles the message set of
  * ONE space between the local node and ONE remote peer, using Range-Based Set
  * Reconciliation (Negentropy v1 semantics).
- *
- * The class is transport agnostic: it consumes and produces plain JSON-serializable
- * messages. One side is the `initiator` (calls `initiate()`), the other the `responder`;
- * every incoming message is passed to `reconcile()`, which returns the reply to send back
- * (or `null` when there is nothing left to send).
  *
  * ```
  * const outgoing = await initiator.initiate();
@@ -72,20 +50,6 @@ export class NegentropySyncError extends Error {
  * }
  * // initiator.have / initiator.need, responder.have / responder.need
  * ```
- *
- * Once done, BOTH sides know the exact difference: `have` (IDs the peer is missing) and
- * `need` (IDs the local node is missing). Use `exportMessages()` / `importMessages()` to
- * transfer the actual messages.
- *
- * Termination: the side producing an empty reply is done and sends `{ ranges: [] }`;
- * the side receiving an empty message is done and returns `null`.
- *
- * Concurrency with live messages: when the session starts, the local message set is
- * frozen to a snapshot (the highest local row ID of the space). Messages stored after
- * that point — live SpaceMessages, or messages imported by another sync session — are
- * invisible to this session, so fingerprints cannot drift while ranges are being split
- * and the exchange always terminates. Such messages may show up as false "needs"; they
- * are filtered by `resolveNeeds()` and deduplicated by `importMessages()`.
  */
 export class NegentropySync {
     /**
@@ -202,10 +166,10 @@ export class NegentropySync {
 
     /**
      * Processes a message received from the peer.
-     * @param {Object} message - Incoming Negentropy message.
+     * @param {Array<Object>} responderRanges - Incoming Negentropy range.
      * @returns {Promise<Object|null>} The reply to send back, or `null` if nothing must be sent.
      */
-    async reconcile(message) {
+    async reconcile(responderRanges) {
         // reconciliation should be avoided is the state of syncing is finished or failed in process
         if (
             this.state === NegentropyStates.DONE ||
@@ -229,19 +193,19 @@ export class NegentropySync {
                     throw new NegentropySyncError('MAX_ROUNDS_EXCEEDED', `sync exceeded ${this.limits.maxRounds} rounds`);
                 }
 
-                this.state = NegentropyModeOptions.RECONCILING;
+                this.state = NegentropyStates.RECONCILING;
 
                 // the peer has nothing left to reconcile.
-                if (message.ranges.length === 0) {
-                    this.state = NegentropyModeOptions.DONE;
+                if (responderRanges.length === 0) {
+                    this.state = NegentropyStates.DONE;
                     return null;
                 }
 
-                const ranges = await this._processRanges(message.ranges);
+                const ranges = await this._processRanges(responderRanges);
 
                 // we have nothing left to reconcile, tell the peer we are done.
                 if (ranges.length === 0) {
-                    this.state = NegentropyModeOptions.DONE;
+                    this.state = NegentropyStates.DONE;
                 }
 
                 return ranges
@@ -294,6 +258,10 @@ export class NegentropySync {
             }
         };
 
+        if (!Array.isArray(incomingRanges)) {
+            console.log({ incomingRanges })
+        }
+        
         for (const range of incomingRanges) {
             const { upperBound, mode } = range;
 

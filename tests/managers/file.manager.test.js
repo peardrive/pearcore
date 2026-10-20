@@ -887,6 +887,8 @@ describe("ProviderList", () => {
     const ROOT_HASH = 'hash01';
     const TOPIC = "topic1";
 
+    let sqlite;
+    let root;
     let publicKey;
     let spaceFileListManager;
     let onDrop;
@@ -895,6 +897,9 @@ describe("ProviderList", () => {
     beforeEach(async () => {
         const peers = await createP2PNetwork(1);
         const { manager, publicKey: current } = peers[0];
+        
+        sqlite = manager.session.getDatabase().sqlite;
+        root = manager.root;
 
         onDrop = vi.fn();
         publicKey = current;
@@ -906,6 +911,11 @@ describe("ProviderList", () => {
             rootHash: ROOT_HASH,
             onDrop: onDrop
         });
+    });
+
+    afterEach(async () => {        
+        await sqlite.close();
+        await cleanup(root);
     });
 
     it('should add a new provider with an unkown lastRequestableLeaf', () => {

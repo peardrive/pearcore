@@ -109,7 +109,7 @@ export async function buildTestProfilePayload(params = {}) {
 
 export async function createManagerInstance() {
     const emitter = new EventEmitter();
-    const { db, sqlite } = await createTempDatabase();
+    const { db, sqlite, root } = await createTempDatabase();
     const { publicKey, secretKey } = await generateKeypair();
     const managers = initializeManagers(emitter);
 
@@ -119,7 +119,7 @@ export async function createManagerInstance() {
         secretKey: cryptoUtils.hex(secretKey)
     });
 
-    return { ...managers, emitter };
+    return { ...managers, emitter, root };
 }
 
 export async function createFakeP2PConnection(name = 'testSubject') {

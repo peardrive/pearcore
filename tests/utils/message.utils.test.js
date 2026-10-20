@@ -1,4 +1,9 @@
 import { describe, it, beforeEach, beforeAll, afterEach, expect } from "vitest";
+import { createBaseMessage } from "../../src/utils/protocol.utils.js";
+import { cleanup, createTempDatabase, generateKeypair } from "../general.utils.js";
+import { isNumber, now, validateHexString } from "../../src/utils/general.utils.js";
+import { hex, randomNonce } from "../../src/utils/crypto.utils.js";
+import { createSpaceForPublicKey } from "../../src/utils/space.utils.js";
 import {
     createMessageRecord,
     queryMessageRecord,
@@ -11,11 +16,6 @@ import {
     getMessageSnapshotRowId,
     getMessagesByIds,
 } from "../../src/utils/message.utils.js";
-import { createBaseMessage } from "../../src/utils/protocol.utils.js";
-import { cleanup, createTempDatabase, generateKeypair } from "../general.utils.js";
-import { isNumber, now, validateHexString } from "../../src/utils/general.utils.js";
-import { hex, randomNonce } from "../../src/utils/crypto.utils.js";
-import { createSpaceForPublicKey } from "../../src/utils/space.utils.js";
 
 const createMessage = async (overrides = {}) => {
     const keypair = await generateKeypair();

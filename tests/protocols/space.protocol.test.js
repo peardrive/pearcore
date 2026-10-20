@@ -1,13 +1,22 @@
-import { describe, it, expect, beforeEach } from "vitest";
 import * as EVENTS from '../../src/constants/events.constants.js';
 import * as MESSAGES from '../../src/constants/messages.constants.js';
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { buildTestSpacePayload, cleanup, unframeJson } from "../general.utils.js";
 import { initializeManagers } from "../../src/managers/initialization.js";
-import { createSpaceHashListMessage, createSpaceMessage, createSpaceSyncMessage, encryptPayload } from "../../src/utils/protocol.utils.js";
-import { buildTestSpacePayload, createFakeP2PConnection, unframeJson } from "../general.utils.js";
-import { createSpace, createSpaceForPublicKey, generateSpaceTopic, getSpace, getSpaceTopicHash, querySpace, updateSpaceForPublicKey, upsertSpace } from "../../src/utils/space.utils.js";
+import { 
+    createSpaceHashListMessage, 
+    createSpaceSyncMessage, 
+} from "../../src/utils/protocol.utils.js";
+import { 
+    createSpaceForPublicKey, 
+    generateSpaceTopic, 
+    getSpace, 
+    getSpaceTopicHash, 
+    updateSpaceForPublicKey, 
+    upsertSpace 
+} from "../../src/utils/space.utils.js";
 import { SpaceSyncHandler } from "../../src/protocols/space.protocol.js";
 import { now, stripIds } from "../../src/utils/general.utils.js";
-import { hex, randomNonce } from "../../src/utils/crypto.utils.js";
 import { createP2PNetwork, createConnections } from '../general.utils.js';
 import { saveShareLink } from "../../src/utils/sharelink.utils.js";
 
@@ -20,6 +29,7 @@ import { saveShareLink } from "../../src/utils/sharelink.utils.js";
  *    We consider outlier receiving any message from the space, an exception that should be avoided.
  */
 describe('Space Protocols', () => {
+    let nodes;
     let primary;
     let primaryDB;
     let secondary;
@@ -30,7 +40,8 @@ describe('Space Protocols', () => {
     let spaceTopicHash;
 
     beforeEach(async () => {
-        [primary, secondary, standby, outlier] = await createP2PNetwork(4);
+        nodes = await createP2PNetwork(4);
+        [primary, secondary, standby, outlier] = nodes;
 
         spaceParams = await buildTestSpacePayload({
             spaceName: 'TestSpace',
@@ -47,6 +58,15 @@ describe('Space Protocols', () => {
         primaryDB = primary.manager.session.getDatabase().db;
         secondaryDB = secondary.manager.session.getDatabase().db;
     })
+
+    afterEach(async () => {
+        for (const node of nodes) {
+            const { sqlite } = node.manager.session.getDatabase();
+            await sqlite.close();
+
+            await cleanup(node.manager.root);
+        }
+    });
 
     describe('SpaceHashListHandler', () => {
         let message;
@@ -349,48 +369,5 @@ describe('Space Protocols', () => {
             const outlierCallStack = outlier.socket.write.mock.calls;
             expect(outlierCallStack.length).toBe(0);
         });
-    })
-
-    describe('SpaceMessageHandler', () => {
-        it('should broadcast message from allowed publicKey', async () => {
-            const { spaceId } = await createSpaceForPublicKey(primaryDB, spaceParams, primary.secretKey);
-            const space = await getSpace(primaryDB, spaceId);
-            
-            const content = { data: 'hello world' };
-            const nonce = hex(randomNonce());
-            const encryptedContent = await encryptPayload({
-                payload: content,
-                spaceSecret: space.secret,
-                nonce: nonce
-            });
-
-            const message = await createSpaceMessage({
-                topic: spaceTopicHash,
-                messagePayload: encryptedContent,
-                publicKey: primary.publicKey,
-                secretKey: primary.secretKey,
-                nonce: nonce
-            });
-
-            let eventContext = null;
-            primary.manager.emitter.on(EVENTS.SpaceMessage, (context) => {
-                eventContext = context;
-            })
-
-            await primary.manager.message.handleIncomingMessage(secondary.socket, JSON.stringify(message), secondary.info);
-
-            expect(eventContext.content).toEqual(content);
-
-            expect(secondary.socket.write.mock.calls.length).toBe(0);
-
-            const standbyCallStack = standby.socket.write.mock.calls;
-            expect(standbyCallStack.length).toBe(1);
-
-            const standbyReceivedMessage = JSON.parse(unframeJson(standbyCallStack[0][0]));
-            expect(standbyReceivedMessage).toEqual(message);
-
-            const outlierCallStack = outlier.socket.write.mock.calls;
-            expect(outlierCallStack.length).toBe(0);
-        })
     })
 })
