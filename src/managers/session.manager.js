@@ -57,7 +57,17 @@ export class SessionManager {
                     // mixumum ranges allowed within single message
                     maxRanges: 1024,
                     // maximum number of exchanges rounds for single session
-                    maxRounds: 64
+                    maxRounds: 64,
+                    // maximum number of message ids accepted within a single range
+                    maxIdListSize: 4096,
+                    // a session without any exchange for this long is dropped
+                    sessionTimeout: 30000, // 30 seconds
+                    // interval of the reconciliation manager housekeeping (timeouts, assignments)
+                    heartbeatInterval: 5000, // 5 seconds
+                    // number of message ids requested from a single peer at once
+                    requestBatchSize: 128,
+                    // maximum time for a peer to deliver a requested batch before it is reassigned
+                    requestTimeout: 15000 // 15 seconds
                 }
             },
 

@@ -399,6 +399,22 @@ export async function getMessagesByIds(db, { spaceId, messageIds, batchSize = DE
 }
 
 /**
+ * Decides which of two peers initiates the reconciliation of a topic. Both peers evaluate
+ * the same rule with the same inputs, so they agree without exchanging any message.
+ * The topic is part of the rank, so across many shared spaces each peer initiates
+ * roughly half of the sessions.
+ *
+ * @param {string} topic - Space topic hash.
+ * @param {string} localPublicKey - Public key of the local node.
+ * @param {string} peerPublicKey - Public key of the remote peer.
+ * @returns {boolean} True if the local node should initiate.
+ */
+export function isReconciliationInitiator(topic, localPublicKey, peerPublicKey) {
+  const rank = publicKey => hex(hash(`${topic}:${publicKey}`));
+  return rank(localPublicKey) < rank(peerPublicKey);
+}
+
+/**
  * Prepends 4-bytes of zeros to the begin of the array as header.
  * @param {Uint8Array} bytes 
  * @returns {Uint8Array}

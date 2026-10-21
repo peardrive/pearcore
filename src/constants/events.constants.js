@@ -52,6 +52,12 @@ export const SpaceMessage = "SpaceMessage";
 export const NegentropySync = "NegentropySync";
 
 /**
+ * Emitted locally once a reconciliation session with a peer is finished.
+ * Context: { publicKey, topic, role, have: string[], need: string[] }
+ */
+export const NegentropySyncComplete = "NegentropySyncComplete";
+
+/**
  * Emitted when a profile is updated or when a peer is requesting to join
  * a space using its profile information.
  * Depending on the sender, this event may represent either a propagated

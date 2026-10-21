@@ -11,6 +11,7 @@ export class BaseProtocolHandler {
         this.spaceFileManager = managers.spaceFiles;
         this.deliveryManager = managers.delivery;
         this.muxManager = managers.mux;
+        this.negentropyManager = managers.negentropy;
 
         this.emitter = emitter;
         this.emit = (event, callback) => this.emitter.emit(event, callback);

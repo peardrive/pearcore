@@ -3,6 +3,7 @@ import { validateSpaceContext } from './space.utils.js';
 import { validateProfileContext } from "./profile.utils.js";
 import { validateSpaceFilePath } from "./files.utils.js";
 import { validateMerkleTree } from "./merkletree.utils.js";
+import { compareMessageBounds } from "./message.utils.js";
 import {
     hex,
     hash,
@@ -954,4 +955,145 @@ export function validateSpaceFileContentCancelPayload(message) {
     }
 
     return { isValid: true, reason: 'mesage is valid' };
+}
+
+const HEX_64_PATTERN = /^[0-9a-f]{64}$/;
+const HEX_32_PATTERN = /^[0-9a-f]{32}$/;
+
+/**
+ * Creates signed Negentropy reconciliation message for one session round.
+ *
+ * @param {Object} params
+ * @param {string} params.topic - Space topic hash the reconciliation belongs to.
+ * @param {string} params.sessionId - 24-char hex session id, created by the initiator.
+ * @param {Array<Object>} params.ranges - Ranges produced by `NegentropySync` (empty array ends the session).
+ * @param {string} params.publicKey - Sender's public key.
+ * @param {string} params.secretKey - Sender's secret key.
+ * @param {string} [params.nonce] - Optional pre-generated nonce (hex).
+ * @param {number} [params.timestamp] - Optional timestamp override.
+ * @returns {Promise<Object>}
+ */
+export async function createNegentropySyncMessage({
+    topic,
+    sessionId,
+    ranges,
+    publicKey,
+    secretKey,
+    nonce,
+    timestamp
+}) {
+    if (!topic) throw new Error('topic is required');
+    if (!nonceIsValid(sessionId)) throw new Error('sessionId should be 24 character hex string');
+    if (!Array.isArray(ranges)) throw new Error('ranges should be an array');
+    if (!secretKey) throw new Error('secretKey is required');
+    if (!publicKey) throw new Error('publicKey is required');
+
+    return await createBaseMessage({
+        type: EVENTS.NegentropySync,
+        topic,
+        payload: { sessionId, ranges },
+        secretKey,
+        publicKey,
+        nonce,
+        timestamp
+    });
+}
+
+function isValidRangeBound(bound) {
+    return isObject(bound) &&
+        bound !== null &&
+        Number.isSafeInteger(bound.timestamp) &&
+        bound.timestamp >= 0 &&
+        isString(bound.messageId) &&
+        HEX_64_PATTERN.test(bound.messageId);
+}
+
+/**
+ * Validates a single Negentropy range.
+ * @param {Object} range
+ * @param {Object|null} previousBound - Upper bound of the previous range.
+ * @param {boolean} isLast - True for the last range of the message.
+ * @param {number} maxIdListSize
+ * @returns {string|null} The failure reason, or null if the range is valid.
+ */
+function validateNegentropyRange(range, previousBound, isLast, maxIdListSize) {
+    if (!isObject(range) || range === null) return 'range should be an object';
+
+    const { upperBound, mode } = range;
+
+    if (upperBound === null) {
+        if (!isLast) return 'only the last range can be open-ended';
+    }
+    else {
+        if (!isValidRangeBound(upperBound)) return 'invalid range bound';
+        if (previousBound && !compareMessageBounds(previousBound, upperBound)) {
+            return 'range bounds should be strictly increasing';
+        }
+    }
+
+    switch (mode) {
+        case EVENTS.NegentropyModeOptions.SKIP:
+            return null;
+
+        case EVENTS.NegentropyModeOptions.FINGERPRINT:
+            return isString(range.fingerprint) && HEX_32_PATTERN.test(range.fingerprint)
+                ? null
+                : 'invalid range fingerprint';
+
+        case EVENTS.NegentropyModeOptions.ID_LIST:
+        case EVENTS.NegentropyModeOptions.ID_LIST_RESPONSE:
+            if (!Array.isArray(range.ids)) return 'range ids should be an array';
+            if (range.ids.length > maxIdListSize) return 'range id list is too large';
+            if (!range.ids.every(id => isString(id) && HEX_64_PATTERN.test(id))) return 'invalid message id';
+            return null;
+
+        default:
+            return 'unknown range mode';
+    }
+}
+
+/**
+ * Validates NegentropySync message payload.
+ *
+ * Ranges are contiguous: each range starts where the previous one ended (the first one
+ * starts at -infinity) and ends at its exclusive `upperBound` (`null` = +infinity, only
+ * allowed on the last range). An empty ranges list ends the session.
+ *
+ * @param {Object} message - The NegentropySync message.
+ * @param {Object} [limits]
+ * @param {number} [limits.maxRanges=1024] - Maximum ranges per message.
+ * @param {number} [limits.maxIdListSize=4096] - Maximum message ids per range.
+ * @returns {{ isValid: Boolean, reason: string }}
+ */
+export function validateNegentropySyncPayload(message, limits = {}) {
+    const { maxRanges = 1024, maxIdListSize = 4096 } = limits;
+    const payload = message.payload;
+
+    const rules = [
+        ['payload should be an object', () => isObject(payload) && payload !== null],
+        ['sessionId should be 24 character hex string', () => nonceIsValid(payload.sessionId)],
+        ['ranges should be an array', () => Array.isArray(payload.ranges)],
+        ['too many ranges', () => payload.ranges.length <= maxRanges],
+    ];
+
+    for (const [reason, condition] of rules) {
+        if (!condition()) {
+            return { isValid: false, reason };
+        }
+    }
+
+    let previousBound = null;
+    for (let index = 0; index < payload.ranges.length; index++) {
+        const range = payload.ranges[index];
+        const isLast = index === payload.ranges.length - 1;
+
+        const reason = validateNegentropyRange(range, previousBound, isLast, maxIdListSize);
+        if (reason) {
+            return { isValid: false, reason };
+        }
+
+        previousBound = range.upperBound;
+    }
+
+    return { isValid: true, reason: 'message is valid' };
 }

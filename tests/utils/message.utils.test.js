@@ -15,6 +15,7 @@ import {
     listMessageIdsInRange,
     getMessageSnapshotRowId,
     getMessagesByIds,
+    isReconciliationInitiator,
 } from "../../src/utils/message.utils.js";
 
 const createMessage = async (overrides = {}) => {
@@ -165,6 +166,33 @@ describe('Message Utilities', () => {
             });
 
             expect(records.map(r => r.messageId)).toEqual([rows[1].messageId, rows[3].messageId]);
+        });
+    });
+
+    describe('isReconciliationInitiator', () => {
+        it('should elect exactly one initiator between two peers', async () => {
+            const peers = await Promise.all([generateKeypair(), generateKeypair()]);
+            const [first, second] = peers.map(keypair => hex(keypair.publicKey));
+
+            for (let index = 0; index < 20; index++) {
+                const topic = hex(randomNonce());
+                const firstInitiates = isReconciliationInitiator(topic, first, second);
+                const secondInitiates = isReconciliationInitiator(topic, second, first);
+
+                expect(firstInitiates).not.toBe(secondInitiates);
+            }
+        });
+
+        it('should spread the initiator role across topics', async () => {
+            const [first, second] = (await Promise.all([generateKeypair(), generateKeypair()]))
+                .map(keypair => hex(keypair.publicKey));
+
+            const roles = new Set();
+            for (let index = 0; index < 32; index++) {
+                roles.add(isReconciliationInitiator(hex(randomNonce()), first, second));
+            }
+
+            expect(roles).toEqual(new Set([true, false]));
         });
     });
 

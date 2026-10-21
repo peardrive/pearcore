@@ -41,7 +41,7 @@
     "@noble/ciphers": "^2.1.1",
     "@noble/curves": "^2.0.1",
     "@noble/hashes": "^2.0.1",
-    "better-sqlite3": "^12.4.6",
+    "better-sqlite3": "^13.0.3",
     "bip39": "^3.1.0",
     "bs58": "^6.0.0",
     "canonicalize": "^5.1.0",

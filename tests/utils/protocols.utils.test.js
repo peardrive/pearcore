@@ -909,4 +909,83 @@ describe('Protocol Messages', () => {
             expect(status.isValid).toBe(false);
         }
     });
+
+    describe('createNegentropySyncMessage', () => {
+        const sessionId = 'a'.repeat(24);
+
+        it('should create a signed NegentropySync message', async () => {
+            const ranges = [{ upperBound: null, mode: EVENTS.NegentropyModeOptions.ID_LIST, ids: [] }];
+            const message = await protocolUtils.createNegentropySyncMessage({
+                topic: 'b'.repeat(64), sessionId, ranges, publicKey, secretKey,
+            });
+
+            expect(message.type).toBe(EVENTS.NegentropySync);
+            expect(message.payload).toEqual({ sessionId, ranges });
+            expect(await protocolUtils.verifyMessageSignature(message)).toBe(true);
+        });
+
+        it('should require a valid session id and a ranges array', async () => {
+            const params = { topic: 'b'.repeat(64), sessionId, ranges: [], publicKey, secretKey };
+
+            await expect(protocolUtils.createNegentropySyncMessage({ ...params, sessionId: 'abc' })).rejects.toThrow();
+            await expect(protocolUtils.createNegentropySyncMessage({ ...params, ranges: null })).rejects.toThrow();
+        });
+    });
+
+    describe('validateNegentropySyncPayload', () => {
+        const Mode = EVENTS.NegentropyModeOptions;
+        const sessionId = 'a'.repeat(24);
+        const bound = (timestamp, fill = 'a') => ({ timestamp, messageId: fill.repeat(64) });
+        const isValid = (ranges, limits, payload = { sessionId, ranges }) =>
+            protocolUtils.validateNegentropySyncPayload({ payload }, limits).isValid;
+
+        it('should accept an empty ranges list (end of session)', () => {
+            expect(isValid([])).toBe(true);
+        });
+
+        it('should accept every range mode', () => {
+            expect(isValid([
+                { upperBound: bound(1), mode: Mode.SKIP },
+                { upperBound: bound(2), mode: Mode.FINGERPRINT, fingerprint: '0'.repeat(32) },
+                { upperBound: bound(3), mode: Mode.ID_LIST, ids: ['b'.repeat(64)] },
+                { upperBound: null, mode: Mode.ID_LIST_RESPONSE, ids: [] },
+            ])).toBe(true);
+        });
+
+        it('should reject malformed payloads and session ids', () => {
+            expect(isValid(null, {}, null)).toBe(false);
+            expect(isValid([], {}, { sessionId: 'xyz', ranges: [] })).toBe(false);
+            expect(isValid(null, {}, { sessionId, ranges: 'nope' })).toBe(false);
+            expect(isValid([null])).toBe(false);
+        });
+
+        it('should only allow an open-ended bound on the last range', () => {
+            expect(isValid([{ upperBound: null, mode: Mode.SKIP }, { upperBound: null, mode: Mode.SKIP }])).toBe(false);
+        });
+
+        it('should require strictly increasing bounds', () => {
+            expect(isValid([{ upperBound: bound(2), mode: Mode.SKIP }, { upperBound: bound(1), mode: Mode.SKIP }])).toBe(false);
+            expect(isValid([{ upperBound: bound(1), mode: Mode.SKIP }, { upperBound: bound(1), mode: Mode.SKIP }])).toBe(false);
+            expect(isValid([{ upperBound: bound(1, 'a'), mode: Mode.SKIP }, { upperBound: bound(1, 'b'), mode: Mode.SKIP }])).toBe(true);
+        });
+
+        it('should reject malformed bounds, fingerprints, id lists and modes', () => {
+            expect(isValid([{ upperBound: { timestamp: -1, messageId: 'a'.repeat(64) }, mode: Mode.SKIP }])).toBe(false);
+            expect(isValid([{ upperBound: { timestamp: 1, messageId: 'A'.repeat(64) }, mode: Mode.SKIP }])).toBe(false);
+            expect(isValid([{ upperBound: null, mode: Mode.FINGERPRINT, fingerprint: 'xyz' }])).toBe(false);
+            expect(isValid([{ upperBound: null, mode: Mode.ID_LIST, ids: ['nope'] }])).toBe(false);
+            expect(isValid([{ upperBound: null, mode: Mode.ID_LIST_RESPONSE }])).toBe(false);
+            expect(isValid([{ upperBound: null, mode: 'unknown' }])).toBe(false);
+        });
+
+        it('should enforce maxRanges and maxIdListSize', () => {
+            const skips = [{ upperBound: bound(1), mode: Mode.SKIP }, { upperBound: bound(2), mode: Mode.SKIP }];
+            expect(isValid(skips, { maxRanges: 1 })).toBe(false);
+            expect(isValid(skips, { maxRanges: 2 })).toBe(true);
+
+            const ids = ['a'.repeat(64), 'b'.repeat(64)];
+            expect(isValid([{ upperBound: null, mode: Mode.ID_LIST, ids }], { maxIdListSize: 1 })).toBe(false);
+            expect(isValid([{ upperBound: null, mode: Mode.ID_LIST, ids }], { maxIdListSize: 2 })).toBe(true);
+        });
+    });
 })

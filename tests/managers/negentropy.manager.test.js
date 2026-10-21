@@ -1,10 +1,13 @@
-import { describe, it, beforeEach, afterEach, expect } from "vitest";
+import { describe, it, beforeEach, afterEach, expect, vi } from "vitest";
 import * as EVENTS from '../../src/constants/events.constants.js';
 
 import { createBaseMessage, createSpaceMessage } from "../../src/utils/protocol.utils.js";
-import { createSpaceForPublicKey, getSpace, getSpaceTopicHash, upsertSpace } from "../../src/utils/space.utils.js";
-import { hex, randomNonce } from "../../src/utils/crypto.utils.js";
-import { buildTestSpacePayload, cleanup, createP2PNetwork } from "../general.utils.js";
+import { createSpaceForPublicKey, getSpace, getSpaceTopicHash, getTopicToSpaceMap, upsertSpace } from "../../src/utils/space.utils.js";
+import { hash, hex, randomNonce } from "../../src/utils/crypto.utils.js";
+import { buildTestSpacePayload, cleanup, createConnections, createP2PNetwork, unframeJson } from "../general.utils.js";
+import { SessionManager } from "../../src/managers/session.manager.js";
+import { MessageRequestScheduler } from "../../src/managers/negentropy/components/scheduler.js";
+import { SpaceSyncHandler } from "../../src/protocols/space.protocol.js";
 import {
     NegentropySync,
     NegentropySyncError,
@@ -15,6 +18,7 @@ import {
     computeRangeFingerprint,
     createMessageRecord,
     flushMessageRecords,
+    isReconciliationInitiator,
     iterateRangeKeys,
 } from "../../src/utils/message.utils.js";
 
@@ -641,6 +645,543 @@ describe('NegentropySync', () => {
             expect(liveIndex).toBeGreaterThan(0);
             expect(sorted(initiator.have)).toEqual(sorted(primaryIds.filter(id => !secondaryIds.includes(id))));
             expect(sorted(initiator.need)).toEqual(sorted(secondaryIds.filter(id => !primaryIds.includes(id))));
+        });
+    });
+});
+
+const MANAGER_RECONCILIATION_CONFIG = Object.freeze({
+    ...TEST_RECONCILIATION_CONFIG,
+    maxIdListSize: 4096,
+    sessionTimeout: 1000,
+    heartbeatInterval: 60000, // tests run the heartbeat manually
+    requestBatchSize: 10,
+    requestTimeout: 1000,
+});
+
+/** Creates `count` distinct message ids. */
+const createMessageIds = (prefix, count) =>
+    Array.from({ length: count }, (_, index) => hex(hash(`${prefix}-${index}`)));
+
+/**
+ * Delivers every assigned batch (except the ones `skip` holds back) until the scheduler
+ * is complete, and returns the number of messages each provider delivered.
+ */
+const drainScheduler = (scheduler, { skip = () => false, maxRounds = 1000 } = {}) => {
+    const delivered = {};
+
+    for (let round = 0; !scheduler.isComplete() && round < maxRounds; round++) {
+        for (const [publicKey, assignment] of [...scheduler.assignments]) {
+            if (skip(publicKey, round)) continue;
+
+            delivered[publicKey] = (delivered[publicKey] ?? 0) + assignment.messageIds.size;
+            scheduler.markDelivered([...assignment.messageIds]);
+        }
+
+        scheduler.assign();
+    }
+
+    return delivered;
+};
+
+/**
+ * Wires the mock sockets of the nodes together: a frame written to a node's socket is
+ * handled by that node, as if it came from the node that signed the message.
+ */
+const linkNetwork = (nodes) => {
+    for (const target of nodes) {
+        target.socket.write.mockImplementation(buffer => {
+            const raw = unframeJson(buffer);
+            const sender = nodes.find(node => node.publicKey === JSON.parse(raw).publicKey);
+
+            setImmediate(() => target.manager.message.handleIncomingMessage(sender.socket, raw, sender.info));
+            return true;
+        });
+    }
+};
+
+/** Resolves with the first `count` contexts of an event emitted on the node. */
+const waitForEvents = (node, event, count = 1, timeout = 5000) => new Promise((resolve, reject) => {
+    const contexts = [];
+    const timer = setTimeout(() => reject(new Error(`timeout waiting for ${count} ${event} event(s)`)), timeout);
+
+    const listener = context => {
+        contexts.push(context);
+        if (contexts.length < count) return;
+
+        clearTimeout(timer);
+        node.manager.emitter.off(event, listener);
+        resolve(contexts);
+    };
+
+    node.manager.emitter.on(event, listener);
+});
+
+describe('MessageRequestScheduler', () => {
+    let session = null;
+    let requests = [];
+    let scheduler = null;
+
+    beforeEach(() => {
+        session = new SessionManager();
+        session.session.set('messaging.reconciliation', { ...MANAGER_RECONCILIATION_CONFIG });
+
+        requests = [];
+        scheduler = new MessageRequestScheduler({
+            sessionManager: session,
+            topic: 'topic',
+            request: async (publicKey, messageIds) => { requests.push({ publicKey, messageIds }); },
+        });
+    });
+
+    afterEach(() => {
+        vi.restoreAllMocks();
+    });
+
+    it('should not dispatch anything without a request handler', () => {
+        scheduler.setRequestHandler(null);
+        scheduler.addProvider('peerA', createMessageIds('m', 5));
+
+        expect(scheduler.assign()).toEqual([]);
+        expect(scheduler.pendingCount).toBe(5);
+    });
+
+    it('should assign one batch per idle provider, capped by requestBatchSize', async () => {
+        scheduler.addProvider('peerA', createMessageIds('m', 25));
+
+        const [assignment, ...rest] = scheduler.assign();
+        expect(rest).toEqual([]);
+        expect(assignment.messageIds).toHaveLength(MANAGER_RECONCILIATION_CONFIG.requestBatchSize);
+
+        // the provider is busy until its batch is delivered
+        expect(scheduler.assign()).toEqual([]);
+
+        scheduler.markDelivered(assignment.messageIds);
+        expect(scheduler.assign()).toHaveLength(1);
+
+        await Promise.resolve();
+        expect(requests).toHaveLength(2);
+    });
+
+    it('should split shared messages evenly between equally fast providers', () => {
+        const messageIds = createMessageIds('m', 1000);
+        scheduler.addProvider('peerA', messageIds);
+        scheduler.addProvider('peerB', messageIds);
+        scheduler.assign();
+
+        const delivered = drainScheduler(scheduler);
+
+        expect(delivered).toEqual({ peerA: 500, peerB: 500 });
+        expect(scheduler.isComplete()).toBe(true);
+    });
+
+    it('should give more messages to a faster provider', () => {
+        const messageIds = createMessageIds('m', 300);
+        scheduler.addProvider('fast', messageIds);
+        scheduler.addProvider('slow', messageIds);
+        scheduler.assign();
+
+        // the slow provider only delivers every third round
+        const delivered = drainScheduler(scheduler, { skip: (publicKey, round) => publicKey === 'slow' && round % 3 !== 0 });
+
+        expect(delivered.fast + delivered.slow).toBe(300);
+        expect(delivered.fast).toBeGreaterThan(delivered.slow * 2);
+    });
+
+    it('should request the messages with the fewest providers first', () => {
+        const shared = createMessageIds('shared', 10);
+        const onlyA = createMessageIds('onlyA', 5);
+        scheduler.addProvider('peerA', [...shared, ...onlyA]);
+        scheduler.addProvider('peerB', shared);
+
+        const assignmentA = scheduler.assign().find(assignment => assignment.publicKey === 'peerA');
+        expect(assignmentA.messageIds.slice(0, 5)).toEqual(onlyA);
+    });
+
+    it('should not queue a message that is already assigned when another provider registers it', () => {
+        const messageIds = createMessageIds('m', 5);
+        scheduler.addProvider('peerA', messageIds);
+        scheduler.assign();
+
+        scheduler.addProvider('peerB', messageIds);
+        expect(scheduler.queue.size).toBe(0);
+        expect(scheduler.assign()).toEqual([]);
+    });
+
+    it('should hand the assignment of a removed provider to another provider', () => {
+        const messageIds = createMessageIds('m', 10);
+        scheduler.addProvider('peerA', messageIds);
+        scheduler.assign();
+        scheduler.addProvider('peerB', messageIds);
+
+        scheduler.removeProvider('peerA');
+        const [assignment] = scheduler.assign();
+
+        expect(assignment.publicKey).toBe('peerB');
+        expect(sorted(assignment.messageIds)).toEqual(sorted(messageIds));
+    });
+
+    it('should drop messages without any provider until a new provider registers them', () => {
+        const messageIds = createMessageIds('m', 4);
+        scheduler.addProvider('peerA', messageIds);
+        scheduler.assign();
+
+        scheduler.removeProvider('peerA');
+        expect(scheduler.pendingCount).toBe(0);
+        expect(scheduler.assign()).toEqual([]);
+
+        scheduler.addProvider('peerB', messageIds);
+        expect(scheduler.assign()[0].messageIds).toHaveLength(4);
+    });
+
+    it('should reclaim stalled assignments and penalize the provider', () => {
+        const messageIds = createMessageIds('m', 20);
+        scheduler.addProvider('peerA', messageIds);
+        scheduler.assign();
+        scheduler.addProvider('peerB', messageIds);
+
+        const startedAt = Date.now();
+        vi.spyOn(Date, 'now').mockReturnValue(startedAt + MANAGER_RECONCILIATION_CONFIG.requestTimeout + 1);
+
+        // peerB got its own batch meanwhile, so only peerA is stalled
+        const [assignmentB] = scheduler.assign();
+        expect(assignmentB.publicKey).toBe('peerB');
+
+        expect(scheduler.reclaimStalled()).toEqual(['peerA']);
+        expect(scheduler.penalties.get('peerA')).toBe(1);
+
+        // once peerB is idle again, it is picked before the penalized peerA
+        scheduler.markDelivered(assignmentB.messageIds);
+        const order = scheduler.pickIdleProviders();
+        expect(order).toEqual(['peerB', 'peerA']);
+    });
+
+    it('should release and penalize a provider whose request fails', async () => {
+        scheduler.setRequestHandler(async () => { throw new Error('socket closed'); });
+        scheduler.addProvider('peerA', createMessageIds('m', 5));
+
+        scheduler.assign();
+        await new Promise(resolve => setImmediate(resolve));
+
+        expect(scheduler.isIdle('peerA')).toBe(true);
+        expect(scheduler.queue.size).toBe(5);
+        expect(scheduler.penalties.get('peerA')).toBe(1);
+    });
+});
+
+/**
+ * Three linked virtual nodes, all members of the same space:
+ * primary and secondary hold the history, tertiary acts as a new member.
+ */
+describe('NegentropySyncManager', () => {
+    let nodes = [];
+    let primary = null;
+    let secondary = null;
+    let tertiary = null;
+    let space = null;
+    let spaceTopicHash = null;
+    let history = [];
+
+    const store = async (node, list) => {
+        const db = node.manager.session.getDatabase().db;
+        const spaceId = (await getTopicToSpaceMap(db)).get(spaceTopicHash);
+        return await storeMessages(db, spaceId, list);
+    };
+
+    const emitSpaceSync = (node, peer, action = SpaceSyncHandler.STATES.IDENTICAL) => {
+        node.manager.emitter.emit(EVENTS.SpaceSync, { info: peer.info, message: { payload: space }, action });
+    };
+
+    /** The node elected as initiator between two nodes. */
+    const electedOf = (first, second) =>
+        isReconciliationInitiator(spaceTopicHash, first.publicKey, second.publicKey) ? first : second;
+
+    beforeEach(async () => {
+        nodes = await createP2PNetwork(3);
+        [primary, secondary, tertiary] = nodes;
+
+        for (const node of nodes) {
+            node.manager.session.session.set('messaging.reconciliation', { ...MANAGER_RECONCILIATION_CONFIG });
+        }
+
+        const spaceParams = await buildTestSpacePayload({
+            spaceName: 'NegentropyManagerSpace',
+            publicKey: primary.publicKey,
+            permissionRead: 0,
+            permissionBroadcast: 0,
+            readWhitelist: nodes.map(node => node.publicKey),
+            broadcastWhitelist: nodes.map(node => node.publicKey),
+        });
+
+        const primaryDB = primary.manager.session.getDatabase().db;
+        const { spaceId } = await createSpaceForPublicKey(primaryDB, spaceParams, primary.secretKey);
+        space = await getSpace(primaryDB, spaceId);
+
+        for (const node of [secondary, tertiary]) {
+            await upsertSpace(node.manager.session.getDatabase().db, space);
+        }
+
+        spaceTopicHash = getSpaceTopicHash(space);
+        createConnections(spaceTopicHash, nodes);
+        linkNetwork(nodes);
+
+        for (const node of nodes) {
+            await node.manager.negentropy.init();
+        }
+
+        history = await createMessages(primary, spaceTopicHash, 60);
+    });
+
+    afterEach(async () => {
+        vi.restoreAllMocks();
+
+        for (const node of nodes) {
+            await node.manager.negentropy.stop();
+
+            const { sqlite } = node.manager.session.getDatabase();
+            await sqlite.close();
+            await cleanup(node.manager.root);
+        }
+    });
+
+    describe('session negotiation', () => {
+        it('should only let the elected peer initiate after SpaceSync', async () => {
+            const primaryIds = await store(primary, history.slice(0, 40));
+            const secondaryIds = await store(secondary, history.slice(20, 60));
+
+            const elected = electedOf(primary, secondary);
+            const other = elected === primary ? secondary : primary;
+
+            const completions = Promise.all([
+                waitForEvents(primary, EVENTS.NegentropySyncComplete),
+                waitForEvents(secondary, EVENTS.NegentropySyncComplete),
+            ]);
+
+            // both peers receive a direct SpaceSync from each other
+            emitSpaceSync(primary, secondary);
+            emitSpaceSync(secondary, primary);
+
+            const [[onPrimary], [onSecondary]] = await completions;
+
+            expect(elected.manager.negentropy.getSession(other.publicKey, spaceTopicHash).role).toBe(NegentropyRole.INITIATOR);
+            expect(other.manager.negentropy.getSession(elected.publicKey, spaceTopicHash).role).toBe(NegentropyRole.RESPONDER);
+
+            expect(sorted(onPrimary.need)).toEqual(sorted(secondaryIds.filter(id => !primaryIds.includes(id))));
+            expect(sorted(onPrimary.have)).toEqual(sorted(primaryIds.filter(id => !secondaryIds.includes(id))));
+            expect(sorted(onSecondary.need)).toEqual(sorted(onPrimary.have));
+        });
+
+        it('should let the newcomer initiate on a first encounter, even when not elected', async () => {
+            const veteran = electedOf(primary, secondary);
+            const newcomer = veteran === primary ? secondary : primary;
+            const messageIds = await store(veteran, history);
+
+            const completions = Promise.all([
+                waitForEvents(newcomer, EVENTS.NegentropySyncComplete),
+                waitForEvents(veteran, EVENTS.NegentropySyncComplete),
+            ]);
+            emitSpaceSync(newcomer, veteran, SpaceSyncHandler.STATES.FIRST_ENCOUNTER);
+            const [[context]] = await completions;
+
+            expect(context.role).toBe(NegentropyRole.INITIATOR);
+            expect(veteran.manager.negentropy.getSession(newcomer.publicKey, spaceTopicHash).role).toBe(NegentropyRole.RESPONDER);
+            expect(sorted(context.need)).toEqual(sorted(messageIds));
+        });
+
+        it('should ignore SpaceSync when not elected', async () => {
+            const notElected = electedOf(primary, secondary) === primary ? secondary : primary;
+            const peer = notElected === primary ? secondary : primary;
+
+            emitSpaceSync(notElected, peer);
+            await new Promise(resolve => setTimeout(resolve, 50));
+
+            expect(notElected.manager.negentropy.sessions.size).toBe(0);
+            expect(peer.socket.write).not.toHaveBeenCalled();
+        });
+
+        it('should not start a session with a peer that cannot read the space', async () => {
+            const restricted = await buildTestSpacePayload({
+                spaceName: 'RestrictedSpace',
+                publicKey: primary.publicKey,
+                permissionRead: 0,
+                readWhitelist: [primary.publicKey],
+            });
+            const primaryDB = primary.manager.session.getDatabase().db;
+            const { spaceId } = await createSpaceForPublicKey(primaryDB, restricted, primary.secretKey);
+            const restrictedTopic = getSpaceTopicHash(await getSpace(primaryDB, spaceId));
+
+            const session = await primary.manager.negentropy.startSession(secondary.publicKey, restrictedTopic);
+
+            expect(session).toBeNull();
+            expect(secondary.socket.write).not.toHaveBeenCalled();
+        });
+
+        it('should not start two sessions for the same peer and space', async () => {
+            secondary.socket.write.mockImplementation(() => true);
+
+            const [first, second] = await Promise.all([
+                primary.manager.negentropy.startSession(secondary.publicKey, spaceTopicHash),
+                primary.manager.negentropy.startSession(secondary.publicKey, spaceTopicHash),
+            ]);
+
+            expect(first).toBe(second);
+            expect(secondary.socket.write).toHaveBeenCalledTimes(1);
+        });
+
+        it('should keep a single session when both peers initiate at the same time', async () => {
+            await store(primary, history.slice(0, 30));
+            await store(secondary, history.slice(30, 60));
+
+            const completions = Promise.all([
+                waitForEvents(primary, EVENTS.NegentropySyncComplete),
+                waitForEvents(secondary, EVENTS.NegentropySyncComplete),
+            ]);
+
+            await Promise.all([
+                primary.manager.negentropy.startSession(secondary.publicKey, spaceTopicHash),
+                secondary.manager.negentropy.startSession(primary.publicKey, spaceTopicHash),
+            ]);
+
+            const [[onPrimary], [onSecondary]] = await completions;
+            const primarySession = primary.manager.negentropy.getSession(secondary.publicKey, spaceTopicHash);
+            const secondarySession = secondary.manager.negentropy.getSession(primary.publicKey, spaceTopicHash);
+
+            expect(primarySession.sessionId).toBe(secondarySession.sessionId);
+            expect(new Set([onPrimary.role, onSecondary.role])).toEqual(new Set([NegentropyRole.INITIATOR, NegentropyRole.RESPONDER]));
+            expect(onPrimary.need).toHaveLength(30);
+            expect(onSecondary.need).toHaveLength(30);
+        });
+    });
+
+    describe('session lifecycle', () => {
+        it('should drop a session whose peer stops answering', async () => {
+            secondary.socket.write.mockImplementation(() => true); // secondary never answers
+
+            await primary.manager.negentropy.startSession(secondary.publicKey, spaceTopicHash);
+            expect(primary.manager.negentropy.sessions.size).toBe(1);
+
+            const startedAt = Date.now();
+            vi.spyOn(Date, 'now').mockReturnValue(startedAt + MANAGER_RECONCILIATION_CONFIG.sessionTimeout + 1);
+            await primary.manager.negentropy.heartbeat();
+
+            expect(primary.manager.negentropy.sessions.size).toBe(0);
+        });
+
+        it('should drop a session when the peer rejects its last message', async () => {
+            secondary.socket.write.mockImplementation(() => true);
+
+            const session = await primary.manager.negentropy.startSession(secondary.publicKey, spaceTopicHash);
+            primary.manager.emitter.emit(EVENTS.Reject, {
+                fromPublicKey: secondary.publicKey,
+                linkedMessageNonce: session.lastSentNonce,
+            });
+
+            expect(primary.manager.negentropy.sessions.size).toBe(0);
+        });
+
+        it('should drop the sessions of a disconnected peer', async () => {
+            secondary.socket.write.mockImplementation(() => true);
+
+            await primary.manager.negentropy.startSession(secondary.publicKey, spaceTopicHash);
+            primary.manager.emitter.emit(EVENTS.Disconnect, { publicKey: secondary.publicKey });
+
+            expect(primary.manager.negentropy.sessions.size).toBe(0);
+        });
+
+        it('should start a new session once the previous one was dropped', async () => {
+            secondary.socket.write.mockImplementation(() => true);
+
+            const first = await primary.manager.negentropy.startSession(secondary.publicKey, spaceTopicHash);
+            primary.manager.emitter.emit(EVENTS.Disconnect, { publicKey: secondary.publicKey });
+            const second = await primary.manager.negentropy.startSession(secondary.publicKey, spaceTopicHash);
+
+            expect(second).not.toBe(first);
+            expect(second.sessionId).not.toBe(first.sessionId);
+        });
+    });
+
+    describe('message requests', () => {
+        let requests = [];
+
+        /** tertiary (new member) reconciles with primary and secondary which hold the full history */
+        const syncNewcomer = async () => {
+            const messageIds = await store(primary, history);
+            await store(secondary, history);
+
+            // wait for both sides of both sessions to finish
+            const completions = Promise.all([
+                waitForEvents(tertiary, EVENTS.NegentropySyncComplete, 2),
+                waitForEvents(primary, EVENTS.NegentropySyncComplete),
+                waitForEvents(secondary, EVENTS.NegentropySyncComplete),
+            ]);
+            emitSpaceSync(tertiary, primary, SpaceSyncHandler.STATES.FIRST_ENCOUNTER);
+            emitSpaceSync(tertiary, secondary, SpaceSyncHandler.STATES.FIRST_ENCOUNTER);
+            await completions;
+
+            return messageIds;
+        };
+
+        beforeEach(() => {
+            requests = [];
+            tertiary.manager.negentropy.setRequestHandler(async ({ topic, publicKey, messageIds }) => {
+                requests.push({ topic, publicKey, messageIds });
+            });
+        });
+
+        it('should register every finished session as provider of the needed messages', async () => {
+            const messageIds = await syncNewcomer();
+            const scheduler = tertiary.manager.negentropy.getScheduler(spaceTopicHash);
+
+            expect(scheduler.pendingCount).toBe(messageIds.length);
+            for (const messageId of messageIds) {
+                expect(scheduler.providers.get(messageId)).toEqual(new Set([primary.publicKey, secondary.publicKey]));
+            }
+
+            // one batch per provider is requested right away
+            await new Promise(resolve => setImmediate(resolve));
+            expect(requests.map(request => request.publicKey).sort()).toEqual([primary.publicKey, secondary.publicKey].sort());
+            expect(requests.every(request => request.topic === spaceTopicHash)).toBe(true);
+        });
+
+        it('should balance the requests between the peers sharing the messages', async () => {
+            const messageIds = await syncNewcomer();
+            const scheduler = tertiary.manager.negentropy.getScheduler(spaceTopicHash);
+
+            const delivered = drainScheduler(scheduler);
+
+            expect(delivered).toEqual({
+                [primary.publicKey]: messageIds.length / 2,
+                [secondary.publicKey]: messageIds.length / 2,
+            });
+        });
+
+        it('should request the remaining messages from another peer after a disconnect', async () => {
+            const messageIds = await syncNewcomer();
+            const scheduler = tertiary.manager.negentropy.getScheduler(spaceTopicHash);
+
+            tertiary.manager.emitter.emit(EVENTS.Disconnect, { publicKey: primary.publicKey });
+            const delivered = drainScheduler(scheduler);
+
+            expect(delivered).toEqual({ [secondary.publicKey]: messageIds.length });
+            expect(tertiary.manager.negentropy.getSession(primary.publicKey, spaceTopicHash)).toBeUndefined();
+        });
+
+        it('should reassign stalled requests during the heartbeat', async () => {
+            await syncNewcomer();
+            const scheduler = tertiary.manager.negentropy.getScheduler(spaceTopicHash);
+            const stalled = scheduler.assignments.get(primary.publicKey);
+
+            const startedAt = Date.now();
+            vi.spyOn(Date, 'now').mockReturnValue(startedAt + MANAGER_RECONCILIATION_CONFIG.requestTimeout + 1);
+            await tertiary.manager.negentropy.heartbeat();
+
+            expect(scheduler.penalties.get(primary.publicKey)).toBe(1);
+            expect(scheduler.penalties.get(secondary.publicKey)).toBe(1);
+
+            // every stalled message is requested again
+            const assigned = [...scheduler.assignments.values()].flatMap(assignment => [...assignment.messageIds]);
+            for (const messageId of stalled.messageIds) {
+                expect(assigned.includes(messageId) || scheduler.queue.has(messageId)).toBe(true);
+            }
         });
     });
 });

@@ -18,3 +18,5 @@ export const INVALID_FILE_EVENT_ACTION_MESSAGE = 'the file event action is inval
 export const SPACE_FILE_NOT_FOUND = 'space file path does not exists';
 export const SLICE_NOT_AVAILABLE_MESSAGE = 'the request slice range is not available';
 export const FILE_NOT_ACCESSIBLE_MESSAGE = 'the requested file is not accessible locally';
+export const NEGENTROPY_SYNC_FAILED_MESSAGE = 'message reconciliation failed';
+export const NEGENTROPY_SESSION_CONFLICT_MESSAGE = 'a reconciliation session for this space is already initiated';

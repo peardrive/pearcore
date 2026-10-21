@@ -3,9 +3,9 @@ import { ProfileProtocolHandler } from './profile.protocol.js';
 import { RejectionProtocolHandler } from './rejection.protocol.js';
 import {
     SpaceHashListHandler,
-    SpaceMessageHandler,
     SpaceSyncHandler
 } from './space.protocol.js';
+import { NegentropySyncHandler, SpaceMessageHandler } from './message.protocol.js';
 import {
     SpaceFileContentRequestHandler,
     SpaceFileEventHandler,
@@ -33,6 +33,10 @@ export const ProtocolMapFactory = (emitter, managers) => [
     {
         type: EVENTS.SpaceMessage,
         handler: new SpaceMessageHandler(emitter, managers)
+    },
+    {
+        type: EVENTS.NegentropySync,
+        handler: new NegentropySyncHandler(emitter, managers)
     },
     {
         type: EVENTS.SpaceFileEvent,
