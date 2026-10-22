@@ -241,6 +241,8 @@ export class SpaceSyncHandler extends BaseProtocolHandler {
 
 export class SpaceMessageHandler extends BaseProtocolHandler {
     async handle(socket, message, info) {
+        // TODO check message against internal records
+
         const localTopicList = await getTopicToSpaceMap(this.db);
         const messageTopic = message.topic;
         const spaceId = localTopicList.get(messageTopic);

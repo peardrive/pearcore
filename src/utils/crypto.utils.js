@@ -1,11 +1,49 @@
+import * as b4a from 'b4a';
+import bip39 from 'bip39';
+import canonicalize from 'canonicalize';
 import { scryptAsync } from '@noble/hashes/scrypt.js';
-import { sha256 } from '@noble/hashes/sha2.js';
 import { blake3 } from '@noble/hashes/blake3.js'
 import { ed25519 } from '@noble/curves/ed25519.js';
 import { chacha20poly1305 } from '@noble/ciphers/chacha.js';
 import { randomBytes, utf8ToBytes, hexToBytes, bytesToHex } from '@noble/hashes/utils.js';
-import * as b4a from 'b4a';
-import bip39 from 'bip39';
+
+/**
+ * Create 8 bytes big-indiand Uint8 array from 64-bit number.
+ * @param {Number} value 
+ * @returns {Uint8Array}
+ */
+export function u64(value) {
+  const out = new Uint8Array(8);
+  new DataView(out.buffer).setBigUint64(0, BigInt(value), false);
+  return out;
+}
+
+/**
+ * Concatenate multiple buffers into single Uint8Array.
+ * @param  {...Uint8Array} arrays 
+ * @returns {Uint8Array}
+ */
+export function concatBytes(...arrays) {
+  let total = 0;
+
+  for (const arr of arrays) {
+    if (!(arr instanceof Uint8Array)) {
+      throw new Error(`ConcatBytes received unexpected input: ${arr}`);
+    }
+
+    total += arr.length;
+  }
+
+  const buffer = new Uint8Array(total);
+
+  let offset = 0;
+  for (const arr of arrays) {
+    buffer.set(arr, offset);
+    offset += arr.length;
+  }
+
+  return buffer;
+}
 
 export function bytesToUtf8(bytes) {
   return b4a.toString(bytes, 'utf8')
@@ -63,13 +101,11 @@ export const fromBase64 = (s) => new Uint8Array(Buffer.from(s, 'base64'));
 /**
  * Deterministically stringify a JSON-compatible value with stable key ordering.
  * Ensures identical byte output for logically equivalent objects (used for hashing/signing).
- * @param {any} obj - JSON-serializable value
- * @returns {string} Canonical JSON string
+ * @param {Object} obj - JSON-serializable value
+ * @returns {String} Canonical JSON string
  */
-export function canonicalStringify(obj) {
-  if (obj === null || typeof obj !== 'object') return JSON.stringify(obj)
-  if (Array.isArray(obj)) return `[${obj.map(canonicalStringify).join(',')}]`
-  return `{${Object.keys(obj).sort().map(k => `"${k}":${canonicalStringify(obj[k])}`).join(',')}}`
+export function canonicalStringify(object) {
+  return canonicalize(object);
 }
 
 /**

@@ -33,7 +33,7 @@ export async function createSandbox() {
 export async function createTempDatabase() {
     const { dbPath, root } = await createSandbox();
     const { db, sqlite } = await createDatabase(dbPath, MIGRATIONS_DIR);
-    return { db, sqlite };
+    return { db, sqlite, dbPath, root };
 }
 
 export async function cleanup(dir) {

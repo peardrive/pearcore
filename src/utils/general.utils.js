@@ -1,3 +1,5 @@
+import path from 'path';
+
 // General validation helper functions
 export const notNull = (obj) => obj !== null;
 export const notUndefined = (obj) => obj !== undefined;
@@ -9,7 +11,7 @@ export const isBooleanOrBinary = (obj) => isBoolean(obj) || isBinary(obj);
 export const isNull = obj => obj === null;
 export const isNullOrHex = obj => isNull(obj) || (isString(obj) && validateHexString(obj));
 export const isString = item => typeof item === 'string';
-export const isNumber = item => typeof item === 'number';
+export const isNumber = item => Number.isSafeInteger(item);
 export const isObject = item => typeof item === 'object';
 export const isFunction = item => typeof item === 'function';
 export const hasExactLength = (item, length) => item.length === length;
@@ -55,13 +57,6 @@ export const spaceSecretIsValid = secret =>
 export function validateHexString(str) {
     return /^[0-9a-fA-F]+$/.test(str);
 }
-
-/**
- * Validates space file path string.
- * @param {string} filepath - space file path
- * @returns {Boolean}
- */
-import path from 'path';
 
 /**
  * Validate a virtual file path.
@@ -118,7 +113,7 @@ export function now() {
  */
 export function validateTimestamp(timestamp) {
     return (
-        typeof timestamp === 'number' &&
+        isNumber(timestamp) &&
         !isNaN(timestamp) &&
         isFinite(timestamp) &&
         timestamp >= 0

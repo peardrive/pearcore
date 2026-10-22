@@ -81,6 +81,6 @@ export function initializeManagers(emitter) {
         connection: connectionManager,
         spaceFileList: spaceFileListManager,
         spaceFiles: spaceFileManager,
-        delivery: fileContentDeliveryManager
+        delivery: fileContentDeliveryManager,
     };
 }

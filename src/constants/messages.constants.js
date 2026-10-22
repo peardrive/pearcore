@@ -1,10 +1,3 @@
-// Maximum allowed size for handling incomming message from the network
-export const MAX_MESSAGE_SIZE = 10 * 1024 * 1024; // 10MB
-export const MAX_FREQUENCY_THROTTLE = 100; // throttle after 100th message in one second
-export const MAX_QUARANTINE_TIME = 1000; // 1 second
-// allow to send back rejection messages if the connected node reached the throttling point
-export const ALLOW_THROTTLE_REJECTIONS = false; 
-
 // Predefined rejection messages
 export const MESSAGE_RATE_LIMIT_EXCEEDED = 'node is throttled due to excessive message reception';
 export const MESSAGE_IS_DUPLICATED = 'the message has already been processed and is considered duplicated';

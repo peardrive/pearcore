@@ -1,44 +1,11 @@
 import { describe, it, expect } from "vitest";
 import { createManagerInstance } from "../general.utils";
 import { createBaseMessage } from "../../src/utils/protocol.utils";
-import { createMessageRecord } from "../../src/utils/message.utils";
-import { now } from "../../src/utils/general.utils";
 
 describe('ThrottleManager', () => {
     it('should exist within manager stack', async () => {
         const managers = await createManagerInstance();
         expect(managers.throttle).toBeDefined();
-    })
-
-    describe('load', () => {
-        it('should load message records from database', async () => {
-            const managers = await createManagerInstance();
-            const { db } = managers.session.getDatabase();
-            const { publicKey, secretKey } = managers.session.getCredentials();
-
-            const messages = [];
-            for (let count = 0; count <= 5; count++) {
-                const message = await createBaseMessage({
-                    type: 'abc',
-                    topic: 'abc',
-                    payload: {},
-                    publicKey: publicKey,
-                    secretKey: secretKey
-                });
-
-                messages.push(message);
-                await createMessageRecord(db, {
-                    message: message,
-                    senderPublicKey: publicKey,
-                    broadcastTimestamp: now(),
-                });
-            }
-
-            await managers.throttle.load();
-            for (const message of messages) {
-                expect(managers.throttle.messageIsDuplicated(message)).toBe(true);
-            }
-        })
     })
 
     describe('updateByMessage', () => {

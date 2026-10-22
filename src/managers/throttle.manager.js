@@ -1,5 +1,4 @@
 import { now } from "../utils/general.utils.js";
-import { getNonces } from "../utils/message.utils.js";
 
 export class ThrottleManager {
     constructor(emitter, managers) {
@@ -22,17 +21,6 @@ export class ThrottleManager {
 
     get MAX_QUARANTINE_TIME() {
         return this.sessionManager.getMessageConfig().maxQuarantineTime;
-    }
-
-    /**
-     * Load all messages from database (to avoid duplications).
-     * @returns {Promise<void>} Resolves when all records loads into the memory.
-     */
-    async load() {
-        const nonces = await getNonces(this.db);
-        for (const nonce of nonces) {
-            this.messageNonceRecord.add(nonce);
-        }
     }
 
     addToQuarantine(publicKey) {
