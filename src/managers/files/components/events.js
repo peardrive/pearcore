@@ -56,9 +56,19 @@ export class FileEventBroadcaster {
 
         this.ensureTopicStack(topic);
         this.stack.get(topic)[mode].push([path, publicKey, timestamp, rootHash, signature]);
+        // a REMOVE makes the kept ADD for this path history (signed once, patch-pearcore-lost)
+        if (mode === EVENTS.SpaceFileEventOptions.REMOVE) { try { this.onRemove?.(params); } catch { /* best effort */ } }
 
-        if (this.timer) clearTimeout(this.timer);
-        this.timer = setTimeout(async () => await this.broadcast(), this.broadcastThrottleTime);
+        // PearDrive patch (Oct 23 2026): no request lost in silence: a window opened by the first event, closed by
+        // time or by size — a steady stream of adds never postpones it
+        let pending = 0;
+        for (const st of this.stack.values()) pending += st[EVENTS.SpaceFileEventOptions.ADD].length + st[EVENTS.SpaceFileEventOptions.REMOVE].length;
+        if (pending >= 64) {
+            if (this.timer) { clearTimeout(this.timer); this.timer = null; }
+            this.broadcast().catch(() => {});
+            return;
+        }
+        if (!this.timer) this.timer = setTimeout(async () => { this.timer = null; await this.broadcast(); }, this.broadcastThrottleTime);
     }
 
     /**
@@ -80,14 +90,17 @@ export class FileEventBroadcaster {
      */
     async broadcast() {
         if (this.stack.size === 0) return;
+        // take the batch now: events added while it is signed and sent go in the next one
+        const batch = this.stack;
+        this.stack = new Map();
 
         const { publicKey, secretKey } = this.sessionManager.getCredentials();
         const topicMap = await getSpaceToTopicMap(this.db);
 
         for (const [spaceId, topicHash] of topicMap.entries()) {
-            if (!this.stack.has(topicHash)) continue;
+            if (!batch.has(topicHash)) continue;
 
-            const eventStack = this.stack.get(topicHash);
+            const eventStack = batch.get(topicHash);
             const space = await getSpace(this.db, spaceId);
 
             if (!space) continue;
@@ -124,7 +137,5 @@ export class FileEventBroadcaster {
             if (sockets.length === 0) continue;
             await this.messageManager.broadcastMessageToSockets(message, sockets);
         }
-
-        this.stack.clear();
     }
 }

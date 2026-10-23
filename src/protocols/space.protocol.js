@@ -116,19 +116,29 @@ export class SpaceSyncHandler extends BaseProtocolHandler {
         sent.add(topic);
         const fileStack = this.spaceFileListManager.convertListToStack(fileList);
 
-        const message = await createSpaceFileEventMessage({
-            topic: topic,
-            events: [
-                {
-                    action: EVENTS.SpaceFileEventOptions.ADD,
-                    files: fileStack
-                }
-            ],
-            publicKey: publicKey,
-            secretKey: secretKey
-        });
+        // PearDrive patch (Oct 23 2026): no request lost in silence: in chunks, never one frame past the receiver's limit —
+        // and never the receiver's own records: it knows what it holds (field, Oct 23:
+        // the Mac sent the phone 48,000 records, 28,000 of them the phone's own, and
+        // the phone spent 44 s checking and merging them before it answered anything)
+        const receiver = this.socketManager?.socketIndex?.get?.(socket) || (socket.remotePublicKey ? hex(socket.remotePublicKey) : null);
+        const filtered = receiver ? fileStack.filter((rec) => rec[1] !== receiver) : fileStack;
+        const CHUNK = 2000;
+        for (let i = 0; i < filtered.length; i += CHUNK) {
+            if (socket.destroyed) return;
+            const message = await createSpaceFileEventMessage({
+                topic: topic,
+                events: [
+                    {
+                        action: EVENTS.SpaceFileEventOptions.ADD,
+                        files: filtered.slice(i, i + CHUNK)
+                    }
+                ],
+                publicKey: publicKey,
+                secretKey: secretKey
+            });
 
-        await this.messageManager.sendMessageToSocket(message, socket);
+            await this.messageManager.sendMessageToSocket(message, socket);
+        }
     }
 
     async handle(socket, message, info) {

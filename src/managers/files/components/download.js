@@ -55,6 +55,9 @@ export class SpaceDownloadTask {
         this._onProviderEvent = null;
         this._onTreeResponse = null;
         this._onHashList = null;
+        this._onReject = null;      // PearDrive patch (Oct 23 2026): no request lost in silence
+        this._onDisconnect = null;
+        this._refusedCallbacks = new Set();
 
         this.providerList = null;
         this.puller = null;
@@ -219,13 +222,21 @@ export class SpaceDownloadTask {
             throw new Error('Task initialization failed. Call setRecord() or setTask() first.');
         }
 
-        this._onProviderEvent = () => this.providerList.refresh();
+        this._onProviderEvent = ({ message } = {}) => this.onProviderEvent(message);
+        this._onReject = (context) => this.onReject(context);
+        this._onDisconnect = ({ publicKey } = {}) => {
+            // pearcore emits Disconnect before it drops the socket from its tables;
+            // look once the close has been processed
+            if (this.providerList?.has(publicKey) || this.puller?.isPending(publicKey)) queueMicrotask(() => this.onSocketClosed(publicKey));
+        };
         this._onTreeResponse = ({ message }) => this.onTreeResponse(message).catch(err => logger.warn(err));
         this._onHashList = context => this.onSpaceHashList(context).catch(err => logger.warn(err));
 
         this.emitter.on(EVENTS.SpaceFileEvent, this._onProviderEvent);
         this.emitter.on(EVENTS.SpaceFileTreeResponse, this._onTreeResponse);
         this.emitter.on(EVENTS.SpaceHashList, this._onHashList);
+        this.emitter.on(EVENTS.Reject, this._onReject);
+        this.emitter.on(EVENTS.Disconnect, this._onDisconnect);
 
         this.providerList.refresh();
 
@@ -243,6 +254,10 @@ export class SpaceDownloadTask {
             this.emitter.off(EVENTS.SpaceFileEvent, this._onProviderEvent);
             this.emitter.off(EVENTS.SpaceFileTreeResponse, this._onTreeResponse);
             this.emitter.off(EVENTS.SpaceHashList, this._onHashList);
+            this.emitter.off(EVENTS.Reject, this._onReject);
+            this.emitter.off(EVENTS.Disconnect, this._onDisconnect);
+            this._onReject = null;
+            this._onDisconnect = null;
             this._onProviderEvent = null;
             this._onTreeResponse = null;
             this._onHashList = null;
@@ -266,7 +281,60 @@ export class SpaceDownloadTask {
         if (this.puller.shouldRequest(message.publicKey, info, this.leafCount)) {
             await this.puller.request(message.publicKey);
         }
+        // the provider is (back) on this topic: give it leaves now
+        if (this.tree) this.scheduler.assign();
     }
+
+    /** A provider announced files: one that refused this file and announces it again may be asked again. */
+    onProviderEvent(message) {
+        for (const ev of message?.payload || []) {
+            for (const rec of ev?.files || []) {
+                const [p, by, , rootHash] = rec || [];
+                if (rootHash === this.rootHash && p === this.spaceFilePath) this.providerList.forgive(by);
+            }
+        }
+        this.providerList.refresh();
+        this.askAll();
+    }
+
+    /** A Reject named one of our requests: the provider cannot serve this file now. */
+    onReject(context) {
+        const nonce = context?.linkedMessageNonce;
+        if (!nonce || this.downloadComplete) return;
+        const fromTree = this.puller?.release(nonce);
+        const fromRange = this.scheduler?.releaseNonce(nonce);
+        const publicKey = fromTree || fromRange;
+        if (!publicKey) return;
+        this.providerList.refuse(publicKey, context.reason);
+        this.scheduler.releaseProvider(publicKey);
+        logger.warn('Provider refused', { publicKey, spaceFilePath: this.spaceFilePath, reason: context.reason });
+        const left = [...this.providerList.entries()].length;
+        for (const fn of this._refusedCallbacks) { try { fn({ publicKey, reason: context.reason, left }); } catch {} }
+        this.scheduler.assign();
+    }
+
+    /** A socket closed: what was asked over it is asked again over a surviving socket, now. */
+    onSocketClosed(publicKey) {
+        if (this.downloadComplete) return;
+        const trees = this.puller.releaseClosed();
+        const ranges = this.scheduler.releaseClosed();
+        if (trees.size || ranges.size) this.askAll();
+    }
+
+    /** Ask every provider that should be asked; hand out leaves. */
+    askAll() {
+        if (this.downloadComplete) return;
+        for (const [publicKey, info] of this.providerList.entries()) {
+            if (this.puller.shouldRequest(publicKey, info, this.leafCount)) {
+                this.puller.request(publicKey).catch(err => logger.warn(err));
+            }
+        }
+        if (this.tree) this.scheduler.assign();
+    }
+
+    /** Called with { publicKey, reason, left } whenever a provider refuses this file. */
+    onRefused(callback) { this._refusedCallbacks.add(callback); }
+    offRefused(callback) { this._refusedCallbacks.delete(callback); }
 
     /**
      * Event handler for SpaceFileTreeResponse message received from providers/

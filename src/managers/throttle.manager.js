@@ -9,7 +9,12 @@ export class ThrottleManager {
         this.frequencyRecord = new Map();
         this.quarantine = new Map();
 
-        setTimeout(() => this.clearFrequencyRecords(), 1000);
+        // PearDrive patch (Oct 23 2026): no request lost in silence. The counter was reset once,
+        // a second after start, and never again: every 100th message from a peer put it in
+        // quarantine for good. A window per peer, restarted by arrival time — no timer.
+        this.windowStart = new Map(); // publicKey -> ms the current one-second window began
+        this.dropped = new Map();     // publicKey -> messages dropped while quarantined
+        this.exempt = null;           // (publicKey) => true for peers the app admitted
     }
 
     get db() {
@@ -65,6 +70,14 @@ export class ThrottleManager {
      * @param {String} publicKey - 64 character hex string as publicKey
      */
     updateByFrequency(publicKey) {
+        if (this.isExempt(publicKey)) return;
+        const t = now();
+        const began = this.windowStart.get(publicKey);
+        if (began === undefined || t - began >= 1000) {
+            this.windowStart.set(publicKey, t);
+            this.frequencyRecord.set(publicKey, 0);
+        }
+
         if (this.isQuarantined(publicKey)) {
             if (this.shouldExitQuarantine(publicKey)) {
                 this.removeFromQuarantine(publicKey);
@@ -98,7 +111,19 @@ export class ThrottleManager {
      * Check if the publicKey should be throttled by the frequency of messages.
      * @param {String} publicKey - 64 character hex string as publicKey.
      */
+    isExempt(publicKey) {
+        try { return !!this.exempt?.(publicKey); } catch { return false; }
+    }
+
+    /** A message from a quarantined peer was dropped: count it (the snapshot shows it). */
+    noteDropped(publicKey) {
+        const n = (this.dropped.get(publicKey) || 0) + 1;
+        this.dropped.set(publicKey, n);
+        return n;
+    }
+
     shouldBeThrottledByFrequency(publicKey) {
+        if (this.isExempt(publicKey)) return false;
         return this.isQuarantined(publicKey) && !this.shouldExitQuarantine(publicKey);
     }
 
@@ -107,7 +132,8 @@ export class ThrottleManager {
         for (const [peer, callFrequency] of this.frequencyRecord.entries()) {            
             snapshot[peer] = {
                 count: callFrequency,
-                isThrottled: this.isQuarantined(peer)
+                isThrottled: this.isQuarantined(peer),
+                dropped: this.dropped.get(peer) || 0
             }
         }
 

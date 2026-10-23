@@ -134,6 +134,9 @@ export class MessageManager {
         this.throttleManager.updateByFrequency(publicKey);
 
         if (this.throttleManager.shouldBeThrottledByFrequency(publicKey)) {
+            // PearDrive patch (Oct 23 2026): no request lost in silence: a drop is never invisible
+            const dropped = this.throttleManager.noteDropped(publicKey);
+            if (dropped === 1 || dropped % 100 === 0) logger.warn('Message dropped: sender is throttled', { senderPublicKey: publicKey, dropped });
             if (this.messageConfig.allowThrottleRejection) {
                 const rejection = await createRejectionMessage({
                     reason: MESSAGES.MESSAGE_RATE_LIMIT_EXCEEDED,

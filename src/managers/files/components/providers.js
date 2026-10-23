@@ -7,6 +7,18 @@ export class ProviderList {
         this.onDrop = onDrop;
 
         this.providers = new Map();
+        this.refused = new Map(); // publicKey -> reason (PearDrive patch (Oct 23 2026): no request lost in silence)
+    }
+
+    /** The provider refused this file: set it aside until it announces the file again. */
+    refuse(publicKey, reason) {
+        this.refused.set(publicKey, reason || 'refused');
+        this.providers.delete(publicKey);
+    }
+
+    /** It announced the file again: it may be asked again. */
+    forgive(publicKey) {
+        return this.refused.delete(publicKey);
     }
 
     /**
@@ -19,6 +31,7 @@ export class ProviderList {
 
         // insert new providers into the list
         for (const publicKey of currentProviders) {
+            if (this.refused.has(publicKey)) continue;
             if (!this.providers.has(publicKey)) {
                 this.providers.set(publicKey, { lastRequestableLeaf: undefined });
             }

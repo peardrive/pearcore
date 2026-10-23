@@ -15,6 +15,7 @@ export class SpaceTreePuller {
         this.rootHash = rootHash;
 
         this.pendingRequests = new Map(); // nonce -> publicKey
+        this.pendingSockets = new Map();  // nonce -> socket it went out on (PearDrive patch (Oct 23 2026): no request lost in silence)
     }
 
     /**
@@ -76,8 +77,10 @@ export class SpaceTreePuller {
                 return;
             }
 
-            await this.messageManager.sendMessageToSocket(message, sockets[0]);
+            // recorded before sending: a reply must never beat its own bookkeeping
             this.pendingRequests.set(message.nonce, publicKey);
+            this.pendingSockets.set(message.nonce, sockets[0]);
+            await this.messageManager.sendMessageToSocket(message, sockets[0]);
 
         } catch (error) {
             logger.warn("Failed to send SpaceFileTreeRequest", {
@@ -87,8 +90,31 @@ export class SpaceTreePuller {
             });
 
             this.pendingRequests.delete(message.nonce);
+            this.pendingSockets.delete(message.nonce);
 
         }
+    }
+
+    /** A Reject named this request: forget it. Returns the provider it was sent to, or null. */
+    release(nonce) {
+        const publicKey = this.pendingRequests.get(nonce);
+        if (publicKey === undefined) return null;
+        this.pendingRequests.delete(nonce);
+        this.pendingSockets.delete(nonce);
+        return publicKey;
+    }
+
+    /** Requests whose socket has closed can never be answered: forget them. Returns their providers. */
+    releaseClosed() {
+        const released = new Set();
+        for (const [nonce, socket] of this.pendingSockets) {
+            if (!socket || socket.destroyed) {
+                released.add(this.pendingRequests.get(nonce));
+                this.pendingRequests.delete(nonce);
+                this.pendingSockets.delete(nonce);
+            }
+        }
+        return released;
     }
 
     /**
@@ -108,6 +134,7 @@ export class SpaceTreePuller {
         }
 
         this.pendingRequests.delete(replyNonce);
+        this.pendingSockets.delete(replyNonce);
 
         if (tree.rootHash !== this.rootHash) {
             return { succeed: false, reason: 'tree rootHash mismatch' };

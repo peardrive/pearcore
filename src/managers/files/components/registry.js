@@ -12,6 +12,7 @@ import {
     getFileMetaHashFromSource,
     updateFileTreeRecord,
     getDownloadRecord,
+    listDownloadRecords,
     getFileRegistryRecord,
 } from "../../../utils/files.utils.js";
 import { generateMerkleTree, getLeafCount } from '../../../utils/merkleTree.utils.js';
@@ -92,6 +93,47 @@ export class LocalFileRegistry {
         return { ...event, signature };
     }
 
+    // PearDrive patch (Oct 23 2026): no request lost in silence: an ADD record is signed once and kept
+    _signedStore() {
+        if (this._signed) return this._signed;
+        const { sqlite } = this.sessionManager.getDatabase();
+        sqlite.prepare('CREATE TABLE IF NOT EXISTS pd_signed_add (k TEXT PRIMARY KEY, topic TEXT NOT NULL, path TEXT NOT NULL, public_key TEXT NOT NULL, timestamp INTEGER NOT NULL, root_hash TEXT NOT NULL, signature TEXT NOT NULL)').run();
+        const map = new Map();
+        for (const r of sqlite.prepare('SELECT k, topic, path, public_key, timestamp, root_hash, signature FROM pd_signed_add').all()) {
+            map.set(r.k, { topic: r.topic, path: r.path, publicKey: r.public_key, timestamp: Number(r.timestamp), rootHash: r.root_hash, signature: r.signature });
+        }
+        this._signedSql = sqlite;
+        this._signed = map;
+        return map;
+    }
+
+    /** The ADD record for (topic, path, publicKey, rootHash): the kept one, or signed now and kept. */
+    async signedAdd(event) {
+        const key = `${event.topic}|${event.path}|${event.publicKey}|${event.rootHash}`;
+        let store = null;
+        try { store = this._signedStore(); } catch (error) { logger.warn('signed-record store unavailable', { error: String(error?.message || error) }); }
+        const kept = store?.get(key);
+        if (kept) return { ...kept };
+        const record = await this.createSignedEvent(event);
+        if (store) {
+            const keep = { topic: record.topic, path: record.path, publicKey: record.publicKey, timestamp: record.timestamp, rootHash: record.rootHash, signature: record.signature };
+            store.set(key, keep);
+            try { this._signedSql.prepare('INSERT OR REPLACE INTO pd_signed_add (k, topic, path, public_key, timestamp, root_hash, signature) VALUES (?, ?, ?, ?, ?, ?, ?)').run(key, keep.topic, keep.path, keep.publicKey, keep.timestamp, keep.rootHash, keep.signature); } catch { /* kept in memory for this run */ }
+        }
+        return record;
+    }
+
+    /** A REMOVE for (topic, path): the kept ADD records for it are history. */
+    forgetSigned(topic, path) {
+        if (!this._signed) return;
+        const prefix = `${topic}|${path}|`;
+        for (const key of [...this._signed.keys()]) {
+            if (!key.startsWith(prefix)) continue;
+            this._signed.delete(key);
+            try { this._signedSql.prepare('DELETE FROM pd_signed_add WHERE k = ?').run(key); } catch { /* gone from memory at least */ }
+        }
+    }
+
     async init() {
         const { publicKey, secretKey } = this.sessionManager.getCredentials();
         const spaceTopicMap = await getSpaceToTopicMap(this.db);
@@ -108,8 +150,30 @@ export class LocalFileRegistry {
 
 
         const sourcePaths = [];
+        const trust = this.sessionManager.session.get('files.verifyAtInit') === false;
+        const pendingIds = trust ? new Set((await listDownloadRecords(this.db)).map(r => r.registryId)) : null;
+        this.fileEventBroadcaster.onRemove = (record) => this.forgetSigned(record.topic, record.path);
 
         for (const [sourcePath, registries] of groups) {
+            if (trust) {
+                // the registry is the record: no stat, no open, no per-row query
+                if (registries.some(r => pendingIds.has(r.id))) continue;
+                for (const registry of registries) {
+                    if (!registry.rootHash) continue;
+                    const record = await this.signedAdd({
+                        topic: spaceTopicMap.get(registry.spaceId),
+                        path: posixPathJoin(registry.spacePath, registry.spaceFilename),
+                        publicKey,
+                        secretKey,
+                        timestamp: now(),
+                        rootHash: registry.rootHash,
+                    });
+                    this.spaceFileListManager.add(record);
+                }
+                sourcePaths.push(sourcePath);
+                continue;
+            }
+
             // A source that is not on disk right now is offline, not gone: an external volume
             // that has not mounted yet, a network share that is down. Deleting the rows here
             // (and broadcasting REMOVE for each) turned every such boot into index loss for every
@@ -220,7 +284,8 @@ export class LocalFileRegistry {
                 const spaceFilePath = posixPathJoin(registry.spacePath, registry.spaceFilename);
                 const spaceTopicHash = spaceTopicMap.get(registry.spaceId);
 
-                const record = await this.createSignedEvent({
+                // unchanged files load their kept record; a changed one is signed anew
+                const record = await this.signedAdd({
                     topic: spaceTopicHash,
                     path: spaceFilePath,
                     publicKey,
@@ -340,7 +405,7 @@ export class LocalFileRegistry {
             const spaceTopicHash = getSpaceTopicHash(space);
             const spaceFilePath = posixPathJoin(spacePath, spaceFilename);
 
-            const record = await this.createSignedEvent({
+            const record = await this.signedAdd({
                 topic: spaceTopicHash,
                 path: spaceFilePath,
                 publicKey,

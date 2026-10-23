@@ -160,11 +160,34 @@ export class LeafDeliveryScheduler {
 
         const sockets = this.socketManager.getConnectedSockets({ peers: [publicKey], topics: [this.topic] });
         if (sockets.length === 0) {
+            // PearDrive patch (Oct 23 2026): no request lost in silence: a range that cannot be sent is not
+            // parked until a timeout — its leaves go back in the queue now, and the
+            // provider's return (its hash list) assigns again
+            this.releaseProvider(publicKey);
             this.connectionManager.connectWith(publicKey);
             return;
         }
 
+        const assignment = this.assignments.get(publicKey);
+        if (assignment) { assignment.nonce = message.nonce; assignment.socket = sockets[0]; }
         await this.messageManager.sendMessageToSocket(message, sockets[0]);
+    }
+
+    /** A Reject named a content request: its leaves go back in the queue. Returns the provider or null. */
+    releaseNonce(nonce) {
+        for (const [publicKey, assignment] of this.assignments) {
+            if (assignment.nonce === nonce) { this.releaseProvider(publicKey); return publicKey; }
+        }
+        return null;
+    }
+
+    /** Ranges asked over a socket that has closed will never arrive: back in the queue. */
+    releaseClosed() {
+        const released = new Set();
+        for (const [publicKey, assignment] of [...this.assignments]) {
+            if (assignment.socket && assignment.socket.destroyed) { this.releaseProvider(publicKey); released.add(publicKey); }
+        }
+        return released;
     }
 
     /**
