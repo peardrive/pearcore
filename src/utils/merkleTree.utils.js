@@ -45,7 +45,8 @@ export async function generateMerkleTree({
     stream,
     size,
     chunkSize = DEFAULT_CHUNK_SIZE,
-    onLeaf = undefined
+    onLeaf = undefined,
+    leafHashes: givenLeafHashes = null // computed elsewhere (natively); PearDrive patch, Oct 22 2026
 }) {
     if (!isDefined(size) || !isNumber(size) || size < 0) {
         throw new Error("file size is invalid for merkle tree");
@@ -61,8 +62,9 @@ export async function generateMerkleTree({
     const leafHashes = [];
 
     let pending = Buffer.alloc(0);
+    if (givenLeafHashes) { for (const h of givenLeafHashes) leafHashes.push(Buffer.isBuffer(h) ? h : Buffer.from(h)); }
 
-    for await (const data of stream) {
+    for await (const data of (givenLeafHashes ? [] : stream)) {
         pending = Buffer.concat([pending, data]);
 
         while (pending.length >= chunkSize) {
@@ -80,7 +82,7 @@ export async function generateMerkleTree({
         }
     }
 
-    if (pending.length > 0) {
+    if (!givenLeafHashes && pending.length > 0) {
         // append the last pending leaf
         const lastLeafHash = hash(pending);
         leafHashes.push(hash(pending));
@@ -91,7 +93,7 @@ export async function generateMerkleTree({
         }
     }
 
-    if (size === 0) {
+    if (size === 0 && leafHashes.length === 0) {
         leafHashes.push(EMPTY_LEAF_HASH);
 
         if (onLeaf) {

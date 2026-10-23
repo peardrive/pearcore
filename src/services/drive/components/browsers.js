@@ -132,7 +132,7 @@ export class GenericDriveBrowser {
         return Array.from(directories).sort();
     }
 
-    async addFile(spaceFilePath, localFilePath) {
+    async addFile(spaceFilePath, localFilePath, extra = {}) {
         const base = this.normalize(this._path);
         const virtualPath = posixPathJoin('/', base, spaceFilePath);
 
@@ -150,6 +150,7 @@ export class GenericDriveBrowser {
             virtualPath,
             localFilePath,
             {
+                tree: extra.tree, metaHash: extra.metaHash, // precomputed (PearDrive patch)
                 // pass the progress event emitter to the entry
                 onIndexingStart: (tracker) => {
                     entry.setIndexingTracker(tracker);

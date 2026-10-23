@@ -424,6 +424,8 @@ export class SpaceFileManager {
             spacePath: parsed.dir,
             spaceFilename: parsed.filename,
             fileSourcePath: fileSourcePath,
+            tree: options.tree, // a precomputed tree (PearDrive patch)
+            metaHash: options.metaHash,
             onIndexingStart: options.onIndexingStart,
             onCompletion: options.onComplete,
             onError: options.onError
