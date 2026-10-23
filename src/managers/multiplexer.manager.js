@@ -127,7 +127,15 @@ export class MuxManager {
         if (state.closed) return Promise.resolve(); //dead end
 
         const publicKey = hex(info.publicKey);
-
+        // BACKPRESSURE (PearDrive patch, Oct 22 2026): stop reading while the
+        // backlog is large; TCP's window then slows the sender down
+        const READ_HIGH = 32 * 1024 * 1024, READ_LOW = 8 * 1024 * 1024;
+        const size = data?.length || 0;
+        state.pendingBytes = (state.pendingBytes || 0) + size;
+        if (state.pendingBytes > READ_HIGH && !state.readPaused && typeof socket.pause === 'function') {
+            state.readPaused = true;
+            socket.pause();
+        }
         const next = state.readQueue
             .then(() => this._process(socket, data, info, publicKey, state))
             .catch(error => {
@@ -135,8 +143,14 @@ export class MuxManager {
                     publicKey,
                     error,
                 });
+            })
+            .finally(() => {
+                state.pendingBytes -= size;
+                if (state.readPaused && state.pendingBytes < READ_LOW && !state.closed) {
+                    state.readPaused = false;
+                    try { socket.resume(); } catch { /* closed meanwhile */ }
+                }
             });
-
         state.readQueue = next;
         return next;
     }
