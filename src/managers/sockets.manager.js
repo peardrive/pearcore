@@ -41,18 +41,30 @@ export class SocketManager {
      */
     addSocket(socket, peerKey, topics) {
         const topicSet = new Set(topics);
+        if (!this.peerSockets) this.peerSockets = new Map(); // peerKey => Set<socket>: every live socket to the peer
+        if (!this.peerSockets.has(peerKey)) this.peerSockets.set(peerKey, new Set());
+        this.peerSockets.get(peerKey).add(socket);
+        this.socketIndex.set(socket, peerKey);
 
-        // remove all previous record from the peer
-        if (this.peers.has(peerKey)) {
-            this.resetSocket(this.peers.get(peerKey).socket);
+        const prev = this.peers.get(peerKey);
+        if (prev && prev.socket !== socket && !prev.socket.destroyed) {
+            // A second live connection to the same peer (both sides dialed; Hyperswarm
+            // closes one of them as a duplicate, and which one differs per side). The
+            // record stays on the first; this socket is known, so frames on it resolve
+            // and it can take over if the first goes. Topics merge.
+            for (const topic of topicSet) {
+                prev.topics.add(topic);
+                if (!this.topicIndex.has(topic)) this.topicIndex.set(topic, new Set());
+                this.topicIndex.get(topic).add(peerKey);
+            }
+            return;
         }
+        if (prev && prev.socket !== socket) this.resetSocket(prev.socket); // a dead primary: replace it
 
         this.peers.set(peerKey, {
             socket: socket,
             topics: topicSet
         });
-
-        this.socketIndex.set(socket, peerKey);
 
         for (const topic of topicSet) {
             if (!this.topicIndex.has(topic)) {
@@ -69,21 +81,21 @@ export class SocketManager {
      */
     resetSocket(socket) {
         const peerKey = this.socketIndex.get(socket);
-        if (!peerKey) {
-            logger.warn('removeSocket failed, no record found for the provided socket.');
-            return;
-        }
+        if (!peerKey) return; // a socket we never indexed, or already gone: nothing to do
+        this.socketIndex.delete(socket);
+        const set = this.peerSockets && this.peerSockets.get(peerKey);
+        if (set) set.delete(socket);
 
         const peer = this.peers.get(peerKey);
-        if (!peer) {
-            logger.warn('removeSocket failed, no record found for peerKey', {
-                peerKey: peerKey
-            });
+        if (!peer) return;
+        if (peer.socket !== socket) return; // a secondary went away; the primary stands
 
+        // The primary went: a surviving live socket takes over, else the peer is forgotten.
+        const next = set ? Array.from(set).find(s => s && !s.destroyed) : null;
+        if (next) {
+            peer.socket = next;
             return;
         }
-
-        this.socketIndex.delete(socket);
 
         for (const topic of peer.topics) {
             const peerSet = this.topicIndex.get(topic);
@@ -96,6 +108,7 @@ export class SocketManager {
         }
 
         this.peers.delete(peerKey);
+        if (this.peerSockets) this.peerSockets.delete(peerKey);
     }
 
     /**
