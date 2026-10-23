@@ -1,6 +1,6 @@
 import { isNumber } from "../../../utils/general.utils.js";
 import { closeFile } from "../../../utils/system.utils.js";
-import { updateDownloadRecord } from "../../../utils/files.utils.js";
+import { updateDownloadRecord, writeLeafContent } from "../../../utils/files.utils.js";
 
 export class SequentialWriter {
     constructor({
@@ -60,19 +60,22 @@ export class SequentialWriter {
     async flush() {
         let wrote = false;
 
+        // every contiguous chunk goes to the file; the record is updated once
+        // per flush, for the last leaf written (PearDrive patch, Oct 21 2026)
         while (this.buffer.has(this.nextExpectedLeaf)) {
             const chunk = this.buffer.get(this.nextExpectedLeaf);
             this.buffer.delete(this.nextExpectedLeaf);
-
-            await updateDownloadRecord(this.db, {
-                registryId: this.registryId,
-                leafIndex: this.nextExpectedLeaf,
-                leafContent: chunk,
-                fileHandler: this.fileHandler
-            });
-
+            await writeLeafContent({ leafIndex: this.nextExpectedLeaf, leafContent: chunk, fileHandler: this.fileHandler });
             this.nextExpectedLeaf++;
             wrote = true;
+        }
+        if (wrote) {
+            await updateDownloadRecord(this.db, {
+                registryId: this.registryId,
+                leafIndex: this.nextExpectedLeaf - 1,
+                leafContent: null,
+                fileHandler: this.fileHandler
+            });
         }
 
         if (this.nextExpectedLeaf >= this.leafCount) return { status: 'complete' };

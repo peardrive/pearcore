@@ -776,6 +776,12 @@ export async function setDownloadAsComplete(db, registryId) {
  * @param {Buffer|Uint8Array} params.leafContent - The raw bytes of the leaf to write.
  * @param {fs.FileHandle} params.fileHandler - The write file handler.
  */
+/** One leaf's bytes into the partial file at its offset — the write alone, no record. */
+export async function writeLeafContent({ leafIndex, leafContent, fileHandler }) {
+    const offset = leafIndex * DEFAULT_CHUNK_SIZE;
+    await fileHandler.write(leafContent, 0, leafContent.length, offset);
+}
+
 export async function updateDownloadRecord(db, params) {
     const {
         registryId,
@@ -784,9 +790,7 @@ export async function updateDownloadRecord(db, params) {
         fileHandler
     } = params
 
-    const offset = leafIndex * DEFAULT_CHUNK_SIZE;
-
-    await fileHandler.write(leafContent, 0, leafContent.length, offset);
+    if (leafContent) await writeLeafContent({ leafIndex, leafContent, fileHandler });
 
     await db.update(downloadRecord)
         .set({ lastPushedLeaf: leafIndex })
