@@ -1,6 +1,11 @@
 import { scryptAsync } from '@noble/hashes/scrypt.js';
 import { sha256 } from '@noble/hashes/sha2.js';
 import { blake3 } from '@noble/hashes/blake3.js'
+import { createBLAKE3 } from 'hash-wasm';
+// BLAKE3 in WebAssembly (same digest as noble's): created once; `hash()` uses
+// it as soon as it is ready and noble until then. (PearDrive patch, Oct 21 2026.)
+let wasmBlake3 = null;
+createBLAKE3().then((h) => { wasmBlake3 = h; }).catch(() => { wasmBlake3 = null; });
 import { ed25519 } from '@noble/curves/ed25519.js';
 import { chacha20poly1305 } from '@noble/ciphers/chacha.js';
 import { randomBytes, utf8ToBytes, hexToBytes, bytesToHex } from '@noble/hashes/utils.js';
@@ -88,6 +93,7 @@ export function hash(input) {
     ? utf8ToBytes(input)
     : input;
 
+  if (wasmBlake3) { wasmBlake3.init(); wasmBlake3.update(buf); return wasmBlake3.digest('binary'); }
   return blake3(buf);
 }
 

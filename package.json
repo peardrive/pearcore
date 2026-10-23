@@ -49,6 +49,7 @@
     "chokidar": "^5.0.0",
     "dotenv": "^17.2.3",
     "drizzle-orm": "^0.45.2",
+    "hash-wasm": "^4.12.0",
     "hypercore": "^11.28.1",
     "hypercore-protocol": "^8.0.7",
     "hyperdht": "^6.28.0",
