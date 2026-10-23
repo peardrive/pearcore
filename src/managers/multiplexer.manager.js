@@ -298,8 +298,12 @@ export class MuxManager {
             throw new Error('cannot write to a destroyed socket');
         }
 
+        // PearDrive patch (Oct 22 2026): wait for drain only past a budget, so the
+        // wire always has data queued; backpressure still holds above it
         const canWriteMore = socket.write(frame);
-        if (!canWriteMore) {
+        const WRITE_BUDGET = 4 * 1024 * 1024;
+        const queued = socket.writableLength ?? socket._writableState?.buffered ?? 0;
+        if (!canWriteMore && queued > WRITE_BUDGET) {
             await this._waitForDrain(socket);
         }
     }

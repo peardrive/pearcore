@@ -328,11 +328,15 @@ export class FileContentDeliveryManager {
         });
 
         try {
+            // PearDrive patch (Oct 22 2026): read ahead — the next leaves are being
+            // read while this one is sent
+            const readAhead = new Map();
+            const want = (i) => { if (i <= endLeaf && !readAhead.has(i)) { const p = getFileChunk(fileHandler, size, i, DEFAULT_CHUNK_SIZE); p.catch(() => {}); readAhead.set(i, p); } };
             for (let leafIndex = startLeaf; leafIndex <= endLeaf; leafIndex++) {
-                const chunk = await Promise.race([
-                    getFileChunk(fileHandler, size, leafIndex, DEFAULT_CHUNK_SIZE),
-                    abortPromise
-                ]);
+                want(leafIndex); want(leafIndex + 1); want(leafIndex + 2);
+                const pending = readAhead.get(leafIndex);
+                readAhead.delete(leafIndex);
+                const chunk = await Promise.race([pending, abortPromise]);
 
                 const leafIndexBuffer = Buffer.alloc(4);
                 leafIndexBuffer.writeUInt32BE(leafIndex, 0);
