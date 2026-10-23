@@ -17,7 +17,9 @@ export class LeafDeliveryScheduler {
         topic,
         spaceFilePath,
         downloadKey,
+        overrides = null,
     }) {
+        this.overrides = overrides;
         this.sessionManager = sessionManager;
         this.socketManager = socketManager;
         this.messageManager = messageManager;
@@ -40,7 +42,9 @@ export class LeafDeliveryScheduler {
     }
 
     get settings() {
-        return this.sessionManager.getDownloadConfig();
+        // per-task sizing (PearDrive patch, Oct 21 2026): a cable or LAN provider gets a bigger range per request
+        const base = this.sessionManager.getDownloadConfig();
+        return this.overrides ? { ...base, ...this.overrides } : base;
     }
 
     /** Initialize the internal queue */

@@ -116,7 +116,8 @@ export class SpaceDownloadTask {
             providerList: this.providerList,
             topic: this.topic,
             spaceFilePath: this.spaceFilePath,
-            downloadKey: this.key
+            downloadKey: this.key,
+            overrides: this.overrides || null // set on the task before its tree arrives (PearDrive)
         });
 
         this.tracker = new ProgressTracker({ total: this.leafCount });
