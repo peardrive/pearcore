@@ -755,7 +755,19 @@ export async function setDownloadAsComplete(db, registryId) {
 
 
     await createDirectory(path.dirname(finalFilePath));
-    await fs.rename(tempFilePath, finalFilePath);
+    try {
+        await fs.rename(tempFilePath, finalFilePath);
+    } catch (err) {
+        // cross-device (PearDrive patch, Oct 22 2026): the temp dir lives on
+        // the boot disk; a save folder on another volume cannot be renamed
+        // into. Copy to a part file beside the destination, rename into
+        // place, then drop the temp — the source outlives the copy.
+        if (err?.code !== 'EXDEV') throw err;
+        const part = `${finalFilePath}.pcmove`;
+        await fs.copyFile(tempFilePath, part);
+        await fs.rename(part, finalFilePath);
+        await fs.unlink(tempFilePath);
+    }
 
     const metaHash = await getFileMetaHashFromSource(finalFilePath);
 
