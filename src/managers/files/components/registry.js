@@ -269,11 +269,17 @@ export class LocalFileRegistry {
                 }
 
                 for (const reg of registries) {
-                    await updateFileTreeRecord(this.db, {
-                        registryId: reg.id,
-                        metaHash: currentMetaHash,
-                        tree: tree
-                    });
+                    try {
+                        await updateFileTreeRecord(this.db, {
+                            registryId: reg.id,
+                            metaHash: currentMetaHash,
+                            tree: tree
+                        });
+                    } catch (error) {
+                        // the row went away while we hashed (re-registered or removed
+                        // by the app meanwhile): nothing to update, not a reason to abort init
+                        logger.warn('registry row vanished during init', { registryId: reg.id, error });
+                    }
                 }
             }
             else {
