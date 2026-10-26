@@ -1,4 +1,6 @@
 import path from 'path';
+import fs from 'fs/promises';
+import { sql } from 'drizzle-orm';
 import { createReadStream } from 'fs';
 import { DEFAULT_CHUNK_SIZE } from '../../src/constants/global.constants.js';
 import { describe, it, afterEach, beforeEach, expect } from "vitest";
@@ -123,6 +125,64 @@ describe('File Utils', () => {
                 expect(leaf.nodeIndex).toBe(index);
                 expect(leaf.leafIndex).toBe(index);
             });
+        });
+    });
+
+    describe('generateFileTreeRecord — one file in a second space', () => {
+        let spaceB = null;
+        let rowA = null;
+
+        // Mark the first row's leaf 0 so a COPIED index is told apart from a
+        // re-hashed one: a copy carries the mark, a fresh hash does not.
+        const MARK = 'ab'.repeat(32);
+        const markLeaf0 = (registryId) => db.run(sql`UPDATE file_index SET hash = ${MARK} WHERE file_registry_id = ${registryId} AND leaf_index = 0`);
+        const leaf0 = async (registryId) => (await getFileTreeLeafs(db, registryId))[0].hash;
+
+        beforeEach(async () => {
+            const payload = await buildTestSpacePayload({ spaceName: 'second' });
+            spaceB = (await createSpace(db, payload)).spaceId;
+            rowA = await generateFileTreeRecord(db, { fileSourcePath: filePath, spaceId });
+        });
+
+        it('copies the tree of the same unchanged file instead of hashing it again', async () => {
+            await markLeaf0(rowA.registryId);
+            const rowB = await generateFileTreeRecord(db, { fileSourcePath: filePath, spaceId: spaceB });
+
+            expect(rowB.registryId).not.toBe(rowA.registryId);
+            expect(rowB.rootHash).toBe(rowA.rootHash);
+            expect(rowB.leafCount).toBe(rowA.leafCount);
+            expect(await leaf0(rowB.registryId)).toBe(MARK);
+
+            const a = await getFileRegistryRecord(db, rowA.registryId);
+            const b = await getFileRegistryRecord(db, rowB.registryId);
+            expect(b.spaceId).toBe(spaceB);
+            expect(b.metaHash).toBe(a.metaHash);
+            expect(b.height).toBe(a.height);
+            const count = (id) => db.get(sql`SELECT count(*) AS n FROM file_index WHERE file_registry_id = ${id}`).n;
+            expect(count(rowB.registryId)).toBe(count(rowA.registryId));
+        });
+
+        it('hashes again when the file changed since (metaHash differs)', async () => {
+            await markLeaf0(rowA.registryId);
+            const later = new Date(Date.now() + 60_000);
+            await fs.utimes(filePath, later, later);
+            const rowB = await generateFileTreeRecord(db, { fileSourcePath: filePath, spaceId: spaceB });
+            expect(await leaf0(rowB.registryId)).not.toBe(MARK);
+        });
+
+        it('never copies from a download in progress', async () => {
+            await markLeaf0(rowA.registryId);
+            db.run(sql`INSERT INTO partial_download_record (registry_id, last_pushed_leaf, final_destination) VALUES (${rowA.registryId}, 0, ${filePath})`);
+            const rowB = await generateFileTreeRecord(db, { fileSourcePath: filePath, spaceId: spaceB });
+            expect(await leaf0(rowB.registryId)).not.toBe(MARK);
+        });
+
+        it('keeps the copy whole when the first row is removed', async () => {
+            const rowB = await generateFileTreeRecord(db, { fileSourcePath: filePath, spaceId: spaceB });
+            const before = await getFileTreeRecord(db, rowB.registryId);
+            db.run(sql`DELETE FROM file_index WHERE file_registry_id = ${rowA.registryId}`);
+            db.run(sql`DELETE FROM file_registry WHERE id = ${rowA.registryId}`);
+            expect(await getFileTreeRecord(db, rowB.registryId)).toEqual(before);
         });
     });
 

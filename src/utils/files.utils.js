@@ -3,7 +3,7 @@ import path from 'path';
 import fs from 'fs/promises';
 import chokidar from 'chokidar';
 import { getSpace } from './space.utils.js';
-import { eq, and, asc, isNotNull } from 'drizzle-orm';
+import { eq, and, asc, isNotNull, sql } from 'drizzle-orm';
 import { hex, hash, canonicalStringify } from './crypto.utils.js';
 import { DEFAULT_CHUNK_SIZE } from '../constants/global.constants.js';
 import { isDefined, isNumber, isString, now } from './general.utils.js';
@@ -397,7 +397,7 @@ export async function createFileIndexRecord(db, registryId, tree) {
         if (!level) continue;
 
         for (const node of level) {
-            await db.insert(fileIndex).values({
+            rows.push({
                 registryId,
                 rootHash,
                 level: node.level,
@@ -410,6 +410,15 @@ export async function createFileIndexRecord(db, registryId, tree) {
             });
         }
     }
+
+    // One transaction, multi-row inserts: a tree of 2n nodes used to be 2n
+    // separate commits. (Chunked under SQLite's bound-parameter limit: 9
+    // columns × 100 rows.)
+    db.transaction((tx) => {
+        for (let i = 0; i < rows.length; i += 100) {
+            tx.insert(fileIndex).values(rows.slice(i, i + 100)).run();
+        }
+    });
 }
 
 /**
@@ -535,6 +544,27 @@ export async function generateFileTreeRecord(db, params) {
 
     if (givenTreeIsCurrent) { tree = params.tree; }
     else {
+        // HASH ONCE PER FILE, NOT PER SPACE. The same file, unchanged since
+        // (same source path, same metaHash = size + mtime), already
+        // registered in another space carries its whole tree: the new
+        // space's row and its index are copied from it in SQL, and nothing
+        // is read from disk. Only the new space's own signature (signedAdd,
+        // in the registry) is new work. (Field, Oct 26: a folder already
+        // registered in one space re-hashed 30k files to enter another.)
+        // metaHash alone can't say "unchanged": canonicalStringify writes
+        // the mtime Date as {}, so it is the size only. The donor must also
+        // have been registered after the file's last modification.
+        const { mtimeMs } = await fs.stat(source);
+        const donor = findTreeDonor(db, source, metaHash, Math.ceil(mtimeMs));
+        if (donor) {
+            return cloneFileTreeRecord(db, donor, {
+                fileSourcePath: source,
+                spacePath: spacePath || getSpacePathFromSource(source),
+                spaceFilename: spaceFilename || getSpaceFilenameFromSource(source),
+                spaceId
+            });
+        }
+
         try {
 
             stream = createFileStream(source);
@@ -576,6 +606,62 @@ export async function generateFileTreeRecord(db, params) {
         rootHash,
         leafCount
     };
+}
+
+/**
+ * A complete registration of this exact file (same source path, same
+ * metaHash) whose tree can be copied: not a download in progress (its
+ * file_path is a partial), and with its index present (a row without tree
+ * rows cannot serve, so it donates nothing).
+ * @param {Object} db - Drizzle database instance.
+ * @param {string} fileSourcePath - Resolved source path.
+ * @param {string} metaHash - The file's current metadata hash.
+ * @param {number} mtimeMs - The file's current modification time (ms): a row
+ *   registered before it describes older bytes.
+ * @returns {{id: number, rootHash: string, metaHash: string, leafCount: number, height: number}|undefined}
+ */
+export function findTreeDonor(db, fileSourcePath, metaHash, mtimeMs) {
+    return db.get(sql`
+        SELECT r.id AS id, r.root_hash AS rootHash, r.meta_hash AS metaHash,
+               r.leaf_count AS leafCount, r.height AS height
+        FROM file_registry r
+        WHERE r.file_path = ${fileSourcePath}
+          AND r.meta_hash = ${metaHash}
+          AND r.timestamp >= ${mtimeMs}
+          AND r.root_hash IS NOT NULL
+          AND NOT EXISTS (SELECT 1 FROM partial_download_record p WHERE p.registry_id = r.id)
+          AND EXISTS (SELECT 1 FROM file_index i WHERE i.file_registry_id = r.id AND i.level = 0 AND i.hash = r.root_hash)
+        LIMIT 1`);
+}
+
+/**
+ * Registers a file into a space from another registration of the same file:
+ * one registry row plus a copy of the donor's index rows, in one
+ * transaction. Each row keeps its own index (readers and deletes key on the
+ * registry id), so removing either space's row never touches the other's.
+ * @param {Object} db - Drizzle database instance.
+ * @param {Object} donor - Row from findTreeDonor.
+ * @param {Object} params - fileSourcePath, spacePath, spaceFilename, spaceId of the new row.
+ * @returns {{registryId: number, rootHash: string, leafCount: number}}
+ */
+export function cloneFileTreeRecord(db, donor, params) {
+    return db.transaction((tx) => {
+        const payload = buildfileRegistryPayload({
+            ...params,
+            rootHash: donor.rootHash,
+            metaHash: donor.metaHash,
+            leafCount: donor.leafCount,
+            height: donor.height
+        });
+        const { registryId } = tx.insert(fileRegistry).values(payload).returning({ registryId: fileRegistry.id }).get();
+        tx.run(sql`
+            INSERT INTO file_index (file_registry_id, root_hash, level, hash, parent_hash,
+                                    left_child_hash, right_child_hash, node_index, leaf_index)
+            SELECT ${registryId}, root_hash, level, hash, parent_hash,
+                   left_child_hash, right_child_hash, node_index, leaf_index
+            FROM file_index WHERE file_registry_id = ${donor.id}`);
+        return { registryId, rootHash: donor.rootHash, leafCount: donor.leafCount };
+    });
 }
 
 /**
