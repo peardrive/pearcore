@@ -306,11 +306,16 @@ export class SpaceDownloadTask {
         const fromRange = this.scheduler?.releaseNonce(nonce);
         const publicKey = fromTree || fromRange;
         if (!publicKey) return;
-        this.providerList.refuse(publicKey, context.reason);
+        this.refused(publicKey, context.reason);
+    }
+
+    /** The provider cannot serve this version: set it aside until it announces the file again. */
+    refused(publicKey, reason) {
+        this.providerList.refuse(publicKey, reason);
         this.scheduler.releaseProvider(publicKey);
-        logger.warn('Provider refused', { publicKey, spaceFilePath: this.spaceFilePath, reason: context.reason });
+        logger.warn('Provider refused', { publicKey, spaceFilePath: this.spaceFilePath, reason });
         const left = [...this.providerList.entries()].length;
-        for (const fn of this._refusedCallbacks) { try { fn({ publicKey, reason: context.reason, left }); } catch {} }
+        for (const fn of this._refusedCallbacks) { try { fn({ publicKey, reason, left }); } catch {} }
         this.scheduler.assign();
     }
 
@@ -344,7 +349,11 @@ export class SpaceDownloadTask {
      */
     async onTreeResponse(message) {
         const result = this.puller.verify(message);
-        if (!result.succeed) return;
+        if (!result.succeed) {
+            // an answer to OUR request that cannot be used is a refusal of this version
+            if (result.answered && !this.downloadComplete) this.refused(result.publicKey, result.reason);
+            return;
+        }
 
         const { publicKey, tree, lastRequestableLeaf } = result;
         this.providerList.setAdvertisedLeaf(publicKey, lastRequestableLeaf);

@@ -136,13 +136,18 @@ export class SpaceTreePuller {
         this.pendingRequests.delete(replyNonce);
         this.pendingSockets.delete(replyNonce);
 
-        if (tree.rootHash !== this.rootHash) {
-            return { succeed: false, reason: 'tree rootHash mismatch' };
+        // From here on the provider ANSWERED our request, with a tree we cannot use.
+        // `answered` lets the task treat that as the provider's word (PearDrive patch,
+        // Oct 28 2026): asking again gets the same tree, every heartbeat, for ever.
+        const publicKey = message.publicKey;
+
+        if (tree?.rootHash !== this.rootHash) {
+            return { succeed: false, answered: true, publicKey, reason: `tree rootHash mismatch (sent ${String(tree?.rootHash).slice(0, 8)}…, asked ${String(this.rootHash).slice(0, 8)}…)` };
         }
 
         const verification = verifyMerkleTree(tree);
         if (!verification.isValid) {
-            return { succeed: false, reason: verification.reason };
+            return { succeed: false, answered: true, publicKey, reason: `invalid tree (${verification.reason})` };
         }
 
         return {
