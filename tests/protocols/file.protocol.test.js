@@ -12,6 +12,7 @@ import { DEFAULT_CHUNK_SIZE } from '../../src/constants/global.constants.js';
 import { FrameTypes } from '../../src/managers/multiplexer.manager.js';
 
 describe('Space File Protocols', () => {
+    let nodes;
     let primary = null;
     let primaryDB;
     let secondary = null;
@@ -22,7 +23,8 @@ describe('Space File Protocols', () => {
     let spaceTopicHash = null;
 
     beforeEach(async () => {
-        [primary, secondary, standby] = await createP2PNetwork(3);
+        nodes = await createP2PNetwork(3);
+        [primary, secondary, standby] = nodes;
 
         primaryDB = primary.manager.session.getDatabase().db;
         secondaryDB = secondary.manager.session.getDatabase().db;
@@ -45,7 +47,16 @@ describe('Space File Protocols', () => {
         spaceTopicHash = getSpaceTopicHash(spaceParams);
 
         createConnections(spaceTopicHash, [primary, secondary, standby]);
-    })
+    });
+
+    afterEach(async () => {
+        for (const node of nodes) {
+            const { sqlite } = node.manager.session.getDatabase();
+            await sqlite.close();
+
+            await cleanup(node.manager.root);
+        }
+    });
 
     describe('SpaceFileEventHandler', () => {
 
@@ -474,6 +485,12 @@ describe('Space File Protocols', () => {
 
             const rejection = JSON.parse(unframeJson(primaryCalls[0][0]));
             expect(rejection.payload.reason).toBe(MESSAGES.READ_PERMISSION_NOT_ALLOWED_MESSAGE);
+
+            // cleanup
+            const { sqlite } = unauthorized.manager.session.getDatabase();
+            await sqlite.close();
+
+            await cleanup(unauthorized.manager.root);
         });
 
         it('should reject when space file path is not found', async () => {

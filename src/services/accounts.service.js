@@ -114,12 +114,12 @@ export class AccountService {
 
     // loads the p2p discovery for the account
     await this.managers.connection.init();
-    // setup message throttler memory
-    await this.managers.throttle.load();
     // load space file management 
     await this.managers.spaceFiles.init();
     // load file-content delivery managerment
     await this.managers.delivery.init();
+    // load message-history reconciliation
+    await this.managers.sync.init();
 
     return {
       username: creds.username,
@@ -136,6 +136,7 @@ export class AccountService {
     await this.managers.connection.destroy();
     await this.managers.spaceFiles.stop();
     await this.managers.delivery.stop();
+    await this.managers.sync.stop();
 
     const { sqlite } = this.managers.session.getDatabase();
     sqlite.close();

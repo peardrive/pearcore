@@ -3,9 +3,9 @@ import * as EVENTS from '../constants/events.constants.js';
 import { hex } from '../utils/crypto.utils.js';
 import { BaseProtocolHandler } from "./base.js";
 import { getSpace, getSpaceTopicHash, getTopicToSpaceMap, listSpaces, querySpace, upsertSpace, verifySpaceSignature } from '../utils/space.utils.js';
-import { publicKeyIsAllowedToBroadcast, publicKeyIsAllowedToRead, spaceShouldEncryptMessages } from '../utils/policy.utils.js'
-import { isTimestampEqual, isTimestampNewer, stripIds, validateHexString } from '../utils/general.utils.js';
-import { createSpaceFileEventMessage, createSpaceSyncMessage, decryptPayload, validateSpaceHashListPayload, validateSpaceSyncMessagePayload } from "../utils/protocol.utils.js";
+import { publicKeyIsAllowedToRead } from '../utils/policy.utils.js';
+import { isTimestampEqual, isTimestampNewer, stripIds } from '../utils/general.utils.js';
+import { createSpaceFileEventMessage, createSpaceSyncMessage, validateSpaceHashListPayload, validateSpaceSyncMessagePayload } from "../utils/protocol.utils.js";
 import { deleteShareLink, queryShareLink } from '../utils/sharelink.utils.js';
 
 
@@ -191,7 +191,7 @@ export class SpaceSyncHandler extends BaseProtocolHandler {
         const action = this.action(spaceData, message.payload);
 
         switch (action) {
-            case SpaceSyncHandler.STATES.LOCAL_SPACE_REQUIRE_UPDATE:
+            case SpaceSyncHandler.STATES.LOCAL_SPACE_REQUIRE_UPDATE: {
                 await upsertSpace(this.db, message.payload);
                 this.emit(EVENTS.SpaceSync, { info, message, action: SpaceSyncHandler.STATES.LOCAL_SPACE_REQUIRE_UPDATE });
 
@@ -202,8 +202,9 @@ export class SpaceSyncHandler extends BaseProtocolHandler {
                 }
 
                 return;
+            }
 
-            case SpaceSyncHandler.STATES.PEER_REQUIRE_UPDATE:
+            case SpaceSyncHandler.STATES.PEER_REQUIRE_UPDATE: {
                 if (publicKeyIsAllowedToRead(message.publicKey, spaceData)) {
                     const responseMessage = await createSpaceSyncMessage({
                         topic: message.topic,
@@ -226,8 +227,9 @@ export class SpaceSyncHandler extends BaseProtocolHandler {
                     await this.messageManager.reject(socket, message, MESSAGES.READ_PERMISSION_NOT_ALLOWED_MESSAGE);
                     return;
                 }
+            }
 
-            case SpaceSyncHandler.STATES.IDENTICAL:
+            case SpaceSyncHandler.STATES.IDENTICAL: {
                 this.emit(EVENTS.SpaceSync, { info, message, action: SpaceSyncHandler.STATES.IDENTICAL });
 
                 if (messageIsDirect) {
@@ -235,58 +237,7 @@ export class SpaceSyncHandler extends BaseProtocolHandler {
                 }
 
                 return;
+            }
         }
-    }
-}
-
-export class SpaceMessageHandler extends BaseProtocolHandler {
-    async handle(socket, message, info) {
-        const localTopicList = await getTopicToSpaceMap(this.db);
-        const messageTopic = message.topic;
-        const spaceId = localTopicList.get(messageTopic);
-
-        if (!spaceId) {
-            await this.messageManager.reject(socket, message, MESSAGES.SPACE_NOT_FOUND_MESSAGE);
-            return;
-        }
-
-        const senderPublicKey = hex(info.publicKey);
-        const messagePublicKey = message.publicKey;
-        const space = await getSpace(this.db, spaceId);
-
-        if (!publicKeyIsAllowedToRead(senderPublicKey, space)) {
-            await this.messageManager.reject(socket, message, MESSAGES.READ_PERMISSION_NOT_ALLOWED_MESSAGE);
-            return;
-        }
-
-        if (!publicKeyIsAllowedToBroadcast(messagePublicKey, space)) {
-            await this.messageManager.reject(socket, message, MESSAGES.BROADCAST_PERMISSION_NOT_ALLOWED_MESSAGE);
-            return;
-        }
-
-        const shouldDecryptCipher = spaceShouldEncryptMessages(space) &&
-            typeof message.payload == 'string' &&
-            validateHexString(message.payload);
-
-        if (shouldDecryptCipher) {
-            const decryptedPayload = await decryptPayload({
-                payload: message.payload,
-                spaceSecret: space.secret,
-                nonce: message.nonce
-            });
-
-            this.emit(EVENTS.SpaceMessage, { info, message, content: decryptedPayload });
-        }
-        else {
-            this.emit(EVENTS.SpaceMessage, { info, message, content: message.payload });
-        }
-
-        const peers = this.socketManager.getPeerKeys(publicKey => {
-            return publicKeyIsAllowedToRead(publicKey, space) &&
-                publicKey !== senderPublicKey &&
-                publicKey !== messagePublicKey;
-        });
-        const sockets = this.socketManager.getConnectedSockets({ peers: peers, topics: [messageTopic] });
-        await this.messageManager.broadcastMessageToSockets(message, sockets);
     }
 }

@@ -3,10 +3,17 @@ import { ProfileProtocolHandler } from './profile.protocol.js';
 import { RejectionProtocolHandler } from './rejection.protocol.js';
 import {
     SpaceHashListHandler,
-    SpaceMessageHandler,
     SpaceSyncHandler
 } from './space.protocol.js';
 import {
+    NegentropyContentCancelHandler,
+    NegentropyContentDeliveryHandler,
+    NegentropyContentRequestHandler,
+    NegentropySyncHandler,
+    SpaceMessageHandler
+} from './message.protocol.js';
+import {
+    SpaceFileContentCancel,
     SpaceFileContentRequestHandler,
     SpaceFileEventHandler,
     SpaceFileTreeRequestHandler,
@@ -35,6 +42,22 @@ export const ProtocolMapFactory = (emitter, managers) => [
         handler: new SpaceMessageHandler(emitter, managers)
     },
     {
+        type: EVENTS.NegentropySync,
+        handler: new NegentropySyncHandler(emitter, managers)
+    },
+    {
+        type: EVENTS.NegentropyContentRequest,
+        handler: new NegentropyContentRequestHandler(emitter, managers)
+    },
+    {
+        type: EVENTS.NegentropyContentDelivery,
+        handler: new NegentropyContentDeliveryHandler(emitter, managers)
+    },
+    {
+        type: EVENTS.NegentropyContentCancel,
+        handler: new NegentropyContentCancelHandler(emitter, managers)
+    },
+    {
         type: EVENTS.SpaceFileEvent,
         handler: new SpaceFileEventHandler(emitter, managers)
     },
@@ -49,5 +72,9 @@ export const ProtocolMapFactory = (emitter, managers) => [
     {
         type: EVENTS.SpaceFileContentRequest,
         handler: new SpaceFileContentRequestHandler(emitter, managers)
+    },
+    {
+        type: EVENTS.SpaceFileContentCancel,
+        handler: new SpaceFileContentCancel(emitter, managers)
     }
 ];

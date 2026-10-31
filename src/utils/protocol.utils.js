@@ -3,6 +3,7 @@ import { validateSpaceContext } from './space.utils.js';
 import { validateProfileContext } from "./profile.utils.js";
 import { validateSpaceFilePath } from "./files.utils.js";
 import { validateMerkleTree } from "./merkletree.utils.js";
+import { compareMessageBounds, computeMessageId } from "./message.utils.js";
 import {
     hex,
     hash,
@@ -11,6 +12,7 @@ import {
     decryptJSON,
     randomNonce,
     verifySignedJSON,
+    verifySignedString,
     canonicalStringify,
 } from './crypto.utils.js';
 import {
@@ -954,4 +956,457 @@ export function validateSpaceFileContentCancelPayload(message) {
     }
 
     return { isValid: true, reason: 'mesage is valid' };
+}
+
+const HEX_64_PATTERN = /^[0-9a-f]{64}$/;
+const HEX_32_PATTERN = /^[0-9a-f]{32}$/;
+
+/**
+ * Creates signed Negentropy reconciliation message for one session round.
+ *
+ * @param {Object} params
+ * @param {string} params.topic - Space topic hash the reconciliation belongs to.
+ * @param {string} params.sessionId - 24-char hex session id, created by the initiator.
+ * @param {Array<Object>} params.ranges - Ranges produced by `NegentropySync` (empty array ends the session).
+ * @param {string} params.publicKey - Sender's public key.
+ * @param {string} params.secretKey - Sender's secret key.
+ * @param {string} [params.nonce] - Optional pre-generated nonce (hex).
+ * @param {number} [params.timestamp] - Optional timestamp override.
+ * @returns {Promise<Object>}
+ */
+export async function createNegentropySyncMessage({
+    topic,
+    sessionId,
+    ranges,
+    publicKey,
+    secretKey,
+    nonce,
+    timestamp
+}) {
+    if (!topic) throw new Error('topic is required');
+    if (!nonceIsValid(sessionId)) throw new Error('sessionId should be 24 character hex string');
+    if (!Array.isArray(ranges)) throw new Error('ranges should be an array');
+    if (!secretKey) throw new Error('secretKey is required');
+    if (!publicKey) throw new Error('publicKey is required');
+
+    return await createBaseMessage({
+        type: EVENTS.NegentropySync,
+        topic,
+        payload: { sessionId, ranges },
+        secretKey,
+        publicKey,
+        nonce,
+        timestamp
+    });
+}
+
+function isValidRangeBound(bound) {
+    return isObject(bound) &&
+        bound !== null &&
+        Number.isSafeInteger(bound.timestamp) &&
+        bound.timestamp >= 0 &&
+        isString(bound.messageId) &&
+        HEX_64_PATTERN.test(bound.messageId);
+}
+
+/**
+ * Validates a single Negentropy range.
+ * @param {Object} range
+ * @param {Object|null} previousBound - Upper bound of the previous range.
+ * @param {boolean} isLast - True for the last range of the message.
+ * @param {number} maxIdListSize
+ * @returns {string|null} The failure reason, or null if the range is valid.
+ */
+function validateNegentropyRange(range, previousBound, isLast, maxIdListSize) {
+    if (!isObject(range) || range === null) return 'range should be an object';
+
+    const { upperBound, mode } = range;
+
+    if (upperBound === null) {
+        if (!isLast) return 'only the last range can be open-ended';
+    }
+    else {
+        if (!isValidRangeBound(upperBound)) return 'invalid range bound';
+        if (previousBound && !compareMessageBounds(previousBound, upperBound)) {
+            return 'range bounds should be strictly increasing';
+        }
+    }
+
+    switch (mode) {
+        case EVENTS.NegentropyModeOptions.SKIP:
+            return null;
+
+        case EVENTS.NegentropyModeOptions.FINGERPRINT:
+            return isString(range.fingerprint) && HEX_32_PATTERN.test(range.fingerprint)
+                ? null
+                : 'invalid range fingerprint';
+
+        case EVENTS.NegentropyModeOptions.ID_LIST:
+        case EVENTS.NegentropyModeOptions.ID_LIST_RESPONSE:
+            if (!Array.isArray(range.ids)) return 'range ids should be an array';
+            if (range.ids.length > maxIdListSize) return 'range id list is too large';
+            if (!range.ids.every(id => isString(id) && HEX_64_PATTERN.test(id))) return 'invalid message id';
+            return null;
+
+        default:
+            return 'unknown range mode';
+    }
+}
+
+/**
+ * Validates NegentropySync message payload.
+ *
+ * Ranges are contiguous: each range starts where the previous one ended (the first one
+ * starts at -infinity) and ends at its exclusive `upperBound` (`null` = +infinity, only
+ * allowed on the last range). An empty ranges list ends the session.
+ *
+ * @param {Object} message - The NegentropySync message.
+ * @param {Object} [limits]
+ * @param {number} [limits.maxRanges=1024] - Maximum ranges per message.
+ * @param {number} [limits.maxIdListSize=4096] - Maximum message ids per range.
+ * @returns {{ isValid: Boolean, reason: string }}
+ */
+export function validateNegentropySyncPayload(message, limits = {}) {
+    const { maxRanges = 1024, maxIdListSize = 4096 } = limits;
+    const payload = message.payload;
+
+    const rules = [
+        ['payload should be an object', () => isObject(payload) && payload !== null],
+        ['sessionId should be 24 character hex string', () => nonceIsValid(payload.sessionId)],
+        ['ranges should be an array', () => Array.isArray(payload.ranges)],
+        ['too many ranges', () => payload.ranges.length <= maxRanges],
+    ];
+
+    for (const [reason, condition] of rules) {
+        if (!condition()) {
+            return { isValid: false, reason };
+        }
+    }
+
+    let previousBound = null;
+    for (let index = 0; index < payload.ranges.length; index++) {
+        const range = payload.ranges[index];
+        const isLast = index === payload.ranges.length - 1;
+
+        const reason = validateNegentropyRange(range, previousBound, isLast, maxIdListSize);
+        if (reason) {
+            return { isValid: false, reason };
+        }
+
+        previousBound = range.upperBound;
+    }
+
+    return { isValid: true, reason: 'message is valid' };
+}
+
+const HEX_128_PATTERN = /^[0-9a-f]{128}$/;
+
+const isPlainObject = item => isObject(item) && item !== null && !Array.isArray(item);
+
+/**
+ * Builds the exact string a base message is signed over (`canonicalStringify` of the
+ * unsigned message) from its header fields and the canonical JSON of its payload.
+ *
+ * RFC 8785 sorts the keys (nonce, payload, publicKey, timestamp, topic, type) and
+ * serializes primitives like `JSON.stringify`, so splicing the already canonical payload
+ * gives byte-identical output without parsing or re-serializing the payload.
+ *
+ * @param {{ type: string, topic: string, publicKey: string, nonce: string, timestamp: number }} header
+ * @param {string} canonicalPayload - Canonical JSON of the payload (as stored in the messages table).
+ * @returns {string}
+ */
+export function buildCanonicalMessageString({ type, topic, publicKey, nonce, timestamp }, canonicalPayload) {
+    return '{"nonce":' + JSON.stringify(nonce) +
+        ',"payload":' + canonicalPayload +
+        ',"publicKey":' + JSON.stringify(publicKey) +
+        ',"timestamp":' + JSON.stringify(timestamp) +
+        ',"topic":' + JSON.stringify(topic) +
+        ',"type":' + JSON.stringify(type) + '}';
+}
+
+/**
+ * Verifies a message signature from its header and canonical payload, without
+ * materializing (or re-serializing) the payload object.
+ * The header fields must be validated beforehand (hex keys, integer timestamp).
+ * @param {{ type: string, topic: string, publicKey: string, nonce: string, timestamp: number }} header
+ * @param {string} canonicalPayload
+ * @param {string} signature - 128-char hex signature.
+ * @returns {Promise<boolean>}
+ */
+export async function verifyCanonicalMessageSignature(header, canonicalPayload, signature) {
+    try {
+        return await verifySignedString(
+            buildCanonicalMessageString(header, canonicalPayload),
+            signature,
+            header.publicKey
+        );
+    }
+    catch (error) {
+        return false;
+    }
+}
+
+/**
+ * Converts a stored message row into the form carried by `NegentropyContentDelivery`.
+ * The canonical payload string is forwarded as-is: the provider never parses it.
+ * The topic is not repeated: it is the topic of the carrying message.
+ * @param {Object} record - Row of the messages table.
+ * @returns {{ type: string, publicKey: string, nonce: string, timestamp: number, signature: string, canonicalPayload: string }}
+ */
+export function toDeliverableMessage(record) {
+    return {
+        type: record.type,
+        publicKey: record.ownerPublicKey,
+        nonce: record.nonce,
+        timestamp: record.messageTimestamp,
+        signature: record.signature,
+        canonicalPayload: record.payload,
+    };
+}
+
+/**
+ * Network-wide id of a delivered message (same derivation as stored records).
+ * @param {{ type: string, publicKey: string, nonce: string, timestamp: number, canonicalPayload: string }} message
+ * @returns {string}
+ */
+export function computeDeliveredMessageId(message) {
+    return computeMessageId({
+        type: message.type,
+        publicKey: message.publicKey,
+        timestamp: message.timestamp,
+        nonce: message.nonce,
+        payload: message.canonicalPayload,
+    });
+}
+
+/**
+ * Verifies the original author's signature of a delivered message.
+ * @param {string} topic - Topic of the carrying message (the space topic).
+ * @param {Object} message - Delivered message, see `toDeliverableMessage`.
+ * @returns {Promise<boolean>}
+ */
+export function verifyDeliveredMessage(topic, message) {
+    return verifyCanonicalMessageSignature(
+        {
+            type: message.type,
+            topic,
+            publicKey: message.publicKey,
+            nonce: message.nonce,
+            timestamp: message.timestamp,
+        },
+        message.canonicalPayload,
+        message.signature
+    );
+}
+
+/**
+ * Creates a signed request for message contents (client -> provider).
+ * @param {Object} params
+ * @param {string} params.topic - Space topic hash.
+ * @param {string} params.assignmentKey - 24-char hex key of the scheduler assignment.
+ * @param {string[]} params.messageIds - Requested message ids.
+ * @param {string} params.publicKey - Sender's public key.
+ * @param {string} params.secretKey - Sender's secret key.
+ * @param {string} [params.nonce] - Optional pre-generated nonce (hex).
+ * @param {number} [params.timestamp] - Optional timestamp override.
+ * @returns {Promise<Object>}
+ */
+export async function createNegentropyContentRequestMessage({
+    topic,
+    assignmentKey,
+    messageIds,
+    publicKey,
+    secretKey,
+    nonce,
+    timestamp
+}) {
+    if (!topic) throw new Error('topic is required');
+    if (!nonceIsValid(assignmentKey)) throw new Error('assignmentKey should be 24 character hex string');
+    if (!Array.isArray(messageIds) || messageIds.length === 0) throw new Error('messageIds should be a non-empty array');
+    if (!secretKey) throw new Error('secretKey is required');
+    if (!publicKey) throw new Error('publicKey is required');
+
+    return await createBaseMessage({
+        type: EVENTS.NegentropyContentRequest,
+        topic,
+        payload: { assignmentKey, messageIds },
+        secretKey,
+        publicKey,
+        nonce,
+        timestamp
+    });
+}
+
+/**
+ * Validates NegentropyContentRequest payload.
+ * @param {Object} message
+ * @param {Object} [limits]
+ * @param {number} [limits.maxIds=4096] - Maximum message ids per request.
+ * @returns {{ isValid: Boolean, reason: string }}
+ */
+export function validateNegentropyContentRequestPayload(message, limits = {}) {
+    const { maxIds = 4096 } = limits;
+    const payload = message.payload;
+
+    const rules = [
+        ['payload should be an object', () => isPlainObject(payload)],
+        ['assignmentKey should be 24 character hex string', () => nonceIsValid(payload.assignmentKey)],
+        ['messageIds should be an array', () => Array.isArray(payload.messageIds)],
+        ['messageIds should not be empty', () => payload.messageIds.length > 0],
+        ['too many message ids', () => payload.messageIds.length <= maxIds],
+        ['invalid message id', () => payload.messageIds.every(id => isString(id) && HEX_64_PATTERN.test(id))],
+    ];
+
+    for (const [reason, condition] of rules) {
+        if (!condition()) {
+            return { isValid: false, reason };
+        }
+    }
+
+    return { isValid: true, reason: 'message is valid' };
+}
+
+/**
+ * Creates a signed cancellation of an assignment. It travels in both directions:
+ * - client -> provider: stop delivering (the assignment was reclaimed).
+ * - provider -> client: these messages cannot be delivered (no longer available).
+ *
+ * @param {Object} params
+ * @param {string} params.topic - Space topic hash.
+ * @param {string} params.assignmentKey - Key of the cancelled assignment.
+ * @param {string[]} [params.messageIds] - Only cancel these ids; omitted cancels the whole assignment.
+ * @param {string} params.publicKey - Sender's public key.
+ * @param {string} params.secretKey - Sender's secret key.
+ * @param {string} [params.nonce] - Optional pre-generated nonce (hex).
+ * @param {number} [params.timestamp] - Optional timestamp override.
+ * @returns {Promise<Object>}
+ */
+export async function createNegentropyContentCancelMessage({
+    topic,
+    assignmentKey,
+    messageIds,
+    publicKey,
+    secretKey,
+    nonce,
+    timestamp
+}) {
+    if (!topic) throw new Error('topic is required');
+    if (!nonceIsValid(assignmentKey)) throw new Error('assignmentKey should be 24 character hex string');
+    if (messageIds !== undefined && (!Array.isArray(messageIds) || messageIds.length === 0)) {
+        throw new Error('messageIds should be a non-empty array when provided');
+    }
+    if (!secretKey) throw new Error('secretKey is required');
+    if (!publicKey) throw new Error('publicKey is required');
+
+    const payload = messageIds === undefined ? { assignmentKey } : { assignmentKey, messageIds };
+
+    return await createBaseMessage({
+        type: EVENTS.NegentropyContentCancel,
+        topic,
+        payload,
+        secretKey,
+        publicKey,
+        nonce,
+        timestamp
+    });
+}
+
+/**
+ * Validates NegentropyContentCancel payload.
+ * @param {Object} message
+ * @param {Object} [limits]
+ * @param {number} [limits.maxIds=4096] - Maximum message ids per cancellation.
+ * @returns {{ isValid: Boolean, reason: string }}
+ */
+export function validateNegentropyContentCancelPayload(message, limits = {}) {
+    const { maxIds = 4096 } = limits;
+    const payload = message.payload;
+    const isPartial = () => payload.messageIds !== undefined;
+
+    const rules = [
+        ['payload should be an object', () => isPlainObject(payload)],
+        ['assignmentKey should be 24 character hex string', () => nonceIsValid(payload.assignmentKey)],
+        ['messageIds should be an array', () => !isPartial() || Array.isArray(payload.messageIds)],
+        ['messageIds should not be empty', () => !isPartial() || payload.messageIds.length > 0],
+        ['too many message ids', () => !isPartial() || payload.messageIds.length <= maxIds],
+        ['invalid message id', () => !isPartial() || payload.messageIds.every(id => isString(id) && HEX_64_PATTERN.test(id))],
+    ];
+
+    for (const [reason, condition] of rules) {
+        if (!condition()) {
+            return { isValid: false, reason };
+        }
+    }
+
+    return { isValid: true, reason: 'message is valid' };
+}
+
+/**
+ * Creates a signed delivery of ONE stored message for an assignment (provider -> client).
+ * Messages are delivered one per frame, so neither side holds more than one payload at a time.
+ * @param {Object} params
+ * @param {string} params.topic - Space topic hash.
+ * @param {string} params.assignmentKey - Key of the assignment being served.
+ * @param {Object} params.content - The delivered message, see `toDeliverableMessage`.
+ * @param {string} params.publicKey - Sender's public key.
+ * @param {string} params.secretKey - Sender's secret key.
+ * @param {string} [params.nonce] - Optional pre-generated nonce (hex).
+ * @param {number} [params.timestamp] - Optional timestamp override.
+ * @returns {Promise<Object>}
+ */
+export async function createNegentropyContentDeliveryMessage({
+    topic,
+    assignmentKey,
+    content,
+    publicKey,
+    secretKey,
+    nonce,
+    timestamp
+}) {
+    if (!topic) throw new Error('topic is required');
+    if (!nonceIsValid(assignmentKey)) throw new Error('assignmentKey should be 24 character hex string');
+    if (!isPlainObject(content)) throw new Error('content should be an object');
+    if (!secretKey) throw new Error('secretKey is required');
+    if (!publicKey) throw new Error('publicKey is required');
+
+    return await createBaseMessage({
+        type: EVENTS.NegentropyContentDelivery,
+        topic,
+        payload: { assignmentKey, content },
+        secretKey,
+        publicKey,
+        nonce,
+        timestamp
+    });
+}
+
+/**
+ * Validates NegentropyContentDelivery payload (structure only, the author's signature
+ * of the content is checked separately, see `verifyDeliveredMessage`).
+ * @param {Object} message
+ * @returns {{ isValid: Boolean, reason: string }}
+ */
+export function validateNegentropyContentDeliveryPayload(message) {
+    const payload = message.payload;
+    const content = () => payload.content;
+
+    const rules = [
+        ['payload should be an object', () => isPlainObject(payload)],
+        ['assignmentKey should be 24 character hex string', () => nonceIsValid(payload.assignmentKey)],
+        ['content should be an object', () => isPlainObject(content())],
+        ['invalid content type', () => isString(content().type) && content().type.length > 0 && content().type.length <= 64],
+        ['invalid content publicKey', () => isString(content().publicKey) && HEX_64_PATTERN.test(content().publicKey)],
+        ['invalid content nonce', () => nonceIsValid(content().nonce)],
+        ['invalid content timestamp', () => validateTimestamp(content().timestamp)],
+        ['invalid content signature', () => isString(content().signature) && HEX_128_PATTERN.test(content().signature)],
+        ['invalid content payload', () => isString(content().canonicalPayload) && content().canonicalPayload.length > 0],
+    ];
+
+    for (const [reason, condition] of rules) {
+        if (!condition()) {
+            return { isValid: false, reason };
+        }
+    }
+
+    return { isValid: true, reason: 'message is valid' };
 }

@@ -1,6 +1,6 @@
 import * as EVENTS from '../../src/constants/events.constants.js';
 import path from "path";
-import { describe, beforeEach, afterEach, it, expect } from "vitest";
+import { describe, beforeEach, afterEach, afterEach, it, expect } from "vitest";
 import { cleanup, createP2PNetwork, generateRandomFile, makeTempDir } from '../general.utils.js';
 import { FileHandlerCache } from "../../src/managers/delivery.manager.js";
 import { hex, hexToUint8, randomNonce } from "../../src/utils/crypto.utils.js";
@@ -105,6 +105,11 @@ describe("FileContentDeliveryManager", () => {
 
     afterEach(async () => {
         await deliveryManager.stop();
+
+        const { sqlite } = manager.session.getDatabase();
+        await sqlite.close();
+
+        await cleanup(manager.root);
         await cleanup(rootDirectory);
     });
 
@@ -171,6 +176,31 @@ describe("FileContentDeliveryManager", () => {
 
         const calls = mockSocket.write.mock.calls;
         expect(calls.length).not.toBe(startLeaf + endLeaf + 1);
+    });
+
+    it('should only abort a task for the peer that requested it', async () => {
+        const key = hex(randomNonce());
+        const owner = 'a'.repeat(64);
+        const stranger = 'b'.repeat(64);
+
+        await deliveryManager.createTask({
+            socket: mockSocket,
+            key,
+            publicKey: owner,
+            filePath: testFilePath,
+            startLeaf: 0,
+            endLeaf: 100,
+        });
+
+        const [task] = deliveryManager.deliveryTasksByKey.get(key);
+
+        deliveryManager.abortTask(key, stranger);
+        expect(task.controller.signal.aborted).toBe(false);
+
+        deliveryManager.abortTask(key, owner);
+        expect(task.controller.signal.aborted).toBe(true);
+
+        await deliveryManager.waitForTask(key);
     });
 
     it('should abort all tasks for a file path on LocalFileChange event', async () => {

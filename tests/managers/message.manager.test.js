@@ -117,7 +117,7 @@ describe('MessageManager', () => {
 
         it('should reject messages that exceed size limit', async () => {
             const [manager, socket, info] = await createFakeP2PConnection();
-            const messageSize = manager.session.session.get('messaging.rawLimitSize');
+            const messageSize = manager.session.get('messaging.rawLimitSize');
             const largeRawMessage = Buffer.from(new Array(messageSize + 1).fill('a').join(''));
 
             await manager.message.handleIncomingMessage(socket, largeRawMessage, info);
@@ -265,7 +265,7 @@ describe('MessageManager', () => {
             manager.session.setMessageConfig({ allowThrottleRejection: true });
 
             // set quarantine time to 50ms for test
-            manager.session.session.set('messaging.maxQuarantineTime', 50);
+            manager.session.set('messaging.maxQuarantineTime', 50);
 
             const messageConfig = manager.session.getMessageConfig();
             const { frequencyThrottle, maxQuarantineTime } = messageConfig;

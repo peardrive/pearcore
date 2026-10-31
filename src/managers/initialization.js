@@ -7,6 +7,7 @@ import { ConnectionManager } from "./connection.manager.js";
 import { MuxManager, FrameTypes } from "./multiplexer.manager.js";
 import { SpaceFileListManager, SpaceFileManager } from "./files/files.manager.js";
 import { FileContentDeliveryManager } from "./delivery.manager.js";
+import { NegentropySyncManager } from "./negentropy/negentropy.manager.js";
 
 export function initializeManagers(emitter) {
     const sessionManager = new SessionManager();
@@ -50,6 +51,12 @@ export function initializeManagers(emitter) {
         muxManager
     });
 
+    const negentropySyncManager = new NegentropySyncManager(emitter, {
+        sessionManager,
+        socketManager,
+        messageManager,
+    });
+
     muxManager.setHandlers([
         {
             type: FrameTypes.JSON,
@@ -67,7 +74,8 @@ export function initializeManagers(emitter) {
         message: messageManager,
         spaceFileList: spaceFileListManager,
         mux: muxManager,
-        delivery: fileContentDeliveryManager
+        delivery: fileContentDeliveryManager,
+        sync: negentropySyncManager
     });
 
     messageManager.setProtocolMap(protocols);
@@ -81,6 +89,7 @@ export function initializeManagers(emitter) {
         connection: connectionManager,
         spaceFileList: spaceFileListManager,
         spaceFiles: spaceFileManager,
-        delivery: fileContentDeliveryManager
+        delivery: fileContentDeliveryManager,
+        sync: negentropySyncManager,
     };
 }

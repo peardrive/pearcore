@@ -33,14 +33,42 @@ export class SessionManager {
 
             // all static variables related to p2p messaging
             messaging: {
-                rawLimitSize: messageConstants.MAX_MESSAGE_SIZE,
-                frequencyThrottle: messageConstants.MAX_FREQUENCY_THROTTLE,
-                maxQuarantineTime: messageConstants.MAX_QUARANTINE_TIME,
-                allowThrottleRejection: messageConstants.ALLOW_THROTTLE_REJECTIONS,
+                // maximum allowed buffer size for incoming json payload to be processed
+                rawLimitSize: 10 * 1024 * 1024, // 10MB as default
+                // number of messages in on minute to hit the throttling point for connected peer
+                frequencyThrottle: 256,
+                // the quarantine time that throttled peer is not allowed to any new send message.
+                maxQuarantineTime: 500,
+                /**
+                 * send rejection message to quarantine peer as a form of notification.
+                 * set to `false` to avoid potential abuse in un-trusted enviroment.
+                 */
+                allowThrottleRejection: true,
 
                 // limit the number of messages that are stored per event type to prevent
                 // excessive disk consumption and maintain system performance. 
-                recordMessagesForEvents: []
+                recordMessagesForEvents: [],
+
+                reconciliation: {
+                    //  ranges holding fewer messages than this value are sent as id list instead of range splits.
+                    idListThreshold: 32,
+                    // number of sub-ranges a mismatch range is split into.
+                    bucketCount: 16,
+                    // mixumum ranges allowed within single message
+                    maxRanges: 1024,
+                    // maximum number of exchanges rounds for single session
+                    maxRounds: 64,
+                    // maximum number of message ids accepted within a single range
+                    maxIdListSize: 4096,
+                    // a session without any exchange for this long is dropped
+                    sessionTimeout: 30000, // 30 seconds
+                    // interval of the reconciliation manager housekeeping (timeouts, assignments)
+                    heartbeatInterval: 5000, // 5 seconds
+                    // number of message ids requested from a single peer at once
+                    requestBatchSize: 128,
+                    // maximum time for a peer to deliver a requested batch before it is reassigned
+                    requestTimeout: 15000 // 15 seconds
+                }
             },
 
             files: {
@@ -66,6 +94,14 @@ export class SessionManager {
 
         this.session = this.STATIC_SESSION;
         this._createProxyInterface();
+    }
+
+    set(...params) {
+        return this.session.set(...params);
+    }
+
+    get(...params) {
+        return this.session.get(...params);
     }
 
     reset() {

@@ -1,11 +1,49 @@
+import * as b4a from 'b4a';
+import bip39 from 'bip39';
+import canonicalize from 'canonicalize';
 import { scryptAsync } from '@noble/hashes/scrypt.js';
-import { sha256 } from '@noble/hashes/sha2.js';
 import { blake3 } from '@noble/hashes/blake3.js'
 import { ed25519 } from '@noble/curves/ed25519.js';
 import { chacha20poly1305 } from '@noble/ciphers/chacha.js';
 import { randomBytes, utf8ToBytes, hexToBytes, bytesToHex } from '@noble/hashes/utils.js';
-import * as b4a from 'b4a';
-import bip39 from 'bip39';
+
+/**
+ * Create 8 bytes big-indiand Uint8 array from 64-bit number.
+ * @param {Number} value 
+ * @returns {Uint8Array}
+ */
+export function u64(value) {
+  const out = new Uint8Array(8);
+  new DataView(out.buffer).setBigUint64(0, BigInt(value), false);
+  return out;
+}
+
+/**
+ * Concatenate multiple buffers into single Uint8Array.
+ * @param  {...Uint8Array} arrays 
+ * @returns {Uint8Array}
+ */
+export function concatBytes(...arrays) {
+  let total = 0;
+
+  for (const arr of arrays) {
+    if (!(arr instanceof Uint8Array)) {
+      throw new Error(`ConcatBytes received unexpected input: ${arr}`);
+    }
+
+    total += arr.length;
+  }
+
+  const buffer = new Uint8Array(total);
+
+  let offset = 0;
+  for (const arr of arrays) {
+    buffer.set(arr, offset);
+    offset += arr.length;
+  }
+
+  return buffer;
+}
 
 export function bytesToUtf8(bytes) {
   return b4a.toString(bytes, 'utf8')
@@ -63,13 +101,11 @@ export const fromBase64 = (s) => new Uint8Array(Buffer.from(s, 'base64'));
 /**
  * Deterministically stringify a JSON-compatible value with stable key ordering.
  * Ensures identical byte output for logically equivalent objects (used for hashing/signing).
- * @param {any} obj - JSON-serializable value
- * @returns {string} Canonical JSON string
+ * @param {Object} obj - JSON-serializable value
+ * @returns {String} Canonical JSON string
  */
-export function canonicalStringify(obj) {
-  if (obj === null || typeof obj !== 'object') return JSON.stringify(obj)
-  if (Array.isArray(obj)) return `[${obj.map(canonicalStringify).join(',')}]`
-  return `{${Object.keys(obj).sort().map(k => `"${k}":${canonicalStringify(obj[k])}`).join(',')}}`
+export function canonicalStringify(object) {
+  return canonicalize(object);
 }
 
 /**
@@ -220,6 +256,17 @@ export function validateKeypair({ publicKey, secretKey, seedLength=32 }) {
  * @returns {string} signature hex
  */
 export async function signJSON(obj, secretKey) {
+  return signString(canonicalStringify(obj), secretKey);
+}
+
+/**
+ * Sign an already serialized string (e.g. canonical JSON) using Ed25519 secret key.
+ * Signing the exact bytes avoids serializing the same object twice.
+ * @param {string} str
+ * @param {Uint8Array|string} secretKey - 64-byte Uint8Array or 128-character hex string
+ * @returns {string} signature hex
+ */
+export async function signString(str, secretKey) {
   // Convert hex string to Uint8Array if needed
   if (typeof secretKey === 'string') {
     secretKey = hexToUint8(secretKey);
@@ -233,9 +280,7 @@ export async function signJSON(obj, secretKey) {
     throw new Error(`Invalid ed25519 secretKey length ${secretKey.length}`);
   }
 
-  const message = utf8ToBytes(canonicalStringify(obj));
-  const signature = ed25519.sign(message, secretKey);
-
+  const signature = ed25519.sign(utf8ToBytes(str), secretKey);
   return bytesToHex(signature);
 }
 
@@ -250,15 +295,24 @@ export async function signJSON(obj, secretKey) {
  * @returns {boolean} true if signature is valid
  */
 export async function verifySignedJSON(obj, signatureHex, publicKey) {
+  return verifySignedString(canonicalStringify(obj), signatureHex, publicKey);
+}
+
+/**
+ * Verify an Ed25519 signature over an already serialized string (e.g. canonical JSON).
+ * @param {string} str
+ * @param {string} signatureHex
+ * @param {Uint8Array|string} publicKey - 32-byte Uint8Array or 64-character hex string
+ * @returns {boolean} true if signature is valid
+ */
+export async function verifySignedString(str, signatureHex, publicKey) {
   // Convert hex to Uint8Array if needed
   if (typeof publicKey === 'string') {
     publicKey = hexToUint8(publicKey);
   }
 
-  const message = utf8ToBytes(canonicalStringify(obj));
   const signature = hexToUint8(signatureHex);
-
-  return ed25519.verify(signature, message, publicKey);
+  return ed25519.verify(signature, utf8ToBytes(str), publicKey);
 }
 
 /**

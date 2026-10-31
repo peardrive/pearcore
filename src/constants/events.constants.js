@@ -48,6 +48,39 @@ export const SpaceSync = "SpaceSync";
  */
 export const SpaceMessage = "SpaceMessage";
 
+/** Negentropy set-reconciliation round message. */
+export const NegentropySync = "NegentropySync";
+
+/**
+ * Emitted locally once a reconciliation session with a peer is finished.
+ * Context: { publicKey, topic, role, have: string[], need: string[] }
+ */
+export const NegentropySyncComplete = "NegentropySyncComplete";
+
+/**
+ * Request for the contents of missing messages (client -> provider).
+ * Payload: { assignmentKey, messageIds }
+ */
+export const NegentropyContentRequest = "NegentropyContentRequest";
+
+/**
+ * One stored message delivered for an assignment (provider -> client), one per frame.
+ * Payload: { assignmentKey, content: { type, publicKey, nonce, timestamp, signature, canonicalPayload } }
+ */
+export const NegentropyContentDelivery = "NegentropyContentDelivery";
+
+/**
+ * Cancels an assignment, in both directions (client: stop delivering, provider: cannot deliver).
+ * Payload: { assignmentKey, messageIds? } - without messageIds the whole assignment is cancelled.
+ */
+export const NegentropyContentCancel = "NegentropyContentCancel";
+
+/**
+ * Emitted locally once a delivered message is verified and stored.
+ * Context: { publicKey, topic, spaceId, messageId }
+ */
+export const NegentropyContentDelivered = "NegentropyContentDelivered";
+
 /**
  * Emitted when a profile is updated or when a peer is requesting to join
  * a space using its profile information.
@@ -67,12 +100,13 @@ export const SpaceFileEvent = "SpaceFileEvent";
 
 /**
  * All event options for space file.
+ * - add: advertise as provider for specific file in space
+ * - remove: remove the already advertised file from space
  */
 export const SpaceFileEventOptions = {
     ADD: 'add',
     REMOVE: 'remove',
 };
-
 
 // Emitted when peer wants to ask for file Merkle tree information from connected node.
 export const SpaceFileTreeRequest = "SpaceFileTreeRequest";
@@ -82,3 +116,17 @@ export const SpaceFileTreeResponse = "SpaceFileTreeResponse";
 export const SpaceFileContentRequest = "SpaceFileContentRequest";
 // Emitter once individual peer wants to cancel their previous file content request.
 export const SpaceFileContentCancel = "SpaceFileContentCancel";
+
+/**
+ * All range modes for Negentropy message sync.
+ * - skip: the sender has nothing to say about the range (already synced).
+ * - fingerprint: the sender's fingerprint of the range.
+ * - id_list: the sender's fil list of message ids in the range.
+ * - id_list_response: reply to an id_list with replier's own ids.
+ */
+export const NegentropyModeOptions = {
+    SKIP: 'skip',
+    FINGERPRINT: 'fingerprint',
+    ID_LIST: 'id_list',
+    ID_LIST_RESPONSE: 'id_list_response'
+}

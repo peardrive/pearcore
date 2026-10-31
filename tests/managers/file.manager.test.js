@@ -625,7 +625,7 @@ describe('LocalFileRegistry', () => {
 
             // set short backoff for testing
             const session = core.managers.session;
-            session.session.set('files.localChangeBackoff', {
+            session.set('files.localChangeBackoff', {
                 baseDelay: 10,
                 maxDelay: 15,
                 backoffIncrement: 1
@@ -653,7 +653,7 @@ describe('LocalFileRegistry', () => {
             vi.useFakeTimers();
 
             const session = core.managers.session;
-            session.session.set('files.localChangeBackoff', {
+            session.set('files.localChangeBackoff', {
                 baseDelay: 100,
                 maxDelay: 500,
                 backoffIncrement: 150
@@ -682,7 +682,7 @@ describe('LocalFileRegistry', () => {
             vi.useFakeTimers();
 
             const session = core.managers.session;
-            session.session.set('files.localChangeBackoff', {
+            session.set('files.localChangeBackoff', {
                 baseDelay: 100,
                 maxDelay: 500,
                 backoffIncrement: 150
@@ -858,7 +858,7 @@ describe('LocalFileRegistry', () => {
             });
 
             const session = core.managers.session;
-            session.session.set('files.localChangeBackoff', {
+            session.set('files.localChangeBackoff', {
                 baseDelay: 10,
                 maxDelay: 15,
                 backoffIncrement: 1
@@ -887,6 +887,8 @@ describe("ProviderList", () => {
     const ROOT_HASH = 'hash01';
     const TOPIC = "topic1";
 
+    let sqlite;
+    let root;
     let publicKey;
     let spaceFileListManager;
     let onDrop;
@@ -895,6 +897,9 @@ describe("ProviderList", () => {
     beforeEach(async () => {
         const peers = await createP2PNetwork(1);
         const { manager, publicKey: current } = peers[0];
+        
+        sqlite = manager.session.getDatabase().sqlite;
+        root = manager.root;
 
         onDrop = vi.fn();
         publicKey = current;
@@ -906,6 +911,11 @@ describe("ProviderList", () => {
             rootHash: ROOT_HASH,
             onDrop: onDrop
         });
+    });
+
+    afterEach(async () => {        
+        await sqlite.close();
+        await cleanup(root);
     });
 
     it('should add a new provider with an unkown lastRequestableLeaf', () => {
@@ -1127,7 +1137,7 @@ describe('LeafDeliveryScheduler', () => {
         const { rootHash } = params;
         const spaceFileListManager = core.managers.spaceFileList;
 
-        core.managers.session.session.set('files.broadcastThrottleTime', 0);
+        core.managers.session.set('files.broadcastThrottleTime', 0);
 
         const fileEventBroadcaster = new FileEventBroadcaster(
             core.emitter,
@@ -1426,11 +1436,11 @@ describe('SpaceDownloadTask', () => {
         downloadTasks.clear();
 
         const session = downloaderCore.managers.session;
-        session.session.set('download.heartbeatInterval', 200);
-        session.session.set('download.requestTimeout', 500);
+        session.set('download.heartbeatInterval', 200);
+        session.set('download.requestTimeout', 500);
         // small to force multiple requests
-        session.session.set('download.assignedChunkSize', 2);
-        session.session.set('files.broadcastThrottleTime', 0);
+        session.set('download.assignedChunkSize', 2);
+        session.set('files.broadcastThrottleTime', 0);
     });
 
     it('should throw if start is called before setTask or setRecord', async () => {

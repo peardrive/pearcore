@@ -334,6 +334,7 @@ export class SpaceFileContentRequestHandler extends BaseProtocolHandler {
         const taskResult = await this.deliveryManager.createTask({
             socket,
             key,
+            publicKey: message.publicKey,
             filePath: registry.fileSourcePath,
             startLeaf,
             endLeaf
@@ -357,9 +358,12 @@ export class SpaceFileContentCancel extends BaseProtocolHandler {
         const result = validateSpaceFileContentCancelPayload(message);
         if (!result.isValid) {
             await this.messageManager.reject(socket, message, result.reason);
+            return;
         }
 
-        this.deliveryManager.abortTask(message.payload.key);
+        const { key } = message.payload;
+        // a peer can only abort the tasks it requested itself
+        this.deliveryManager.abortTask(key, message.publicKey);
         this.emit(EVENTS.SpaceFileContentCancel, { info, message, key });
     }
 }
