@@ -1,6 +1,10 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, vi } from "vitest";
 import { createManagerInstance, cleanup } from "../general.utils.js";
 import { MessageRequestScheduler } from "../../src/managers/negentropy/components/scheduler.js";
+import { MessageDeliveryTasks } from "../../src/managers/negentropy/components/delivery.js";
+import * as EVENTS from "../../src/constants/events.constants.js";
+import { createMessageRecord, flushMessageRecords } from "../../src/utils/message.utils.js";
+import { createSpaceMessage } from "../../src/utils/protocol.utils.js";
 
 const flushPromises = () => new Promise(resolve => setImmediate(resolve));
 
@@ -48,6 +52,10 @@ const expectConsistent = scheduler => {
     for (const id of providers.keys()) {
         expect(queue.has(id) || assignedTo.has(id), `${id} has providers but is neither queued nor assigned`).toBe(true);
     }
+
+    // every assignment is addressed by its own key
+    const keys = Array.from(assignments.values()).map(({ assignmentKey }) => assignmentKey);
+    expect(new Set(keys).size, 'two assignments share an assignmentKey').toBe(keys.length);
 };
 
 describe('MessageRequestScheduler', () => {
@@ -63,6 +71,7 @@ describe('MessageRequestScheduler', () => {
     let managers;
     let scheduler;
     let request;
+    let cancel;
 
     beforeAll(async () => {
         managers = await createManagerInstance();
@@ -75,13 +84,18 @@ describe('MessageRequestScheduler', () => {
         vi.setSystemTime(START_TIME);
 
         request = vi.fn(async () => { });
+        cancel = vi.fn(async () => { });
 
         scheduler = new MessageRequestScheduler({
             sessionManager: managers.session,
             topic: TOPIC,
-            request
+            request,
+            cancel
         });
     });
+
+    /** Key of the provider's current assignment. */
+    const keyOf = publicKey => scheduler.assignments.get(publicKey)?.assignmentKey;
 
     afterEach(() => {
         try {
@@ -248,12 +262,12 @@ describe('MessageRequestScheduler', () => {
             await flushPromises();
 
             expect(request).toHaveBeenCalledTimes(2);
-            expect(request).toHaveBeenCalledWith(PEER_A, ['m1', 'm2']);
-            expect(request).toHaveBeenCalledWith(PEER_B, ['m3']);
+            expect(request).toHaveBeenCalledWith(PEER_A, ['m1', 'm2'], keyOf(PEER_A));
+            expect(request).toHaveBeenCalledWith(PEER_B, ['m3'], keyOf(PEER_B));
 
             // ensure request receives identical parameters to assign() method
             expect(request.mock.calls).toEqual(
-                dispatched.map(({ publicKey, messageIds }) => [publicKey, messageIds])
+                dispatched.map(({ publicKey, messageIds }) => [publicKey, messageIds, keyOf(publicKey)])
             );
         });
 
@@ -376,7 +390,6 @@ describe('MessageRequestScheduler', () => {
             scheduler.releaseProvider(PEER_A, { penalize: true });
 
             // no batch, no penalty: an idle provider cannot have stalled
-            console.log(scheduler.penalties)
             expect(scheduler.penalties.has(PEER_A)).toBe(false);
             expect(Array.from(scheduler.queue)).toEqual(['m1']);
         });
@@ -531,6 +544,168 @@ describe('MessageRequestScheduler', () => {
         });
     });
 
+    describe('assignment keys', () => {
+        it('should give every assignment its own key and pass it to request', async () => {
+            scheduler.addProvider(PEER_A, ['m1']);
+            scheduler.addProvider(PEER_B, ['m2']);
+
+            scheduler.assign();
+            await flushPromises();
+
+            expect(keyOf(PEER_A)).toMatch(/^[0-9a-f]{24}$/);
+            expect(keyOf(PEER_A)).not.toBe(keyOf(PEER_B));
+            expect(request).toHaveBeenCalledWith(PEER_A, ['m1'], keyOf(PEER_A));
+        });
+
+        it('should issue a new key when the same provider is assigned again', async () => {
+            scheduler.addProvider(PEER_A, ['m1']);
+
+            scheduler.assign();
+            const firstKey = keyOf(PEER_A);
+
+            scheduler.releaseProvider(PEER_A);
+            scheduler.assign();
+
+            expect(keyOf(PEER_A)).not.toBe(firstKey);
+        });
+
+        it('should only expect deliveries matching the current assignment', () => {
+            scheduler.addProvider(PEER_A, ['m1', 'm2', 'm3']);
+            scheduler.addProvider(PEER_B, ['m3']);
+            scheduler.assign(); // A <- m1, m2 | B <- m3
+            const key = keyOf(PEER_A);
+
+            expect(scheduler.expectsDelivery(PEER_A, key, 'm1')).toBe(true);
+            // foreign id, other provider, unknown key
+            expect(scheduler.expectsDelivery(PEER_A, key, 'm3')).toBe(false);
+            expect(scheduler.expectsDelivery(PEER_B, key, 'm1')).toBe(false);
+            expect(scheduler.expectsDelivery(PEER_A, 'f'.repeat(24), 'm1')).toBe(false);
+
+            // already delivered
+            scheduler.markDelivered(['m1']);
+            expect(scheduler.expectsDelivery(PEER_A, key, 'm1')).toBe(false);
+        });
+
+        it('should treat a reclaimed assignment key as stale', async () => {
+            scheduler.addProvider(PEER_A, ['m1']);
+            scheduler.assign();
+            const staleKey = keyOf(PEER_A);
+
+            advance(REQUEST_TIMEOUT);
+            scheduler.reclaimStalled();
+            scheduler.assign();
+
+            expect(scheduler.getAssignment(PEER_A, staleKey)).toBe(null);
+            expect(scheduler.expectsDelivery(PEER_A, staleKey, 'm1')).toBe(false);
+            expect(scheduler.expectsDelivery(PEER_A, keyOf(PEER_A), 'm1')).toBe(true);
+        });
+    });
+
+    describe('cancel notifications', () => {
+        it('should cancel a reclaimed assignment with its key', async () => {
+            scheduler.addProvider(PEER_A, ['m1']);
+            scheduler.assign();
+            const key = keyOf(PEER_A);
+
+            advance(REQUEST_TIMEOUT);
+            scheduler.reclaimStalled();
+            await flushPromises();
+
+            expect(cancel).toHaveBeenCalledTimes(1);
+            expect(cancel).toHaveBeenCalledWith(PEER_A, key);
+        });
+
+        it('should cancel when the request failed', async () => {
+            request.mockRejectedValueOnce(new Error('connection lost'));
+            scheduler.addProvider(PEER_A, ['m1']);
+
+            scheduler.assign();
+            const key = keyOf(PEER_A);
+            await flushPromises();
+
+            expect(cancel).toHaveBeenCalledWith(PEER_A, key);
+        });
+
+        it('should not cancel on disconnect, plain release or full delivery', async () => {
+            scheduler.addProvider(PEER_A, ['m1']);
+            scheduler.addProvider(PEER_B, ['m2']);
+            scheduler.addProvider(PEER_C, ['m3']);
+            scheduler.assign();
+
+            scheduler.removeProvider(PEER_A);
+            scheduler.releaseProvider(PEER_B);
+            scheduler.markDelivered(['m3']);
+            await flushPromises();
+
+            expect(cancel).not.toHaveBeenCalled();
+        });
+
+        it('should survive a failing cancel handler', async () => {
+            cancel.mockRejectedValueOnce(new Error('socket destroyed'));
+            scheduler.addProvider(PEER_A, ['m1']);
+            scheduler.assign();
+
+            advance(REQUEST_TIMEOUT);
+            expect(() => scheduler.reclaimStalled()).not.toThrow();
+            await flushPromises();
+
+            expect(Array.from(scheduler.queue)).toEqual(['m1']);
+        });
+    });
+
+    describe('withdraw', () => {
+        it('should withdraw part of an assignment without a penalty', () => {
+            scheduler.addProvider(PEER_A, ['m1', 'm2']);
+            scheduler.addProvider(PEER_B, ['m2']);
+            scheduler.assign(); // A <- m1, m2 (B gets nothing: both ids are taken)
+
+            // A no longer has m2
+            expect(scheduler.withdraw(PEER_A, keyOf(PEER_A), ['m2'])).toEqual(['m2']);
+
+            expect(Array.from(scheduler.assignments.get(PEER_A).messageIds)).toEqual(['m1']);
+            expect(scheduler.providers.get('m2')).toEqual(new Set([PEER_B]));
+            expect(Array.from(scheduler.queue)).toEqual(['m2']);
+            expect(scheduler.penalties.has(PEER_A)).toBe(false);
+        });
+
+        it('should never assign a withdrawn id to the same provider again', () => {
+            scheduler.addProvider(PEER_A, ['m1', 'm2']);
+            scheduler.addProvider(PEER_B, ['m2']);
+            scheduler.assign();
+
+            scheduler.withdraw(PEER_A, keyOf(PEER_A), ['m2']);
+            scheduler.markDelivered(['m1']); // A is idle again
+
+            expect(scheduler.assign()).toEqual([
+                { publicKey: PEER_B, messageIds: ['m2'] }
+            ]);
+        });
+
+        it('should withdraw the whole assignment when no ids are given', () => {
+            scheduler.addProvider(PEER_A, ['m1', 'm2']);
+            scheduler.addProvider(PEER_B, ['m1']);
+            scheduler.assign(); // A <- m2, m1 (rarest first)
+
+            expect(scheduler.withdraw(PEER_A, keyOf(PEER_A)).sort()).toEqual(['m1', 'm2']);
+
+            expect(scheduler.isIdle(PEER_A)).toBe(true);
+            // m2 had no other provider: dropped. m1 goes to B
+            expect(scheduler.providers.has('m2')).toBe(false);
+            expect(Array.from(scheduler.queue)).toEqual(['m1']);
+        });
+
+        it('should ignore a stale key and ids outside the assignment', () => {
+            scheduler.addProvider(PEER_A, ['m1', 'm2', 'm3']);
+            scheduler.assign(); // A <- m1, m2
+
+            expect(scheduler.withdraw(PEER_A, 'f'.repeat(24))).toEqual([]);
+            expect(scheduler.withdraw(PEER_A, keyOf(PEER_A), ['m3'])).toEqual([]);
+
+            expect(Array.from(scheduler.assignments.get(PEER_A).messageIds)).toEqual(['m1', 'm2']);
+            expect(scheduler.providers.get('m3')).toEqual(new Set([PEER_A]));
+        });
+    });
+
     describe('invariants', () => {
         // small deterministic PRNG so a failing walk can be replayed from its seed
         const mulberry32 = seed => () => {
@@ -561,7 +736,15 @@ describe('MessageRequestScheduler', () => {
                 () => scheduler.markDelivered(subset(Array.from(scheduler.queue))),
                 () => scheduler.releaseProvider(pick(PEERS), { penalize: random() < 0.5 }),
                 () => scheduler.removeProvider(pick(PEERS)),
-                () => { advance(REQUEST_TIMEOUT * random() * 1.5); scheduler.reclaimStalled(); }
+                () => { advance(REQUEST_TIMEOUT * random() * 1.5); scheduler.reclaimStalled(); },
+                // a provider withdraws part (or all) of its batch; sometimes with a stale key
+                () => {
+                    const publicKey = pick(PEERS);
+                    const assignment = scheduler.assignments.get(publicKey);
+                    const key = random() < 0.8 ? assignment?.assignmentKey : 'f'.repeat(24);
+                    const ids = random() < 0.5 ? null : subset(IDS);
+                    scheduler.withdraw(publicKey, key ?? 'f'.repeat(24), ids);
+                }
             ];
 
             for (let step = 0; step < steps; step++) {
@@ -576,7 +759,8 @@ describe('MessageRequestScheduler', () => {
                 scheduler = new MessageRequestScheduler({
                     sessionManager: managers.session,
                     topic: TOPIC,
-                    request
+                    request,
+                    cancel
                 });
 
                 await walk(seed, 200);
@@ -616,7 +800,7 @@ describe('MessageRequestScheduler', () => {
             // every id requested exactly once
             expect(requestedIds().sort()).toEqual(['m1', 'm2', 'm3', 'm4', 'm5', 'm6']);
             // the first round went to the ids only one peer has
-            expect(request.mock.calls.slice(0, 2)).toEqual([
+            expect(request.mock.calls.slice(0, 2).map(([publicKey, messageIds]) => [publicKey, messageIds])).toEqual([
                 [PEER_A, ['m1', 'm2']],
                 [PEER_B, ['m5', 'm6']]
             ]);
@@ -688,5 +872,199 @@ describe('MessageRequestScheduler', () => {
             scheduler.markDelivered(['m4']);
             expect(scheduler.isComplete()).toBe(true);
         });
+    });
+});
+
+describe('MessageDeliveryTasks', () => {
+    const TOPIC = 'a'.repeat(64);
+    const SPACE_ID = 1;
+    const REQUESTER = 'b'.repeat(64);
+    const KEY = 'c'.repeat(24);
+
+    let managers;
+    let storedIds;
+    let delivery;
+    let sent;
+    let socket;
+
+    /** Message types and contents sent to the requester. */
+    const sentOfType = type => sent.filter(message => message.type === type);
+    const deliveredIds = () => sentOfType(EVENTS.NegentropyContentDelivery)
+        .map(message => message.payload.content.nonce);
+
+    beforeAll(async () => {
+        managers = await createManagerInstance();
+
+        const { db } = managers.session.getDatabase();
+        const { publicKey, secretKey } = managers.session.getCredentials();
+
+        storedIds = [];
+        for (let index = 0; index < 4; index++) {
+            const message = await createSpaceMessage({
+                topic: TOPIC,
+                messagePayload: { index },
+                publicKey,
+                secretKey,
+                nonce: String(index).repeat(24),
+            });
+
+            const { messageId } = await createMessageRecord(db, {
+                message,
+                spaceId: SPACE_ID,
+                senderPublicKey: publicKey,
+                broadcastTimestamp: Date.now(),
+            });
+
+            storedIds.push(messageId);
+        }
+    });
+
+    beforeEach(() => {
+        sent = [];
+        socket = { destroyed: false };
+
+        const messageManager = {
+            sendMessageToSocket: vi.fn(async message => { sent.push(message); }),
+        };
+
+        delivery = new MessageDeliveryTasks({ sessionManager: managers.session, messageManager });
+    });
+
+    afterAll(async () => {
+        const { sqlite } = managers.session.getDatabase();
+        await sqlite.close();
+        await cleanup(managers.root);
+    });
+
+    const start = (messageIds, assignmentKey = KEY) => delivery.start({
+        socket,
+        peerPublicKey: REQUESTER,
+        topic: TOPIC,
+        spaceId: SPACE_ID,
+        assignmentKey,
+        messageIds,
+    });
+
+    it('should send every stored message in its own frame', async () => {
+        await start(storedIds);
+
+        const payloads = sentOfType(EVENTS.NegentropyContentDelivery);
+        expect(payloads).toHaveLength(4);
+        expect(payloads.every(message => message.payload.assignmentKey === KEY)).toBe(true);
+        expect(deliveredIds()).toEqual(['0', '1', '2', '3'].map(digit => digit.repeat(24)));
+        expect(delivery.tasks.size).toBe(0);
+    });
+
+    it('should stop between frames once the requester cancels', async () => {
+        // hold the first frame on the wire until the test cancels
+        let release;
+        const onWire = new Promise(resolve => { release = resolve; });
+        delivery.messageManager.sendMessageToSocket.mockImplementationOnce(async message => {
+            sent.push(message);
+            await onWire;
+        });
+
+        const running = start(storedIds);
+        await vi.waitFor(() => expect(sent).toHaveLength(1));
+
+        expect(delivery.cancel(REQUESTER, TOPIC, KEY)).toBe(true);
+        release();
+        await running;
+
+        expect(sentOfType(EVENTS.NegentropyContentDelivery)).toHaveLength(1);
+        expect(delivery.tasks.size).toBe(0);
+    });
+
+    it('should skip ids from a partial cancellation', async () => {
+        const running = start(storedIds);
+        delivery.cancel(REQUESTER, TOPIC, KEY, storedIds.slice(2));
+
+        await running;
+        expect(deliveredIds()).toEqual(['0', '1'].map(digit => digit.repeat(24)));
+    });
+
+    it('should ignore a cancellation with another key or from another peer', () => {
+        start(storedIds);
+
+        expect(delivery.cancel(REQUESTER, TOPIC, 'd'.repeat(24))).toBe(false);
+        expect(delivery.cancel('e'.repeat(64), TOPIC, KEY)).toBe(false);
+        expect(delivery.getTask(REQUESTER, TOPIC).controller.signal.aborted).toBe(false);
+    });
+
+    it('should abort the previous task when the same peer requests again', async () => {
+        const first = start(storedIds, KEY);
+        const firstTask = delivery.getTask(REQUESTER, TOPIC);
+        const second = start(storedIds.slice(0, 1), 'd'.repeat(24));
+
+        await Promise.all([first, second]);
+
+        expect(firstTask.controller.signal.aborted).toBe(true);
+        const keys = sentOfType(EVENTS.NegentropyContentDelivery).map(message => message.payload.assignmentKey);
+        expect(keys).toContain('d'.repeat(24));
+    });
+
+    it('should report missing ids with a partial cancellation', async () => {
+        const missing = 'f'.repeat(64);
+
+        await start([storedIds[0], missing]);
+
+        const [cancel] = sentOfType(EVENTS.NegentropyContentCancel);
+        expect(cancel.payload).toEqual({ assignmentKey: KEY, messageIds: [missing] });
+        expect(deliveredIds()).toEqual(['0'.repeat(24)]);
+    });
+
+    it('should cancel the whole assignment when nothing is stored', async () => {
+        await start(['f'.repeat(64), 'e'.repeat(64)]);
+
+        expect(sentOfType(EVENTS.NegentropyContentDelivery)).toHaveLength(0);
+        const [cancel] = sentOfType(EVENTS.NegentropyContentCancel);
+        expect(cancel.payload).toEqual({ assignmentKey: KEY });
+    });
+
+    it('should report a message deleted while the delivery is running', async () => {
+        const { db } = managers.session.getDatabase();
+        const { publicKey, secretKey } = managers.session.getCredentials();
+        const message = await createSpaceMessage({
+            topic: TOPIC, messagePayload: { index: 9 }, publicKey, secretKey, nonce: '9'.repeat(24),
+        });
+        const { messageId: doomedId } = await createMessageRecord(db, {
+            message, spaceId: SPACE_ID, senderPublicKey: publicKey, broadcastTimestamp: Date.now(),
+        });
+
+        // the first frame is on the wire when the second message gets deleted
+        let release;
+        const onWire = new Promise(resolve => { release = resolve; });
+        delivery.messageManager.sendMessageToSocket.mockImplementationOnce(async frame => {
+            sent.push(frame);
+            await onWire;
+        });
+
+        const running = start([storedIds[0], doomedId]);
+        await vi.waitFor(() => expect(sent).toHaveLength(1));
+        await flushMessageRecords(db, { messageId: doomedId });
+        release();
+        await running;
+
+        expect(deliveredIds()).toEqual(['0'.repeat(24)]);
+        const [cancel] = sentOfType(EVENTS.NegentropyContentCancel);
+        expect(cancel.payload).toEqual({ assignmentKey: KEY, messageIds: [doomedId] });
+    });
+
+    it('should stop when the socket is destroyed', async () => {
+        socket.destroyed = true;
+
+        await start(storedIds);
+
+        expect(sent).toHaveLength(0);
+    });
+
+    it('should abort every task of a disconnected peer', () => {
+        start(storedIds);
+        const task = delivery.getTask(REQUESTER, TOPIC);
+
+        delivery.abortPeer(REQUESTER);
+
+        expect(task.controller.signal.aborted).toBe(true);
+        expect(delivery.tasks.size).toBe(0);
     });
 });

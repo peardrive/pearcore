@@ -399,6 +399,50 @@ export async function getMessagesByIds(db, { spaceId, messageIds, batchSize = DE
 }
 
 /**
+ * Returns which of the given message ids are stored for a space.
+ * Only the id column is read: no payload is loaded into memory.
+ * @param {Object} db - Drizzle database instance
+ * @param {Object} params
+ * @param {number} params.spaceId Local space primary key
+ * @param {Iterable<string>} params.messageIds Message IDs to look up
+ * @param {number} [params.batchSize=DEFAULT_READ_BATCH_SIZE]
+ * @returns {Promise<Set<string>>} The stored message ids
+ */
+export async function filterStoredMessageIds(db, { spaceId, messageIds, batchSize = DEFAULT_READ_BATCH_SIZE }) {
+  const ids = [...new Set(messageIds)];
+  const stored = new Set();
+
+  for (let index = 0; index < ids.length; index += batchSize) {
+    const chunk = ids.slice(index, index + batchSize);
+    const rows = await db.select({ messageId: messages.messageId })
+      .from(messages)
+      .where(and(eq(messages.spaceId, spaceId), inArray(messages.messageId, chunk)))
+      .all();
+
+    for (const row of rows) stored.add(row.messageId);
+  }
+
+  return stored;
+}
+
+/**
+ * Loads one full message row (payload included).
+ * @param {Object} db - Drizzle database instance
+ * @param {Object} params
+ * @param {number} params.spaceId Local space primary key
+ * @param {string} params.messageId Message ID
+ * @returns {Promise<Object|null>} The message row, or null when not stored
+ */
+export async function getMessageRecordById(db, { spaceId, messageId }) {
+  const row = await db.select()
+    .from(messages)
+    .where(and(eq(messages.spaceId, spaceId), eq(messages.messageId, messageId)))
+    .get();
+
+  return row ?? null;
+}
+
+/**
  * Decides which of two peers initiates the reconciliation of a topic. Both peers evaluate
  * the same rule with the same inputs, so they agree without exchanging any message.
  * The topic is part of the rank, so across many shared spaces each peer initiates
@@ -566,6 +610,9 @@ function getPaginationLimits(filters = {}) {
  * @param {number} params.spaceId - Local primary key of the space (resolved from message.topic by the caller)
  * @param {string} params.senderPublicKey - Immediate sender's public key (differs from owner for relays)
  * @param {number} params.timestamp - When this node received the message
+ * @param {string} [params.canonicalPayload] - Canonical JSON of the payload, when the caller already has it
+ *   (e.g. delivered history). Skips serializing the payload again; `message.payload` is then ignored.
+ * @param {string} [params.messageId] - Precomputed message id matching `canonicalPayload`.
  * @returns {{
  *   messageId: string,
  *   spaceId: number,
@@ -584,13 +631,15 @@ export function buildMessageRecordPayload({
   spaceId,
   senderPublicKey,
   timestamp,
+  canonicalPayload: precomputedPayload,
+  messageId: precomputedMessageId,
 }) {
 
   if (!isNumber(spaceId)) {
     throw new Error("SpaceId must be an integer");
   }
 
-  const canonicalPayload = canonicalStringify(message.payload);
+  const canonicalPayload = precomputedPayload ?? canonicalStringify(message.payload);
   if (typeof canonicalPayload !== 'string') {
     throw new Error("message payload could not be canonicalized");
   }
@@ -601,7 +650,7 @@ export function buildMessageRecordPayload({
 
   return {
     // network-wide identity, derived from the signed fields
-    messageId: computeMessageId({
+    messageId: precomputedMessageId ?? computeMessageId({
       ...message,
       payload: canonicalPayload
     }),
@@ -745,6 +794,26 @@ export async function pushMessageToHistory(db, { spaceId, message, senderPublicK
     senderPublicKey: senderPublicKey,
     broadcastTimestamp: now()
   });
+}
+
+/**
+ * Inserts already built message rows in one statement, skipping rows whose message
+ * (messageId or nonce) is already stored.
+ * @param {Object} db - Drizzle database instance.
+ * @param {Array<Object>} rows - Rows built by `buildMessageRecordPayload`.
+ * @returns {Promise<string[]>} Message ids that were actually inserted.
+ */
+export async function insertMessageRecords(db, rows) {
+  if (rows.length === 0) return [];
+
+  const inserted = await db
+    .insert(messages)
+    .values(rows)
+    .onConflictDoNothing()
+    .returning({ messageId: messages.messageId })
+    .all();
+
+  return inserted.map(row => row.messageId);
 }
 
 /**

@@ -119,7 +119,7 @@ export class AccountService {
     // load file-content delivery managerment
     await this.managers.delivery.init();
     // load message-history reconciliation
-    await this.managers.negentropy.init();
+    await this.managers.sync.init();
 
     return {
       username: creds.username,
@@ -136,7 +136,7 @@ export class AccountService {
     await this.managers.connection.destroy();
     await this.managers.spaceFiles.stop();
     await this.managers.delivery.stop();
-    await this.managers.negentropy.stop();
+    await this.managers.sync.stop();
 
     const { sqlite } = this.managers.session.getDatabase();
     sqlite.close();

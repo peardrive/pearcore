@@ -178,6 +178,31 @@ describe("FileContentDeliveryManager", () => {
         expect(calls.length).not.toBe(startLeaf + endLeaf + 1);
     });
 
+    it('should only abort a task for the peer that requested it', async () => {
+        const key = hex(randomNonce());
+        const owner = 'a'.repeat(64);
+        const stranger = 'b'.repeat(64);
+
+        await deliveryManager.createTask({
+            socket: mockSocket,
+            key,
+            publicKey: owner,
+            filePath: testFilePath,
+            startLeaf: 0,
+            endLeaf: 100,
+        });
+
+        const [task] = deliveryManager.deliveryTasksByKey.get(key);
+
+        deliveryManager.abortTask(key, stranger);
+        expect(task.controller.signal.aborted).toBe(false);
+
+        deliveryManager.abortTask(key, owner);
+        expect(task.controller.signal.aborted).toBe(true);
+
+        await deliveryManager.waitForTask(key);
+    });
+
     it('should abort all tasks for a file path on LocalFileChange event', async () => {
         const key1 = hex(randomNonce());
         const key2 = hex(randomNonce());

@@ -58,6 +58,30 @@ export const NegentropySync = "NegentropySync";
 export const NegentropySyncComplete = "NegentropySyncComplete";
 
 /**
+ * Request for the contents of missing messages (client -> provider).
+ * Payload: { assignmentKey, messageIds }
+ */
+export const NegentropyContentRequest = "NegentropyContentRequest";
+
+/**
+ * One stored message delivered for an assignment (provider -> client), one per frame.
+ * Payload: { assignmentKey, content: { type, publicKey, nonce, timestamp, signature, canonicalPayload } }
+ */
+export const NegentropyContentDelivery = "NegentropyContentDelivery";
+
+/**
+ * Cancels an assignment, in both directions (client: stop delivering, provider: cannot deliver).
+ * Payload: { assignmentKey, messageIds? } - without messageIds the whole assignment is cancelled.
+ */
+export const NegentropyContentCancel = "NegentropyContentCancel";
+
+/**
+ * Emitted locally once a delivered message is verified and stored.
+ * Context: { publicKey, topic, spaceId, messageId }
+ */
+export const NegentropyContentDelivered = "NegentropyContentDelivered";
+
+/**
  * Emitted when a profile is updated or when a peer is requesting to join
  * a space using its profile information.
  * Depending on the sender, this event may represent either a propagated

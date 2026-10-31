@@ -152,7 +152,7 @@ export class FileContentDeliveryManager {
 
         this.fileCache = new FileHandlerCache();
         this.fileTasks = new Map(); // filePath -> Set<AbortController>
-        this.deliveryTasksByKey = new Map(); // key -> Set<{ filePath, controller }>
+        this.deliveryTasksByKey = new Map(); // key -> Set<{ filePath, controller, publicKey }>
         this.taskPromises = new Map(); // key -> Promise<{succeed, reason}>
     }
 
@@ -202,13 +202,14 @@ export class FileContentDeliveryManager {
     * @param {Object} params - The parameters object.
     * @param {Socket} params.socket - The socket connection instance.
     * @param {String} params.key - The encryption or authentication key.
+    * @param {String} [params.publicKey] - Requester public key; scopes `abortTask` to the requester.
     * @param {string} params.filePath - The path to the target file.
     * @param {number} params.startLeaf - The starting leaf index (inclusive).
     * @param {number} params.endLeaf - The ending leaf index (inclusive).
      * @returns {{ succeed: Boolean, reason: String }}
      */
     async createTask(params) {
-        const { socket, key, filePath, startLeaf, endLeaf } = params;
+        const { socket, key, publicKey = null, filePath, startLeaf, endLeaf } = params;
 
         const controller = new AbortController();
         if (!this.fileTasks.has(filePath)) {
@@ -219,7 +220,7 @@ export class FileContentDeliveryManager {
             this.deliveryTasksByKey.set(key, new Set());
         }
 
-        this.deliveryTasksByKey.get(key).add({ filePath, controller });
+        this.deliveryTasksByKey.get(key).add({ filePath, controller, publicKey });
 
         this.fileTasks.get(filePath).add(controller);
 
@@ -365,11 +366,18 @@ export class FileContentDeliveryManager {
         return await promise;
     }
 
-    abortTask(key) {
+    /**
+     * Aborts the delivery tasks of a download key.
+     * @param {String} key - Download key of the request.
+     * @param {String|null} [publicKey=null] - When given, only tasks requested by this peer are aborted.
+     */
+    abortTask(key, publicKey = null) {
         const tasks = this.deliveryTasksByKey.get(key);
         if (!tasks || tasks.size === 0) return;
 
         for (const task of tasks) {
+            // when the requester is known, only its own tasks are aborted
+            if (publicKey && task.publicKey && task.publicKey !== publicKey) continue;
             task.controller.abort();
         }
     }

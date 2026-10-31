@@ -75,7 +75,7 @@ export function initializeManagers(emitter) {
         spaceFileList: spaceFileListManager,
         mux: muxManager,
         delivery: fileContentDeliveryManager,
-        negentropy: negentropySyncManager
+        sync: negentropySyncManager
     });
 
     messageManager.setProtocolMap(protocols);
@@ -90,6 +90,6 @@ export function initializeManagers(emitter) {
         spaceFileList: spaceFileListManager,
         spaceFiles: spaceFileManager,
         delivery: fileContentDeliveryManager,
-        negentropy: negentropySyncManager,
+        sync: negentropySyncManager,
     };
 }

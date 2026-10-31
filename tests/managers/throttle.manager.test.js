@@ -62,7 +62,7 @@ describe('ThrottleManager', () => {
             const managers = await createManagerInstance();
 
             // temporary set quarantine time to 100ms
-            managers.session.session.set('messaging.maxQuarantineTime', 100);
+            managers.session.set('messaging.maxQuarantineTime', 100);
 
             const { publicKey } = managers.session.getCredentials();
             const { MAX_FREQUENCY_THROTTLE, MAX_QUARANTINE_TIME } = managers.throttle;

@@ -989,3 +989,156 @@ describe('Protocol Messages', () => {
         });
     });
 })
+
+describe('Negentropy message delivery utils', () => {
+    const topic = 'a'.repeat(64);
+    const assignmentKey = 'b'.repeat(24);
+    const messageId = 'c'.repeat(64);
+
+    let author;
+    let authorPublicKey;
+    let authorSecretKey;
+
+    beforeEach(async () => {
+        author = await generateKeypair();
+        authorPublicKey = cryptoUtils.hex(author.publicKey);
+        authorSecretKey = cryptoUtils.hex(author.secretKey);
+    });
+
+    /** A stored row, as the messages table returns it. */
+    const toRecord = message => ({
+        type: message.type,
+        ownerPublicKey: message.publicKey,
+        nonce: message.nonce,
+        messageTimestamp: message.timestamp,
+        signature: message.signature,
+        payload: cryptoUtils.canonicalStringify(message.payload),
+    });
+
+    const createAuthored = payload => protocolUtils.createSpaceMessage({
+        topic,
+        messagePayload: payload,
+        publicKey: authorPublicKey,
+        secretKey: authorSecretKey,
+    });
+
+    describe('buildCanonicalMessageString', () => {
+        const payloads = {
+            'plain object': { text: 'hello', n: 1 },
+            'nested and unordered keys': { z: [3, { y: true, a: null }], a: { c: 1.5, b: 'x' } },
+            'escapes and unicode': { text: 'quote " backslash \\ newline \n tab \t emoji 🍐  ' },
+            'encrypted (string) payload': 'ab'.repeat(40),
+        };
+
+        for (const [name, payload] of Object.entries(payloads)) {
+            it(`should equal canonicalStringify of the unsigned message: ${name}`, () => {
+                const header = { type: EVENTS.SpaceMessage, topic, publicKey: authorPublicKey, nonce: 'd'.repeat(24), timestamp: 1767225600000 };
+
+                const spliced = protocolUtils.buildCanonicalMessageString(header, cryptoUtils.canonicalStringify(payload));
+
+                expect(spliced).toBe(cryptoUtils.canonicalStringify({ ...header, payload }));
+            });
+        }
+    });
+
+    describe('verifyDeliveredMessage', () => {
+        it('should verify the original signature from the stored canonical payload', async () => {
+            const message = await createAuthored({ text: 'stored once, verified without parsing' });
+            const delivered = protocolUtils.toDeliverableMessage(toRecord(message));
+
+            expect(await protocolUtils.verifyDeliveredMessage(topic, delivered)).toBe(true);
+        });
+
+        it('should reject a tampered payload, header or topic', async () => {
+            const message = await createAuthored({ text: 'original' });
+            const delivered = protocolUtils.toDeliverableMessage(toRecord(message));
+
+            expect(await protocolUtils.verifyDeliveredMessage(topic, { ...delivered, canonicalPayload: '{"text":"forged"}' })).toBe(false);
+            expect(await protocolUtils.verifyDeliveredMessage(topic, { ...delivered, timestamp: delivered.timestamp + 1 })).toBe(false);
+            expect(await protocolUtils.verifyDeliveredMessage('e'.repeat(64), delivered)).toBe(false);
+        });
+
+        it('should compute the same id as the stored record', async () => {
+            const { computeMessageId } = await import('../../src/utils/message.utils.js');
+            const message = await createAuthored({ text: 'id' });
+            const record = toRecord(message);
+
+            expect(protocolUtils.computeDeliveredMessageId(protocolUtils.toDeliverableMessage(record)))
+                .toBe(computeMessageId({ ...message, payload: record.payload }));
+        });
+    });
+
+    describe('NegentropyContentRequest', () => {
+        it('should create a valid signed request', async () => {
+            const message = await protocolUtils.createNegentropyContentRequestMessage({
+                topic, assignmentKey, messageIds: [messageId], publicKey: authorPublicKey, secretKey: authorSecretKey,
+            });
+
+            expect(message.type).toBe(EVENTS.NegentropyContentRequest);
+            expect(message.payload).toEqual({ assignmentKey, messageIds: [messageId] });
+            expect(await protocolUtils.verifyMessageSignature(message)).toBe(true);
+            expect(protocolUtils.validateNegentropyContentRequestPayload(message).isValid).toBe(true);
+        });
+
+        it('should reject invalid payloads', () => {
+            const validate = payload => protocolUtils.validateNegentropyContentRequestPayload({ payload }, { maxIds: 2 }).reason;
+
+            expect(validate(null)).toBe('payload should be an object');
+            expect(validate({ assignmentKey: 'xyz', messageIds: [messageId] })).toBe('assignmentKey should be 24 character hex string');
+            expect(validate({ assignmentKey, messageIds: [] })).toBe('messageIds should not be empty');
+            expect(validate({ assignmentKey, messageIds: [messageId, messageId, messageId] })).toBe('too many message ids');
+            expect(validate({ assignmentKey, messageIds: ['not-hex'] })).toBe('invalid message id');
+        });
+    });
+
+    describe('NegentropyContentCancel', () => {
+        it('should create whole and partial cancellations', async () => {
+            const params = { topic, assignmentKey, publicKey: authorPublicKey, secretKey: authorSecretKey };
+
+            const whole = await protocolUtils.createNegentropyContentCancelMessage(params);
+            const partial = await protocolUtils.createNegentropyContentCancelMessage({ ...params, messageIds: [messageId] });
+
+            expect(whole.payload).toEqual({ assignmentKey });
+            expect(partial.payload).toEqual({ assignmentKey, messageIds: [messageId] });
+            expect(protocolUtils.validateNegentropyContentCancelPayload(whole).isValid).toBe(true);
+            expect(protocolUtils.validateNegentropyContentCancelPayload(partial).isValid).toBe(true);
+        });
+
+        it('should reject invalid payloads', () => {
+            const validate = payload => protocolUtils.validateNegentropyContentCancelPayload({ payload }).reason;
+
+            expect(validate({ assignmentKey: 'xyz' })).toBe('assignmentKey should be 24 character hex string');
+            expect(validate({ assignmentKey, messageIds: 'm1' })).toBe('messageIds should be an array');
+            expect(validate({ assignmentKey, messageIds: [] })).toBe('messageIds should not be empty');
+            expect(validate({ assignmentKey, messageIds: ['bad'] })).toBe('invalid message id');
+        });
+    });
+
+    describe('NegentropyContentDelivery', () => {
+        it('should create a valid signed delivery carrying one canonical string', async () => {
+            const authored = await createAuthored({ text: 'deliver me' });
+            const delivered = protocolUtils.toDeliverableMessage(toRecord(authored));
+
+            const message = await protocolUtils.createNegentropyContentDeliveryMessage({
+                topic, assignmentKey, content: delivered, publicKey: authorPublicKey, secretKey: authorSecretKey,
+            });
+
+            expect(message.type).toBe(EVENTS.NegentropyContentDelivery);
+            expect(message.payload.content.canonicalPayload).toBe('{"text":"deliver me"}');
+            expect(await protocolUtils.verifyMessageSignature(message)).toBe(true);
+            expect(protocolUtils.validateNegentropyContentDeliveryPayload(message).isValid).toBe(true);
+        });
+
+        it('should reject invalid delivered content', async () => {
+            const authored = await createAuthored({ text: 'x' });
+            const delivered = protocolUtils.toDeliverableMessage(toRecord(authored));
+            const validate = content => protocolUtils.validateNegentropyContentDeliveryPayload({ payload: { assignmentKey, content } }).reason;
+
+            expect(validate([delivered])).toBe('content should be an object');
+            expect(validate({ ...delivered, publicKey: 'xyz' })).toBe('invalid content publicKey');
+            expect(validate({ ...delivered, nonce: 'xyz' })).toBe('invalid content nonce');
+            expect(validate({ ...delivered, signature: 'ab' })).toBe('invalid content signature');
+            expect(validate({ ...delivered, canonicalPayload: { text: 'x' } })).toBe('invalid content payload');
+        });
+    });
+});

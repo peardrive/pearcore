@@ -8,7 +8,7 @@ export class ThrottleManager {
         this.frequencyRecord = new Map();
         this.quarantine = new Map();
 
-        setTimeout(() => this.clearFrequencyRecords(), 1000);
+        setInterval(() => this.clearFrequencyRecords(), 1000);
     }
 
     get db() {

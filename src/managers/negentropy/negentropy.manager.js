@@ -3,13 +3,20 @@ import * as MESSAGES from '../../constants/messages.constants.js';
 import { createChild } from '../../logger.js';
 import { hex, randomNonce } from '../../utils/crypto.utils.js';
 import { now } from '../../utils/general.utils.js';
-import { isReconciliationInitiator } from '../../utils/message.utils.js';
-import { publicKeyIsAllowedToRead } from '../../utils/policy.utils.js';
-import { createNegentropySyncMessage } from '../../utils/protocol.utils.js';
+import { buildMessageRecordPayload, insertMessageRecords, isReconciliationInitiator } from '../../utils/message.utils.js';
+import { publicKeyIsAllowedToBroadcast, publicKeyIsAllowedToRead } from '../../utils/policy.utils.js';
+import {
+    computeDeliveredMessageId,
+    createNegentropyContentCancelMessage,
+    createNegentropyContentRequestMessage,
+    createNegentropySyncMessage,
+    verifyDeliveredMessage
+} from '../../utils/protocol.utils.js';
 import { getSpace, getSpaceTopicHash, getTopicToSpaceMap } from '../../utils/space.utils.js';
 import { SpaceSyncHandler } from '../../protocols/space.protocol.js';
 import { NegentropyRole, NegentropySync } from './components/sync.js';
 import { MessageRequestScheduler } from './components/scheduler.js';
+import { MessageDeliveryTasks } from './components/delivery.js';
 
 const logger = createChild('NegentropySyncManager');
 
@@ -22,6 +29,12 @@ const logger = createChild('NegentropySyncManager');
  *   always initiates; the other peer creates its responder session on the first message.
  * - Once a session is done, the peer is registered as provider of the ids the local node
  *   needs, in the topic's `MessageRequestScheduler` (work-stealing between peers).
+ * - Requester side: the schedulers decide who delivers what; this class sends their
+ *   `NegentropyContentRequest`/`NegentropyContentCancel` messages and feeds the delivered
+ *   `NegentropyContentDelivery` messages back to them once verified and stored.
+ * - Provider side: `MessageDeliveryTasks` serves the requests of other peers.
+ *
+ * Registered on the manager stack as `managers.sync`; protocol handlers only talk to this class.
  */
 export class NegentropySyncManager {
     constructor(emitter, managers) {
@@ -34,8 +47,11 @@ export class NegentropySyncManager {
         this.sessions = new Map();
         /** topic -> MessageRequestScheduler */
         this.schedulers = new Map();
-        /** async ({ topic, publicKey, messageIds }) => void */
-        this.requestHandler = null;
+        /** serves message contents requested by other peers */
+        this.delivery = new MessageDeliveryTasks({
+            sessionManager: this.sessionManager,
+            messageManager: this.messageManager,
+        });
 
         this.heartbeatTimer = null;
         this._heartbeatRunning = false;
@@ -95,6 +111,7 @@ export class NegentropySyncManager {
             this._onReject = null;
         }
 
+        this.delivery.stop();
         this.sessions.clear();
         this.schedulers.clear();
     }
@@ -118,7 +135,10 @@ export class NegentropySyncManager {
             const scheduler = new MessageRequestScheduler({
                 sessionManager: this.sessionManager,
                 topic: topic,
-                request: this.requestHandler ? this.createRequest(topic) : null,
+                request: (publicKey, messageIds, assignmentKey) =>
+                    this.sendContentRequest(topic, publicKey, messageIds, assignmentKey),
+                cancel: (publicKey, assignmentKey) =>
+                    this.sendContentCancel(topic, publicKey, assignmentKey),
             });
 
             this.schedulers.set(topic, scheduler);
@@ -128,26 +148,8 @@ export class NegentropySyncManager {
     }
 
     /**
-     * Sets the function that requests message contents from a provider.
-     * (The message content request protocol plugs in here.)
-     * @param {(params: { topic: string, publicKey: string, messageIds: string[] }) => Promise<void>} handler
-     */
-    setRequestHandler(handler) {
-        this.requestHandler = handler;
-
-        for (const [topic, scheduler] of this.schedulers) {
-            scheduler.setRequestHandler(handler ? this.createRequest(topic) : null);
-            scheduler.assign();
-        }
-    }
-
-    /** @private */
-    createRequest(topic) {
-        return (publicKey, messageIds) => this.requestHandler({ topic, publicKey, messageIds });
-    }
-
-    /**
-     * Marks messages of a space as delivered, freeing their providers for the next batch.
+     * Marks messages of a space as delivered (e.g. received through gossip),
+     * freeing their providers for the next batch.
      * @param {string} topic
      * @param {Iterable<string>} messageIds
      */
@@ -319,13 +321,145 @@ export class NegentropySyncManager {
     }
 
     /**
-     * `Disconnect` event handler: drops the peer's sessions and reassigns its requests.
+     * Provider side: serves a validated `NegentropyContentRequest`.
+     * Called by `NegentropyContentRequestHandler`. Resolves when the delivery is over,
+     * the handler does not wait for it.
+     * @param {Object} socket - Socket of the requester.
+     * @param {Object} message - NegentropyContentRequest message.
+     * @param {number} spaceId - Local id of the space.
+     * @returns {Promise<void>}
+     */
+    serveContentRequest(socket, message, spaceId) {
+        const { assignmentKey, messageIds } = message.payload;
+
+        return this.delivery.start({
+            socket,
+            peerPublicKey: message.publicKey,
+            topic: message.topic,
+            spaceId,
+            assignmentKey,
+            messageIds,
+        });
+    }
+
+    /**
+     * Handles a validated `NegentropyContentCancel`, in either direction:
+     * - as provider: the requester gave the assignment up, stop (or skip some ids).
+     * - as requester: the provider cannot deliver (some of) the ids, withdraw them.
+     * Assignment keys are random, so a key matches at most one side.
+     * @param {Object} message - NegentropyContentCancel message.
+     * @returns {{ role: 'provider'|'requester'|null, messageIds: string[] }}
+     */
+    handleContentCancel(message) {
+        const peerPublicKey = message.publicKey;
+        const { topic } = message;
+        const { assignmentKey, messageIds = null } = message.payload;
+
+        if (this.delivery.cancel(peerPublicKey, topic, assignmentKey, messageIds)) {
+            return { role: 'provider', messageIds: messageIds ?? [] };
+        }
+
+        const scheduler = this.schedulers.get(topic);
+        if (!scheduler) return { role: null, messageIds: [] };
+
+        const withdrawn = scheduler.withdraw(peerPublicKey, assignmentKey, messageIds);
+        if (withdrawn.length === 0) return { role: null, messageIds: [] };
+
+        scheduler.assign();
+        return { role: 'requester', messageIds: withdrawn };
+    }
+
+    /**
+     * Requester side: accepts a validated `NegentropyContentDelivery` (one message).
+     * Called by `NegentropyContentDeliveryHandler`.
+     *
+     * - A delivery for an unknown or reclaimed assignment, or of an id that is not part of
+     *   it, is dropped quietly (a late delivery is a normal race, not misbehaviour).
+     * - The message must be signed by its author, and the author must be allowed to
+     *   broadcast in the space.
+     * - The canonical payload string is stored as received: nothing is parsed or
+     *   re-serialized, and the message id is computed once.
+     * - A forged message penalizes the provider and takes its assignment back.
+     *
+     * @param {Object} message - NegentropyContentDelivery message.
+     * @param {number} spaceId - Local id of the space.
+     * @param {Object} space - Local space record.
+     * @returns {Promise<{ messageId: string|null, status: 'stored'|'duplicate'|'ignored'|'refused'|'forged' }>}
+     */
+    async acceptContentDelivery(message, spaceId, space) {
+        const peerPublicKey = message.publicKey;
+        const { topic } = message;
+        const { assignmentKey, content } = message.payload;
+
+        const scheduler = this.schedulers.get(topic);
+        if (!scheduler) return { messageId: null, status: 'ignored' };
+
+        const messageId = computeDeliveredMessageId(content);
+        if (!scheduler.expectsDelivery(peerPublicKey, assignmentKey, messageId)) {
+            return { messageId, status: 'ignored' };
+        }
+
+        // nobody can deliver it in an acceptable way: resolve it instead of retrying
+        if (!publicKeyIsAllowedToBroadcast(content.publicKey, space)) {
+            scheduler.markDelivered([messageId]);
+            scheduler.assign();
+            return { messageId, status: 'refused' };
+        }
+
+        if (!(await verifyDeliveredMessage(topic, content))) {
+            if (scheduler.getAssignment(peerPublicKey, assignmentKey)) {
+                logger.warn('Provider delivered a message with an invalid signature', { peerPublicKey, topic });
+                scheduler.releaseProvider(peerPublicKey, { penalize: true, notify: true });
+                scheduler.assign();
+            }
+
+            return { messageId, status: 'forged' };
+        }
+
+        const row = buildMessageRecordPayload({
+            message: {
+                type: content.type,
+                publicKey: content.publicKey,
+                timestamp: content.timestamp,
+                nonce: content.nonce,
+                signature: content.signature,
+            },
+            spaceId,
+            senderPublicKey: peerPublicKey,
+            timestamp: now(),
+            canonicalPayload: content.canonicalPayload,
+            messageId,
+        });
+
+        const [inserted] = await insertMessageRecords(this.db, [row]);
+
+        // an already stored message counts as delivered too: the local node has it
+        scheduler.markDelivered([messageId]);
+
+        if (inserted) {
+            this.emitter.emit(EVENTS.NegentropyContentDelivered, {
+                publicKey: peerPublicKey,
+                topic,
+                spaceId,
+                messageId,
+            });
+        }
+
+        scheduler.assign();
+        return { messageId, status: inserted ? 'stored' : 'duplicate' };
+    }
+
+    /**
+     * `Disconnect` event handler: drops the peer's sessions, stops serving it and
+     * reassigns its requests.
      * @param {{ publicKey: string }} context
      */
     onDisconnect({ publicKey }) {
         for (const session of [...this.sessions.values()]) {
             if (session.peerPublicKey === publicKey) this.dropSession(session);
         }
+
+        this.delivery.abortPeer(publicKey);
 
         for (const scheduler of this.schedulers.values()) {
             scheduler.removeProvider(publicKey);
@@ -407,6 +541,47 @@ export class NegentropySyncManager {
         if (this.sessions.get(key) === session) {
             this.sessions.delete(key);
         }
+    }
+
+    /**
+     * Sends a scheduler assignment to its provider.
+     * @private
+     */
+    async sendContentRequest(topic, publicKey, messageIds, assignmentKey) {
+        const sockets = this.socketManager.getConnectedSockets({ peers: [publicKey] });
+        if (sockets.length === 0) {
+            throw new Error('peer is not connected');
+        }
+
+        const credentials = this.credentials;
+        const message = await createNegentropyContentRequestMessage({
+            topic,
+            assignmentKey,
+            messageIds,
+            publicKey: credentials.publicKey,
+            secretKey: credentials.secretKey,
+        });
+
+        await this.messageManager.sendMessageToSocket(message, sockets[0]);
+    }
+
+    /**
+     * Tells a provider to stop delivering a reclaimed assignment.
+     * @private
+     */
+    async sendContentCancel(topic, publicKey, assignmentKey) {
+        const sockets = this.socketManager.getConnectedSockets({ peers: [publicKey] });
+        if (sockets.length === 0) return;
+
+        const credentials = this.credentials;
+        const message = await createNegentropyContentCancelMessage({
+            topic,
+            assignmentKey,
+            publicKey: credentials.publicKey,
+            secretKey: credentials.secretKey,
+        });
+
+        await this.messageManager.sendMessageToSocket(message, sockets[0]);
     }
 
     /**

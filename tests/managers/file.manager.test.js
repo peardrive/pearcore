@@ -625,7 +625,7 @@ describe('LocalFileRegistry', () => {
 
             // set short backoff for testing
             const session = core.managers.session;
-            session.session.set('files.localChangeBackoff', {
+            session.set('files.localChangeBackoff', {
                 baseDelay: 10,
                 maxDelay: 15,
                 backoffIncrement: 1
@@ -653,7 +653,7 @@ describe('LocalFileRegistry', () => {
             vi.useFakeTimers();
 
             const session = core.managers.session;
-            session.session.set('files.localChangeBackoff', {
+            session.set('files.localChangeBackoff', {
                 baseDelay: 100,
                 maxDelay: 500,
                 backoffIncrement: 150
@@ -682,7 +682,7 @@ describe('LocalFileRegistry', () => {
             vi.useFakeTimers();
 
             const session = core.managers.session;
-            session.session.set('files.localChangeBackoff', {
+            session.set('files.localChangeBackoff', {
                 baseDelay: 100,
                 maxDelay: 500,
                 backoffIncrement: 150
@@ -858,7 +858,7 @@ describe('LocalFileRegistry', () => {
             });
 
             const session = core.managers.session;
-            session.session.set('files.localChangeBackoff', {
+            session.set('files.localChangeBackoff', {
                 baseDelay: 10,
                 maxDelay: 15,
                 backoffIncrement: 1
@@ -1137,7 +1137,7 @@ describe('LeafDeliveryScheduler', () => {
         const { rootHash } = params;
         const spaceFileListManager = core.managers.spaceFileList;
 
-        core.managers.session.session.set('files.broadcastThrottleTime', 0);
+        core.managers.session.set('files.broadcastThrottleTime', 0);
 
         const fileEventBroadcaster = new FileEventBroadcaster(
             core.emitter,
@@ -1436,11 +1436,11 @@ describe('SpaceDownloadTask', () => {
         downloadTasks.clear();
 
         const session = downloaderCore.managers.session;
-        session.session.set('download.heartbeatInterval', 200);
-        session.session.set('download.requestTimeout', 500);
+        session.set('download.heartbeatInterval', 200);
+        session.set('download.requestTimeout', 500);
         // small to force multiple requests
-        session.session.set('download.assignedChunkSize', 2);
-        session.session.set('files.broadcastThrottleTime', 0);
+        session.set('download.assignedChunkSize', 2);
+        session.set('files.broadcastThrottleTime', 0);
     });
 
     it('should throw if start is called before setTask or setRecord', async () => {

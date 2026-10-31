@@ -1,5 +1,6 @@
 import { createChild } from "../../../logger.js";
 import { now } from "../../../utils/general.utils.js";
+import { hex, randomNonce } from "../../../utils/crypto.utils.js";
 import { SessionManager } from "../../session.manager.js";
 
 const logger = createChild('MessageRequestScheduler');
@@ -18,18 +19,25 @@ const logger = createChild('MessageRequestScheduler');
  * - An assignment that is not delivered within `requestTimeout`, or whose provider
  *   disconnects, goes back to the queue and can be picked by another provider.
  * - Stalled providers are penalized and picked last.
+ * - Every assignment carries a random `assignmentKey`. The provider echoes it on each
+ *   delivery, so late deliveries of a reclaimed assignment are recognized and ignored.
+ * - Taking an assignment back (timeout, failed request) notifies the provider through
+ *   `cancel`, so it stops sending. A provider can withdraw ids it cannot deliver; those
+ *   are never assigned to it again.
  */
 export class MessageRequestScheduler {
     /**
      * @param {Object} params
      * @param {SessionManager} params.sessionManager - Current session instance.
      * @param {string} params.topic - Space topic hash.
-     * @param {(publicKey: string, messageIds: string[]) => Promise<void>} [params.request] - Sends the request for a batch of message ids to a provider.
+     * @param {(publicKey: string, messageIds: string[], assignmentKey: string) => Promise<void>} [params.request] - Sends the request for a batch of message ids to a provider.
+     * @param {(publicKey: string, assignmentKey: string) => Promise<void>} [params.cancel] - Tells a provider to stop delivering an assignment.
      */
-    constructor({ sessionManager, topic, request = null }) {
+    constructor({ sessionManager, topic, request = null, cancel = null }) {
         this.sessionManager = sessionManager;
         this.topic = topic;
         this.request = request;
+        this.cancel = cancel;
 
         /** 
          * Message ids waiting for assignment. these are free to pick for new providers.
@@ -44,8 +52,8 @@ export class MessageRequestScheduler {
         this.providers = new Map();
 
         /** 
-         * Maps publicKeys to their list of message ids their are assigned to deliver (plus the timestamp)
-         * @type {Map<string, { messageIds: Set<string>, requestedAt: number}>}
+         * Maps publicKeys to their list of message ids their are assigned to deliver (plus the key and timestamp)
+         * @type {Map<string, { assignmentKey: string, messageIds: Set<string>, requestedAt: number}>}
          */
         this.assignments = new Map();
 
@@ -79,6 +87,37 @@ export class MessageRequestScheduler {
      */
     setRequestHandler(request) {
         this.request = request;
+    }
+
+    /**
+     * Sets the function that tells a provider to stop delivering an assignment.
+     * @param {(publicKey: string, assignmentKey: string) => Promise<void>} cancel
+     */
+    setCancelHandler(cancel) {
+        this.cancel = cancel;
+    }
+
+    /**
+     * Returns the provider's current assignment if it matches the given key.
+     * @param {string} publicKey
+     * @param {string} assignmentKey
+     * @returns {{ assignmentKey: string, messageIds: Set<string>, requestedAt: number }|null}
+     */
+    getAssignment(publicKey, assignmentKey) {
+        const assignment = this.assignments.get(publicKey);
+        return assignment?.assignmentKey === assignmentKey ? assignment : null;
+    }
+
+    /**
+     * Checks that a delivered message answers the provider's current assignment.
+     * False for stale keys (reclaimed assignments), foreign ids and other providers.
+     * @param {string} publicKey
+     * @param {string} assignmentKey
+     * @param {string} messageId
+     * @returns {boolean}
+     */
+    expectsDelivery(publicKey, assignmentKey, messageId) {
+        return this.getAssignment(publicKey, assignmentKey)?.messageIds.has(messageId) ?? false;
     }
 
     /**
@@ -161,6 +200,44 @@ export class MessageRequestScheduler {
     }
 
     /**
+     * A provider cancelled (part of) its current assignment: it cannot deliver these ids.
+     * The ids leave its assignment and the provider is no longer registered for them, so
+     * they are never assigned to it again. Ids other peers can provide go back to the
+     * queue, the others are dropped. No penalty: the provider reported it honestly.
+     * @param {string} publicKey
+     * @param {string} assignmentKey - Must match the current assignment, otherwise ignored.
+     * @param {Iterable<string>|null} [messageIds=null] - Withdrawn ids; null withdraws the whole assignment.
+     * @returns {string[]} The withdrawn ids.
+     */
+    withdraw(publicKey, assignmentKey, messageIds = null) {
+        const assignment = this.getAssignment(publicKey, assignmentKey);
+        if (!assignment) return [];
+
+        const withdrawn = Array.from(messageIds ?? assignment.messageIds)
+            .filter(messageId => assignment.messageIds.has(messageId));
+
+        for (const messageId of withdrawn) {
+            assignment.messageIds.delete(messageId);
+            this.assignedTo.delete(messageId);
+
+            const providers = this.providers.get(messageId);
+            providers?.delete(publicKey);
+
+            if (providers && providers.size > 0) {
+                this.queue.add(messageId);
+            } else {
+                this.providers.delete(messageId);
+            }
+        }
+
+        if (assignment.messageIds.size === 0) {
+            this.assignments.delete(publicKey);
+        }
+
+        return withdrawn;
+    }
+
+    /**
      * Returns the idle providers that can deliver at least one queued id,
      * ordered by their penalty (lowest first).
      * @returns {string[]}
@@ -235,7 +312,11 @@ export class MessageRequestScheduler {
      * @returns {Promise<void>}
      */
     async assignBatch(publicKey, messageIds) {
-        const assignment = { messageIds: new Set(messageIds), requestedAt: now() }
+        const assignment = {
+            assignmentKey: hex(randomNonce()),
+            messageIds: new Set(messageIds),
+            requestedAt: now()
+        };
         this.assignments.set(publicKey, assignment);
 
         for (const messageId of messageIds) {
@@ -244,7 +325,7 @@ export class MessageRequestScheduler {
         }
 
         return Promise.resolve()
-            .then(() => this.request(publicKey, messageIds))
+            .then(() => this.request(publicKey, messageIds, assignment.assignmentKey))
             .catch(error => {
                 if (this.assignments.get(publicKey) !== assignment) return;
 
@@ -254,7 +335,8 @@ export class MessageRequestScheduler {
                     error
                 });
 
-                this.releaseProvider(publicKey, { penalize: true });
+                // the request may have reached the provider before failing
+                this.releaseProvider(publicKey, { penalize: true, notify: true });
             });
     }
 
@@ -264,8 +346,9 @@ export class MessageRequestScheduler {
      * @param {string} publicKey
      * @param {Object} [options]
      * @param {boolean} [options.penalize=false] - Increase the provider's penalty.
+     * @param {boolean} [options.notify=false] - Send a cancellation, so the provider stops delivering.
      */
-    releaseProvider(publicKey, { penalize = false } = {}) {
+    releaseProvider(publicKey, { penalize = false, notify = false } = {}) {
         const assignment = this.assignments.get(publicKey);
         if (!assignment) return;
 
@@ -285,10 +368,21 @@ export class MessageRequestScheduler {
                 (this.penalties.get(publicKey) ?? 0) + 1
             );
         }
+
+        if (notify && this.cancel) {
+            Promise.resolve()
+                .then(() => this.cancel(publicKey, assignment.assignmentKey))
+                .catch(error => logger.warn('Failed to cancel assignment', {
+                    publicKey,
+                    topic: this.topic,
+                    error
+                }));
+        }
     }
 
     /**
-     * Releases every assignment older than `requestTimeout` and penalizes its provider.
+     * Releases every assignment older than `requestTimeout`, penalizes its provider and
+     * tells it to stop delivering.
      * @returns {string[]} Public keys of the released providers.
      */
     reclaimStalled() {
@@ -298,7 +392,7 @@ export class MessageRequestScheduler {
         for (const [publicKey, assignment] of [...this.assignments]) {
             if (assignment.requestedAt > staleBefore) continue;
 
-            this.releaseProvider(publicKey, { penalize: true });
+            this.releaseProvider(publicKey, { penalize: true, notify: true });
             released.push(publicKey);
         }
 

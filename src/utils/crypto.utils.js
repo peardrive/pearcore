@@ -256,6 +256,17 @@ export function validateKeypair({ publicKey, secretKey, seedLength=32 }) {
  * @returns {string} signature hex
  */
 export async function signJSON(obj, secretKey) {
+  return signString(canonicalStringify(obj), secretKey);
+}
+
+/**
+ * Sign an already serialized string (e.g. canonical JSON) using Ed25519 secret key.
+ * Signing the exact bytes avoids serializing the same object twice.
+ * @param {string} str
+ * @param {Uint8Array|string} secretKey - 64-byte Uint8Array or 128-character hex string
+ * @returns {string} signature hex
+ */
+export async function signString(str, secretKey) {
   // Convert hex string to Uint8Array if needed
   if (typeof secretKey === 'string') {
     secretKey = hexToUint8(secretKey);
@@ -269,9 +280,7 @@ export async function signJSON(obj, secretKey) {
     throw new Error(`Invalid ed25519 secretKey length ${secretKey.length}`);
   }
 
-  const message = utf8ToBytes(canonicalStringify(obj));
-  const signature = ed25519.sign(message, secretKey);
-
+  const signature = ed25519.sign(utf8ToBytes(str), secretKey);
   return bytesToHex(signature);
 }
 
@@ -286,15 +295,24 @@ export async function signJSON(obj, secretKey) {
  * @returns {boolean} true if signature is valid
  */
 export async function verifySignedJSON(obj, signatureHex, publicKey) {
+  return verifySignedString(canonicalStringify(obj), signatureHex, publicKey);
+}
+
+/**
+ * Verify an Ed25519 signature over an already serialized string (e.g. canonical JSON).
+ * @param {string} str
+ * @param {string} signatureHex
+ * @param {Uint8Array|string} publicKey - 32-byte Uint8Array or 64-character hex string
+ * @returns {boolean} true if signature is valid
+ */
+export async function verifySignedString(str, signatureHex, publicKey) {
   // Convert hex to Uint8Array if needed
   if (typeof publicKey === 'string') {
     publicKey = hexToUint8(publicKey);
   }
 
-  const message = utf8ToBytes(canonicalStringify(obj));
   const signature = hexToUint8(signatureHex);
-
-  return ed25519.verify(signature, message, publicKey);
+  return ed25519.verify(signature, utf8ToBytes(str), publicKey);
 }
 
 /**
