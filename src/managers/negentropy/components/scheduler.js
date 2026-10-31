@@ -5,7 +5,7 @@ import { SessionManager } from "../../session.manager.js";
 const logger = createChild('MessageRequestScheduler');
 
 /**
- * Work-stealing scheduler for the messages a node needs from ONE space.
+ * Scheduler for the messages a node needs from ONE space.
  *
  * Every finished reconciliation session registers the peer as a provider of the
  * message ids the local node is missing. Missing ids are requested in batches:
@@ -31,15 +31,34 @@ export class MessageRequestScheduler {
         this.topic = topic;
         this.request = request;
 
-        /** Message ids waiting for assignment, in insertion order. @type {Set<string>} */
+        /** 
+         * Message ids waiting for assignment. these are free to pick for new providers.
+         * @type {Set<string>} 
+        */
         this.queue = new Set();
-        /** messageId -> Set of provider public keys. @type {Map<string, Set<string>>} */
+
+        /** 
+         * Maps each messageId to providers (publicKeys) that maintain that message.
+         * @type {Map<string, Set<string>>} 
+         */
         this.providers = new Map();
-        /** publicKey -> { messageIds: Set<string>, requestedAt: number } */
+
+        /** 
+         * Maps publicKeys to their list of message ids their are assigned to deliver (plus the timestamp)
+         * @type {Map<string, { messageIds: Set<string>, requestedAt: number}>}
+         */
         this.assignments = new Map();
-        /** messageId -> provider publicKey it is currently assigned to. */
+
+        /** 
+         * Keep track of individual messages and their assigned provider for delivery
+         * @type {Map<string, string} - messageId -> publicKey
+         */
         this.assignedTo = new Map();
-        /** publicKey -> penalty counter. */
+
+        /** 
+         * Map providers penalty scores (increase when delivery timeout)
+         * @type {Map<string, number>} - publicKey -> penalty counter. 
+        */
         this.penalties = new Map();
     }
 
@@ -47,7 +66,9 @@ export class MessageRequestScheduler {
         return this.sessionManager.getMessageConfig().reconciliation;
     }
 
-    /** Number of message ids that are queued or assigned. */
+    /**
+     * Number of message ids that are queued or assigned for delivery. 
+    */
     get pendingCount() {
         return this.queue.size + this.assignedTo.size;
     }
@@ -78,7 +99,7 @@ export class MessageRequestScheduler {
     }
 
     /**
-     * Registers a peer as provider of the given message ids.
+     * Registers a peer as provider of the given  list of message ids.
      * @param {string} publicKey - Provider public key.
      * @param {Iterable<string>} messageIds - Message ids the provider can deliver.
      */
@@ -102,7 +123,7 @@ export class MessageRequestScheduler {
      * @param {string} publicKey - Provider public key.
      */
     removeProvider(publicKey) {
-        this.releaseProvider(publicKey);
+        this.releaseProvider(publicKey, { penalize: false });
 
         for (const [messageId, providers] of this.providers) {
             providers.delete(publicKey);
@@ -148,13 +169,19 @@ export class MessageRequestScheduler {
         const candidates = new Set();
 
         for (const messageId of this.queue) {
-            for (const publicKey of this.providers.get(messageId) ?? []) {
-                if (this.isIdle(publicKey)) candidates.add(publicKey);
+            const currentProviders = this.providers.get(messageId) ?? [];
+
+            for (const publicKey of currentProviders) {
+                if (this.isIdle(publicKey)) {
+                    candidates.add(publicKey);
+                }
             }
         }
 
-        return [...candidates].sort((a, b) => 
-            (this.penalties.get(a) ?? 0) - (this.penalties.get(b) ?? 0));
+        const penaltyOf = publicKey => this.penalties.get(publicKey) ?? 0;
+        const byLowestPenalty = (a, b) => penaltyOf(a) - penaltyOf(b);
+
+        return Array.from(candidates).sort(byLowestPenalty);
     }
 
     /**
@@ -172,7 +199,7 @@ export class MessageRequestScheduler {
             }
         }
 
-        // stable sort keeps the queue order between ids with the same rarity
+        // sort the candidate messages based on their rarity in providers
         candidates.sort((a, b) => a[1] - b[1]);
 
         return candidates
@@ -208,7 +235,8 @@ export class MessageRequestScheduler {
      * @returns {Promise<void>}
      */
     async assignBatch(publicKey, messageIds) {
-        this.assignments.set(publicKey, { messageIds: new Set(messageIds), requestedAt: now() });
+        const assignment = { messageIds: new Set(messageIds), requestedAt: now() }
+        this.assignments.set(publicKey, assignment);
 
         for (const messageId of messageIds) {
             this.queue.delete(messageId);
@@ -218,13 +246,21 @@ export class MessageRequestScheduler {
         return Promise.resolve()
             .then(() => this.request(publicKey, messageIds))
             .catch(error => {
-                logger.warn('Failed to request messages', { publicKey, topic: this.topic, error });
+                if (this.assignments.get(publicKey) !== assignment) return;
+
+                logger.warn('Failed to request messages', {
+                    publicKey,
+                    topic: this.topic,
+                    error
+                });
+
                 this.releaseProvider(publicKey, { penalize: true });
             });
     }
 
     /**
      * Moves the provider's undelivered ids back to the queue.
+     * Note: penalty would only increase if there is assigments to the provider
      * @param {string} publicKey
      * @param {Object} [options]
      * @param {boolean} [options.penalize=false] - Increase the provider's penalty.
@@ -237,13 +273,17 @@ export class MessageRequestScheduler {
 
         for (const messageId of assignment.messageIds) {
             this.assignedTo.delete(messageId);
+
             if (this.providers.has(messageId)) {
                 this.queue.add(messageId);
             }
         }
 
         if (penalize) {
-            this.penalties.set(publicKey, (this.penalties.get(publicKey) ?? 0) + 1);
+            this.penalties.set(
+                publicKey,
+                (this.penalties.get(publicKey) ?? 0) + 1
+            );
         }
     }
 
