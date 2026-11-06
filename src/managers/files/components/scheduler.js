@@ -128,7 +128,7 @@ export class LeafDeliveryScheduler {
 
             const [start, rangeEnd] = this.queue.shift();
             const providerLimit = this.providerList.get(publicKey).lastRequestableLeaf;
-            const maximumAllowedChunkSize = start + this.settings.assignedChunkSize;
+            const maximumAllowedChunkSize = start + this.settings.assignedChunkSize - 1;
             const end = Math.min(rangeEnd, providerLimit, maximumAllowedChunkSize);
 
             if (end < rangeEnd) {
