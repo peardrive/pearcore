@@ -3,10 +3,30 @@
   "version": "0.1.0",
   "description": "decentralized networking toolkit",
   "type": "module",
-  "module": "src/core.js",
+  "main": "./dist/core.js",
+  "types": "./dist/core.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/core.d.ts",
+      "default": "./dist/core.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "src",
+    "migrations"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
   "scripts": {
     "start": "node src/index.js run",
+    "prebuild": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\"",
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
     "test": "cross-env NODE_ENV=test vitest",
+    "prepack": "npm run build",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate"
   },
@@ -20,6 +40,7 @@
   "license": "MIT",
   "repository": "https://github.com/peardrive/pearcore/",
   "devDependencies": {
+    "@types/better-sqlite3": "^9.6.0",
     "@types/jest": "^30.0.0",
     "@types/node": "^24.10.0",
     "@types/ws": "^8.18.1",
@@ -41,6 +62,7 @@
     "@noble/ciphers": "^2.1.1",
     "@noble/curves": "^2.0.1",
     "@noble/hashes": "^2.0.1",
+    "b4a": "^1.7.4",
     "better-sqlite3": "^13.0.3",
     "bip39": "^3.1.0",
     "bs58": "^6.0.0",
