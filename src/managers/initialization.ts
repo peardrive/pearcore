@@ -1,0 +1,101 @@
+import { EventEmitter } from 'node:events';
+import { SocketManager } from './sockets.manager.js';
+import { SessionManager } from './session.manager.js';
+import { MessageManager } from './message.manager.js';
+import { ProtocolMapFactory } from '../protocols/map.js';
+import { ThrottleManager } from './throttle.manager.js';
+import { ConnectionManager } from './connection.manager.js';
+import { MuxManager, FrameTypes } from './multiplexer.manager.js';
+import {
+  SpaceFileListManager,
+  SpaceFileManager,
+} from './files/files.manager.js';
+import { FileContentDeliveryManager } from './delivery.manager.js';
+import { NegentropySyncManager } from './negentropy/negentropy.manager.js';
+
+export function initializeManagers(emitter: any = new EventEmitter()) {
+  const sessionManager = new SessionManager();
+  const socketManager = new SocketManager();
+  const muxManager = new MuxManager(emitter, { sessionManager });
+
+  const spaceFileListManager = new SpaceFileListManager(emitter, {
+    sessionManager,
+  });
+
+  const throttleManager = new ThrottleManager(emitter, {
+    sessionManager,
+  });
+
+  const messageManager = new MessageManager(emitter, {
+    socketManager,
+    sessionManager,
+    throttleManager,
+    muxManager,
+    spaceFileListManager,
+  });
+
+  const connectionManager = new ConnectionManager(emitter, {
+    sessionManager,
+    socketManager,
+    messageManager,
+    muxManager,
+  });
+
+  const spaceFileManager = new SpaceFileManager(emitter, {
+    sessionManager,
+    socketManager,
+    messageManager,
+    connectionManager,
+    spaceFileListManager,
+  });
+
+  const fileContentDeliveryManager = new FileContentDeliveryManager(emitter, {
+    sessionManager,
+    messageManager,
+    muxManager,
+  });
+
+  const negentropySyncManager = new NegentropySyncManager(emitter, {
+    sessionManager,
+    socketManager,
+    messageManager,
+  });
+
+  muxManager.setHandlers([
+    {
+      type: FrameTypes.JSON,
+      handler: (socket, data, info) =>
+        messageManager.handleIncomingMessage(socket, data, info),
+    },
+    {
+      type: FrameTypes.STREAM,
+      handler: (socket, data, info) =>
+        spaceFileManager.handleIncomingStream(socket, data, info),
+    },
+  ]);
+
+  const protocols = ProtocolMapFactory(emitter, {
+    socket: socketManager,
+    session: sessionManager,
+    message: messageManager,
+    spaceFileList: spaceFileListManager,
+    mux: muxManager,
+    delivery: fileContentDeliveryManager,
+    sync: negentropySyncManager,
+  });
+
+  messageManager.setProtocolMap(protocols);
+
+  return {
+    session: sessionManager,
+    sockets: socketManager,
+    throttle: throttleManager,
+    mux: muxManager,
+    message: messageManager,
+    connection: connectionManager,
+    spaceFileList: spaceFileListManager,
+    spaceFiles: spaceFileManager,
+    delivery: fileContentDeliveryManager,
+    sync: negentropySyncManager,
+  };
+}
