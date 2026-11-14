@@ -25,7 +25,7 @@ export const General = 'General';
  * This is typically used to signal failures, invalid state,
  * or unsupported operations.
  */
-export const Reject = "Reject";
+export const Reject = 'Reject';
 
 /**
  * Emitted when a node advertises the list of spaces that it is currently
@@ -33,53 +33,53 @@ export const Reject = "Reject";
  * This event is commonly used during initial handshake to
  * determine shared spaces and routing relevance.
  */
-export const SpaceHashList = "SpaceHashList";
+export const SpaceHashList = 'SpaceHashList';
 
 /**
  * Emitted to transmit space metadata to another node.
- * 
+ *
  */
-export const SpaceSync = "SpaceSync";
+export const SpaceSync = 'SpaceSync';
 
 /**
  * Generic application-level message event.
  * Used to send arbitrary, custom payloads that do not fit into the
  * predefined protocol events.
  */
-export const SpaceMessage = "SpaceMessage";
+export const SpaceMessage = 'SpaceMessage';
 
 /** Negentropy set-reconciliation round message. */
-export const NegentropySync = "NegentropySync";
+export const NegentropySync = 'NegentropySync';
 
 /**
  * Emitted locally once a reconciliation session with a peer is finished.
  * Context: { publicKey, topic, role, have: string[], need: string[] }
  */
-export const NegentropySyncComplete = "NegentropySyncComplete";
+export const NegentropySyncComplete = 'NegentropySyncComplete';
 
 /**
  * Request for the contents of missing messages (client -> provider).
  * Payload: { assignmentKey, messageIds }
  */
-export const NegentropyContentRequest = "NegentropyContentRequest";
+export const NegentropyContentRequest = 'NegentropyContentRequest';
 
 /**
  * One stored message delivered for an assignment (provider -> client), one per frame.
  * Payload: { assignmentKey, content: { type, publicKey, nonce, timestamp, signature, canonicalPayload } }
  */
-export const NegentropyContentDelivery = "NegentropyContentDelivery";
+export const NegentropyContentDelivery = 'NegentropyContentDelivery';
 
 /**
  * Cancels an assignment, in both directions (client: stop delivering, provider: cannot deliver).
  * Payload: { assignmentKey, messageIds? } - without messageIds the whole assignment is cancelled.
  */
-export const NegentropyContentCancel = "NegentropyContentCancel";
+export const NegentropyContentCancel = 'NegentropyContentCancel';
 
 /**
  * Emitted locally once a delivered message is verified and stored.
  * Context: { publicKey, topic, spaceId, messageId }
  */
-export const NegentropyContentDelivered = "NegentropyContentDelivered";
+export const NegentropyContentDelivered = 'NegentropyContentDelivered';
 
 /**
  * Emitted when a profile is updated or when a peer is requesting to join
@@ -87,7 +87,7 @@ export const NegentropyContentDelivered = "NegentropyContentDelivered";
  * Depending on the sender, this event may represent either a propagated
  * update or an ownership-originated request.
  */
-export const ProfileUpdate = "ProfileUpdate";
+export const ProfileUpdate = 'ProfileUpdate';
 
 // Emitters related to local watchdog for local file registeries.
 export const LocalFileChange = 'LocalFileChange';
@@ -96,7 +96,7 @@ export const LocalFileDetele = 'LocalFileDelete';
 /**
  * Emitted when a file action (add/remove/merge) has been emitted within the space.
  */
-export const SpaceFileEvent = "SpaceFileEvent";
+export const SpaceFileEvent = 'SpaceFileEvent';
 
 /**
  * All event options for space file.
@@ -104,18 +104,18 @@ export const SpaceFileEvent = "SpaceFileEvent";
  * - remove: remove the already advertised file from space
  */
 export const SpaceFileEventOptions = {
-    ADD: 'add',
-    REMOVE: 'remove',
+  ADD: 'add',
+  REMOVE: 'remove',
 };
 
 // Emitted when peer wants to ask for file Merkle tree information from connected node.
-export const SpaceFileTreeRequest = "SpaceFileTreeRequest";
+export const SpaceFileTreeRequest = 'SpaceFileTreeRequest';
 // Emitted when peer response to space file tree request.
-export const SpaceFileTreeResponse = "SpaceFileTreeResponse";
+export const SpaceFileTreeResponse = 'SpaceFileTreeResponse';
 // Emitted when peers wants to ask for file download.
-export const SpaceFileContentRequest = "SpaceFileContentRequest";
+export const SpaceFileContentRequest = 'SpaceFileContentRequest';
 // Emitter once individual peer wants to cancel their previous file content request.
-export const SpaceFileContentCancel = "SpaceFileContentCancel";
+export const SpaceFileContentCancel = 'SpaceFileContentCancel';
 
 /**
  * All range modes for Negentropy message sync.
@@ -125,8 +125,8 @@ export const SpaceFileContentCancel = "SpaceFileContentCancel";
  * - id_list_response: reply to an id_list with replier's own ids.
  */
 export const NegentropyModeOptions = {
-    SKIP: 'skip',
-    FINGERPRINT: 'fingerprint',
-    ID_LIST: 'id_list',
-    ID_LIST_RESPONSE: 'id_list_response'
-}
+  SKIP: 'skip',
+  FINGERPRINT: 'fingerprint',
+  ID_LIST: 'id_list',
+  ID_LIST_RESPONSE: 'id_list_response',
+};

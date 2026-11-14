@@ -17,7 +17,7 @@ export const DEFAULT_READ_BATCH_SIZE = 256;
  * use "debug" for more detailed logs which helps debugging
  * other options: info, warn, error
  */
-export const PEARCORE_LOG_LEVEL = process.env.PEARCORE_LOG_LEVEL || "info";
+export const PEARCORE_LOG_LEVEL = process.env.PEARCORE_LOG_LEVEL || 'info';
 
 /**
  * Default local storage path for PearDrive.
@@ -25,5 +25,5 @@ export const PEARCORE_LOG_LEVEL = process.env.PEARCORE_LOG_LEVEL || "info";
  * - Windows: C:\Users\<user>\.pearcore
  * - macOS/Linux: /home/<user>/.pearcore
  */
-export const DEFAULT_ACCOUNT_DIR = process.env.DEFAULT_ACCOUNT_DIR ||
-  path.join(os.homedir(), '.pearcore');
+export const DEFAULT_ACCOUNT_DIR =
+  process.env.DEFAULT_ACCOUNT_DIR || path.join(os.homedir(), '.pearcore');

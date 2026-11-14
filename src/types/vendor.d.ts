@@ -5,9 +5,24 @@
  */
 
 declare module 'b4a' {
-  type Encoding = 'utf8' | 'utf-8' | 'hex' | 'base64' | 'base64url' | 'ascii' | 'latin1' | 'binary' | 'ucs2' | 'utf16le';
+  type Encoding =
+    | 'utf8'
+    | 'utf-8'
+    | 'hex'
+    | 'base64'
+    | 'base64url'
+    | 'ascii'
+    | 'latin1'
+    | 'binary'
+    | 'ucs2'
+    | 'utf16le';
 
-  export function toString(buffer: Uint8Array, encoding?: Encoding, start?: number, end?: number): string;
+  export function toString(
+    buffer: Uint8Array,
+    encoding?: Encoding,
+    start?: number,
+    end?: number,
+  ): string;
 }
 
 declare module 'hyperdht' {
@@ -34,7 +49,11 @@ declare module 'hyperdht' {
 
   export default class HyperDHT extends EventEmitter {
     constructor(opts?: HyperDHTOptions);
-    static bootstrapper(port: number, host: string, opts?: HyperDHTOptions): HyperDHT;
+    static bootstrapper(
+      port: number,
+      host: string,
+      opts?: HyperDHTOptions,
+    ): HyperDHT;
     static keyPair(seed?: Uint8Array): DHTKeyPair;
 
     readonly destroyed: boolean;

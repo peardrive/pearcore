@@ -23,8 +23,8 @@ describe('Merkle Tree', () => {
 
       await expect(
         generateMerkleTree({
-          // @ts-expect-error -- runtime guard for untyped callers
           stream,
+          // @ts-expect-error -- runtime guard for untyped callers
           size: null,
           chunkSize: 1024,
         }),

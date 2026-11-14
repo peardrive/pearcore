@@ -1,12 +1,18 @@
-import { sqliteTable, text, integer, primaryKey, index } from "drizzle-orm/sqlite-core";
-import { spaces } from "./space.schema.js";
+import {
+  sqliteTable,
+  text,
+  integer,
+  primaryKey,
+  index,
+} from 'drizzle-orm/sqlite-core';
+import { spaces } from './space.schema.js';
 
 /**
  * fileRegistry table definition.
- * 
- * Stores all registery informations about files 
+ *
+ * Stores all registery informations about files
  * that the device wants to share inside spaces.
- * 
+ *
  * Columns:
  * - id: Primary key. Unique integer indentifier for the file registery.
  * - fileSourcePath: The actual file source path to register and create indexes.
@@ -20,32 +26,32 @@ import { spaces } from "./space.schema.js";
  * - height: The height of Merkle Tree indexing.
  */
 export const fileRegistry = sqliteTable('file_registry', {
-    id: integer("id").primaryKey(),
+  id: integer('id').primaryKey(),
 
-    fileSourcePath: text("file_path").notNull(),
-    timestamp: integer("timestamp").notNull(),
+  fileSourcePath: text('file_path').notNull(),
+  timestamp: integer('timestamp').notNull(),
 
-    spaceId: integer("space_id").notNull()
-        .references(() => spaces.id, { onDelete: "cascade" }),
+  spaceId: integer('space_id')
+    .notNull()
+    .references(() => spaces.id, { onDelete: 'cascade' }),
 
-    spacePath: text("space_path").notNull(),
-    spaceFilename: text("space_filename").notNull(),
+  spacePath: text('space_path').notNull(),
+  spaceFilename: text('space_filename').notNull(),
 
-    rootHash: text("root_hash"),
-    metaHash: text("meta_hash").notNull(),
+  rootHash: text('root_hash'),
+  metaHash: text('meta_hash').notNull(),
 
-    leafCount: integer("leaf_count").notNull(),
-    height: integer("height").notNull(),
+  leafCount: integer('leaf_count').notNull(),
+  height: integer('height').notNull(),
 });
-
 
 /**
  * FileIndex table definition.
- * 
- * Represents merkle tree node information including the node hash, 
+ *
+ * Represents merkle tree node information including the node hash,
  * branch level and the related tree root.
- * 
- * Columns: 
+ *
+ * Columns:
  * - registryId: Primary Key. Unique Integer identifier for file index.
  * - rootHash: The root hash value generated from Merkele Tree indexing.
  * - level: The height level that node is currenctly placed. Level 0 is the root.
@@ -54,25 +60,29 @@ export const fileRegistry = sqliteTable('file_registry', {
  * - leaftIndex: the index of the leaf in the level 0.
  * - nodeIndex: the index of the node within the level.
  */
-export const fileIndex = sqliteTable("file_index", {
-    registryId: integer("file_registry_id").notNull()
-        .references(() => fileRegistry.id, { onDelete: "cascade" }),
+export const fileIndex = sqliteTable(
+  'file_index',
+  {
+    registryId: integer('file_registry_id')
+      .notNull()
+      .references(() => fileRegistry.id, { onDelete: 'cascade' }),
 
-    rootHash: text("root_hash").notNull(),
-    level: integer("level").notNull(),
-    hash: text("hash").notNull(),
-    parentHash: text("parent_hash"),
-    leftChildHash: text("left_child_hash"),
-    rightChildHash: text("right_child_hash"),
-    nodeIndex: integer("node_index").notNull(),
-    leafIndex: integer("leaf_index"),
-}, (table) => [
+    rootHash: text('root_hash').notNull(),
+    level: integer('level').notNull(),
+    hash: text('hash').notNull(),
+    parentHash: text('parent_hash'),
+    leftChildHash: text('left_child_hash'),
+    rightChildHash: text('right_child_hash'),
+    nodeIndex: integer('node_index').notNull(),
+    leafIndex: integer('leaf_index'),
+  },
+  (table) => [
     // Create a composite publicKey from rootHash and node's hash
     primaryKey({ columns: [table.registryId, table.level, table.nodeIndex] }),
     index('level_index').on(table.level),
     index('nodeIndex_index').on(table.nodeIndex),
-]);
-
+  ],
+);
 
 /**
  * partialDownloadRecord table definition
@@ -88,13 +98,13 @@ export const fileIndex = sqliteTable("file_index", {
  * - finalDestination: The final path where the file should be moved once
  *   all leaves have been downloaded.
  */
-export const downloadRecord = sqliteTable("partial_download_record", {
-    id: integer("id").primaryKey({ autoIncrement: true }),
-    registryId: integer("registry_id")
-        .notNull()
-        .unique()
-        .references(() => fileRegistry.id, { onDelete: "cascade" }),
+export const downloadRecord = sqliteTable('partial_download_record', {
+  id: integer('id').primaryKey({ autoIncrement: true }),
+  registryId: integer('registry_id')
+    .notNull()
+    .unique()
+    .references(() => fileRegistry.id, { onDelete: 'cascade' }),
 
-    lastPushedLeaf: integer("last_pushed_leaf").notNull().default(-1),
-    finalDestination: text("final_destination").notNull(),
+  lastPushedLeaf: integer('last_pushed_leaf').notNull().default(-1),
+  finalDestination: text('final_destination').notNull(),
 });

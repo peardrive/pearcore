@@ -1,5 +1,5 @@
-import { sqliteTable, text, integer } from "drizzle-orm/sqlite-core";
-import { relations } from "drizzle-orm";
+import { sqliteTable, text, integer } from 'drizzle-orm/sqlite-core';
+import { relations } from 'drizzle-orm';
 
 /**
  * Spaces table definition.
@@ -22,24 +22,24 @@ import { relations } from "drizzle-orm";
  *
  * - signature: Cryptographic signature used to verify integrity and ownership
  *   of the space definition.
- * 
+ *
  * - nonce: unique identity randomly generated for each space (part of sharelink)
  * - secret: 64 character hex string to encrypt messages for limited space.
  */
-export const spaces = sqliteTable("spaces", {
-  id: integer("id").primaryKey(),
+export const spaces = sqliteTable('spaces', {
+  id: integer('id').primaryKey(),
 
-  spaceName: text("space_name").notNull(),
-  publicKey: text("public_key").notNull(),
+  spaceName: text('space_name').notNull(),
+  publicKey: text('public_key').notNull(),
 
-  timestamp: integer("timestamp").notNull(),
+  timestamp: integer('timestamp').notNull(),
 
-  permissionBroadcast: integer("permission_broadcast").notNull(), // 0/1
-  permissionRead: integer("permission_read").notNull(), // 0/1
+  permissionBroadcast: integer('permission_broadcast').notNull(), // 0/1
+  permissionRead: integer('permission_read').notNull(), // 0/1
 
-  signature: text("signature").notNull(),
-  nonce: text("nonce").notNull(),
-  secret: text("secret")
+  signature: text('signature').notNull(),
+  nonce: text('nonce').notNull(),
+  secret: text('secret'),
 });
 
 /**
@@ -54,12 +54,12 @@ export const spaces = sqliteTable("spaces", {
  * - spaceId: Foreign key referencing `spaces.id`.
  * - allowedPublicKey: A public key that is permitted to broadcast messages.
  */
-export const broadcastWhitelist = sqliteTable("broadcast_whitelist", {
-  id: integer("id").primaryKey(),
-  spaceId: integer("space_id")
+export const broadcastWhitelist = sqliteTable('broadcast_whitelist', {
+  id: integer('id').primaryKey(),
+  spaceId: integer('space_id')
     .notNull()
     .references(() => spaces.id),
-  allowedPublicKey: text("allowed_public_key").notNull(),
+  allowedPublicKey: text('allowed_public_key').notNull(),
 });
 
 /**
@@ -73,12 +73,12 @@ export const broadcastWhitelist = sqliteTable("broadcast_whitelist", {
  * - spaceId: Foreign key referencing `spaces.id`.
  * - allowedPublicKey: A public key allowed to read this space.
  */
-export const readWhitelist = sqliteTable("read_whitelist", {
-  id: integer("id").primaryKey(),
-  spaceId: integer("space_id")
+export const readWhitelist = sqliteTable('read_whitelist', {
+  id: integer('id').primaryKey(),
+  spaceId: integer('space_id')
     .notNull()
     .references(() => spaces.id),
-  allowedPublicKey: text("allowed_public_key").notNull(),
+  allowedPublicKey: text('allowed_public_key').notNull(),
 });
 
 /**
@@ -95,7 +95,7 @@ export const readWhitelist = sqliteTable("read_whitelist", {
  */
 export const spacesRelations = relations(spaces, ({ many }) => ({
   broadcastWhitelist: many(broadcastWhitelist),
-  readWhitelist: many(readWhitelist)
+  readWhitelist: many(readWhitelist),
 }));
 
 /**
@@ -108,18 +108,15 @@ export const broadcastWhitelistRelations = relations(
       fields: [broadcastWhitelist.spaceId],
       references: [spaces.id],
     }),
-  })
+  }),
 );
 
 /**
  * Relations for the read whitelist entries.
  */
-export const readWhitelistRelations = relations(
-  readWhitelist,
-  ({ one }) => ({
-    space: one(spaces, {
-      fields: [readWhitelist.spaceId],
-      references: [spaces.id],
-    }),
-  })
-);
+export const readWhitelistRelations = relations(readWhitelist, ({ one }) => ({
+  space: one(spaces, {
+    fields: [readWhitelist.spaceId],
+    references: [spaces.id],
+  }),
+}));
