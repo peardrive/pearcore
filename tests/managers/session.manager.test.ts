@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { SessionManager } from '../../src/managers/session.manager.js';
 
 describe('SessionManager', () => {
-  let sessionManager;
+  let sessionManager: SessionManager;
 
   beforeEach(() => {
     sessionManager = new SessionManager();
@@ -13,7 +13,7 @@ describe('SessionManager', () => {
       const customSession = {
         messaging: {
           rawLimitSize: 1024,
-        }
+        },
       };
       const manager = new SessionManager(customSession);
       expect(manager.session.messaging.rawLimitSize).toBe(1024);
@@ -41,7 +41,9 @@ describe('SessionManager', () => {
 
     it('should create intermediate objects when needed', () => {
       sessionManager._setProperty('newSection.subSection.property', 'value');
-      expect(sessionManager.session.newSection.subSection.property).toBe('value');
+      expect(sessionManager.get('newSection.subSection.property')).toBe(
+        'value',
+      );
     });
   });
 
@@ -49,7 +51,7 @@ describe('SessionManager', () => {
     it('should update entire section with new values', () => {
       sessionManager._updateSection('messaging', {
         rawLimitSize: 8192,
-        newSetting: 'newValue'
+        newSetting: 'newValue',
       });
 
       expect(sessionManager.session.messaging.rawLimitSize).toBe(8192);
@@ -58,7 +60,7 @@ describe('SessionManager', () => {
 
     it('should create section if it does not exist', () => {
       sessionManager._updateSection('newSection', { property: 'value' });
-      expect(sessionManager.session.newSection.property).toBe('value');
+      expect(sessionManager.get('newSection.property')).toBe('value');
     });
   });
 
