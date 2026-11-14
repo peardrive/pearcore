@@ -8,21 +8,22 @@ import {
   createAccountFromMnemonic,
 } from '../utils/accounts.utils.js';
 
-
 export class AccountService {
-  constructor(emitter, { managers, root }) {
+  [key: string]: any;
+
+  constructor(emitter: any, { managers, root }: any) {
     this.managers = managers;
     this.root = root;
   }
 
   static STATES = {
     AUTHENTICATED: 'authenticated',
-    LOGIN_REQUIRED: 'login required'
-  }
+    LOGIN_REQUIRED: 'login required',
+  };
 
   /**
    * Lists all accounts under the given root directory.
-   * @returns {Promise<Array>} Array of accounts with metadata
+   * @returns Array of accounts with metadata
    */
   async list() {
     return await listAccountsWithMeta(this.root);
@@ -31,11 +32,11 @@ export class AccountService {
   /**
    * Creates a new account with the given username and password.
    * Additionally initializes the user's Spacebook database.
-   * @param {string} username - Username for the new account
-   * @param {string} password - Password for the new account
-   * @returns {Promise<Object>} Account metadata
+   * @param username - Username for the new account
+   * @param password - Password for the new account
+   * @returns Account metadata
    */
-  async create(username, password) {
+  async create(username: string, password: string) {
     if (!isString(username)) {
       throw new Error('Invalid username parameter');
     }
@@ -53,7 +54,7 @@ export class AccountService {
     return account;
   }
 
-  async delete(username) {
+  async delete(username: string) {
     if (!isString(username)) {
       throw new Error('Invalid username parameter');
     }
@@ -63,36 +64,33 @@ export class AccountService {
 
   /**
    * Recover credentials using mnemonic recovery phrases
-   * @param {String} username - local account's username
-   * @param {String} password - local account's password
-   * @param {String} mnemonic - 12 or 24-word BIP39 mnemonic phrases
-   * @returns {Promise<{
-   *  path: String,
-   *  publicKey: String
-   * }>}
+   * @param username - local account's username
+   * @param password - local account's password
+   * @param mnemonic - 12 or 24-word BIP39 mnemonic phrases
+   * @returns Account path and public key.
    */
-  async recover(username, password, mnemonic) {
+  async recover(username: string, password: string, mnemonic: string) {
     const account = await createAccountFromMnemonic(
-      username, 
+      username,
       password,
       mnemonic,
-      this.root
+      this.root,
     );
 
     return {
       path: account.path,
-      publicKey: account.publicKey
+      publicKey: account.publicKey,
     };
   }
 
   /**
    * Authenticates a user with username and password.
    * Loads the Spacebook database and initiates the user's discovery node.
-   * @param {string} username - Username to authenticate
-   * @param {string} password - Password to authenticate
-   * @returns {Promise<Object>} Object containing username, publicKey, and secretKey
+   * @param username - Username to authenticate
+   * @param password - Password to authenticate
+   * @returns Object containing username, publicKey, and secretKey
    */
-  async authenticate(username, password) {
+  async authenticate(username: string, password: string) {
     if (!isString(username)) {
       throw new Error('Invalid username parameter');
     }
@@ -106,15 +104,18 @@ export class AccountService {
 
     this.managers.session.setCredentials({
       publicKey: creds.publicKey,
-      secretKey: creds.secretKey
+      secretKey: creds.secretKey,
     });
 
-    this.managers.session.setAccount({ username: creds.username, directory: this.root });
+    this.managers.session.setAccount({
+      username: creds.username,
+      directory: this.root,
+    });
     this.managers.session.setDatabase({ db, sqlite });
 
     // loads the p2p discovery for the account
     await this.managers.connection.init();
-    // load space file management 
+    // load space file management
     await this.managers.spaceFiles.init();
     // load file-content delivery managerment
     await this.managers.delivery.init();
@@ -124,13 +125,13 @@ export class AccountService {
     return {
       username: creds.username,
       publicKey: creds.publicKey,
-      secretKey: creds.secretKey
+      secretKey: creds.secretKey,
     };
   }
 
   /**
    * Logs out the current user and clears the session.
-   * @returns {Promise<void>} True if logout succeeds
+   * @returns True if logout succeeds
    */
   async logout() {
     await this.managers.connection.destroy();
@@ -148,7 +149,7 @@ export class AccountService {
 
   /**
    * Indicates whether the user is logged in and credentials are valid.
-   * @returns {Object} State object with username, publicKey and authentication state.
+   * @returns State object with username, publicKey and authentication state.
    */
   getCurrentState() {
     const { db, sqlite } = this.managers.session.getDatabase();
@@ -156,19 +157,19 @@ export class AccountService {
     const { username } = this.managers.session.getAccount();
 
     if (
-      isDefined(db) && isDefined(sqlite) &&
-      isDefined(publicKey) && isDefined(secretKey)
+      isDefined(db) &&
+      isDefined(sqlite) &&
+      isDefined(publicKey) &&
+      isDefined(secretKey)
     ) {
       return {
         publicKey: publicKey,
         username: username,
-        state: AccountService.STATES.AUTHENTICATED
+        state: AccountService.STATES.AUTHENTICATED,
       };
-    }
-
-    else {
+    } else {
       return {
-        state: AccountService.STATES.LOGIN_REQUIRED
+        state: AccountService.STATES.LOGIN_REQUIRED,
       };
     }
   }
