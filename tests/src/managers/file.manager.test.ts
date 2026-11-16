@@ -55,19 +55,25 @@ const createSignedEvent = async (event: any) => {
 const waitForEvent = (
   core: any,
   eventName: string,
-  timeout = 5000,
+  { timeout = 5000, match = null }: { timeout?: number; match?: any } = {},
 ): Promise<any> => {
   return new Promise<any>((resolve, reject) => {
     const timer = setTimeout(() => {
+      core.emitter.off(eventName, listener);
       reject(
         new Error(`Timeout waiting for ${eventName} on core ${core.publicKey}`),
       );
     }, timeout);
 
-    core.emitter.once(eventName, (data: any) => {
+    const listener = (data: any) => {
+      if (match && !match(data)) return;
+
       clearTimeout(timer);
+      core.emitter.off(eventName, listener);
       resolve(data);
-    });
+    };
+
+    core.emitter.on(eventName, listener);
   });
 };
 
@@ -515,7 +521,11 @@ describe('FileEventBroadcaster', () => {
 
     broadcaster.add(EVENTS.SpaceFileEventOptions.ADD, signedEvent);
 
-    const eventPromise = waitForEvent(cores[1], EVENTS.SpaceFileEvent);
+    // the space handshake also exchanges a file-list context; wait for the
+    // broadcast that actually carries this record
+    const eventPromise = waitForEvent(cores[1], EVENTS.SpaceFileEvent, {
+      match: (event: any) => event.message.payload[0]?.files.length === 1,
+    });
     await broadcaster.flush();
 
     const received = await eventPromise;
@@ -560,7 +570,10 @@ describe('FileEventBroadcaster', () => {
     broadcaster.add(EVENTS.SpaceFileEventOptions.ADD, addEvent);
     broadcaster.add(EVENTS.SpaceFileEventOptions.REMOVE, removeEvent);
 
-    const eventPromise = waitForEvent(cores[1], EVENTS.SpaceFileEvent);
+    // ignore the file-list context of the space handshake
+    const eventPromise = waitForEvent(cores[1], EVENTS.SpaceFileEvent, {
+      match: (event: any) => event.message.payload.length === 2,
+    });
 
     await broadcaster.flush();
 
