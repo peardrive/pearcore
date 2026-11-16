@@ -4,7 +4,11 @@ import Hyperswarm from 'hyperswarm';
 import type { PeerDiscovery } from 'hyperswarm';
 import type { DHTNodeAddress } from 'hyperdht';
 import type { KeyPair } from './crypto.utils.js';
-import { hash, hexToUint8, validateKeypair } from './crypto.utils.js';
+import { hash, hex, hexToUint8, validateKeypair } from './crypto.utils.js';
+import type {
+  PeerNetworkFactory,
+  PeerSocket,
+} from '../types/peer-network.js';
 
 /**
  * Get all IPv4 addresses from network interfaces.
@@ -178,3 +182,44 @@ export async function joinSwarmTopic(
 
   return discovery;
 }
+
+/**
+ * Hyperswarm-backed implementation of `PeerNetwork`.
+ *
+ * This is the only place that maps the transport API onto the
+ * transport-independent peer network contract.
+ */
+export const hyperswarmPeerNetworkFactory: PeerNetworkFactory = (options) => {
+  const swarm = connectSwarm(options) as Hyperswarm & {
+    joinPeer(publicKey: Uint8Array): void;
+  };
+
+  return {
+    onConnection(listener) {
+      swarm.on(
+        'connection',
+        (
+          socket: unknown,
+          info: { publicKey: Uint8Array; topics?: Uint8Array[] },
+        ) => {
+          listener(socket as PeerSocket, {
+            publicKey: hex(info.publicKey),
+            topics: (info.topics ?? []).map((topic) => hex(topic)),
+          });
+        },
+      );
+    },
+
+    join(topic) {
+      return joinSwarmTopic(swarm, topic);
+    },
+
+    connect(publicKey) {
+      swarm.joinPeer(hexToUint8(publicKey));
+    },
+
+    destroy() {
+      return swarm.destroy();
+    },
+  };
+};
