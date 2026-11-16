@@ -11,8 +11,7 @@ import {
   afterEach,
   vi,
 } from 'vitest';
-import { CoreFactory } from '../factory.js';
-const TestCoreFactory: any = CoreFactory;
+import { MockCoreFactory } from '../mock.factory.js';
 import { exampleFileList, exampleFileStack } from '../samples.js';
 import {
   cleanup,
@@ -79,7 +78,7 @@ describe('SpaceFileListManager', () => {
   let manager: any = null;
 
   beforeEach(async () => {
-    factory = new TestCoreFactory();
+    factory = new MockCoreFactory();
     await factory.init();
 
     core = await factory.createCore();
@@ -472,7 +471,7 @@ describe('FileEventBroadcaster', () => {
   let broadcaster: any = null;
 
   beforeEach(async () => {
-    factory = new TestCoreFactory();
+    factory = new MockCoreFactory();
     await factory.init();
 
     cores = await factory.createMultipleCores(5);
@@ -586,7 +585,7 @@ describe('LocalFileRegistry', () => {
   let db: any = null;
 
   beforeEach(async () => {
-    factory = new TestCoreFactory();
+    factory = new MockCoreFactory();
     await factory.init();
 
     core = await factory.createCore();
@@ -1152,7 +1151,7 @@ describe('SpaceTreePuler', () => {
   let puller: any;
 
   beforeEach(async () => {
-    factory = new TestCoreFactory();
+    factory = new MockCoreFactory();
     await factory.init();
 
     primaryCore = await factory.createCore();
@@ -1318,7 +1317,7 @@ describe('LeafDeliveryScheduler', () => {
   };
 
   beforeAll(async () => {
-    factory = new TestCoreFactory();
+    factory = new MockCoreFactory();
     await factory.init();
 
     tempDirectory = await makeTempDir();
@@ -1535,7 +1534,7 @@ describe('SpaceDownloadTask', () => {
   let tree: any;
 
   beforeAll(async () => {
-    factory = new TestCoreFactory();
+    factory = new MockCoreFactory();
     await factory.init();
 
     providerCore = await factory.createCore('provider');
