@@ -1,5 +1,5 @@
 // @ts-nocheck
-import { describe, it, beforeEach, afterEach, expect } from 'vitest';
+import { describe, it, beforeEach, afterEach, expect, vi } from 'vitest';
 import * as EVENTS from '../../src/constants/events.constants.js';
 import { buildTestSpacePayload, getMockSocket } from '../general.utils.js';
 import { getSpaceTopicHash } from '../../src/utils/space.utils.js';
@@ -123,15 +123,6 @@ describe('spaceService', () => {
       const { publicKey: secondaryPublicKey } =
         secondaryCore.managers.session.getCredentials();
 
-      const conditionPromise = factory.condition(
-        async (core, success) => {
-          core.emitter.on(EVENTS.SpaceHashList, () => {
-            success();
-          });
-        },
-        { excludeIndices: [1] }, // secondary is index 1
-      );
-
       const space = await primaryCore.space.create({ spaceName: 'generic' });
       await secondaryCore.space.join(space.sharelink);
 
@@ -142,12 +133,18 @@ describe('spaceService', () => {
       const randomTopicHash = getSpaceTopicHash(randomSpace);
       await secondaryCore.space.join(randomSharelink);
 
-      await conditionPromise;
+      // each join announces the whole topic list: wait for the snapshot that
+      // carries both of them instead of the first announcement
+      await vi.waitFor(() => {
+        const primarySnapShot = primaryCore.managers.sockets.getSnapShot({
+          sortByPeers: true,
+        });
+        expect(primarySnapShot[secondaryPublicKey].length).toBe(2);
+      });
 
       const primarySnapShot = primaryCore.managers.sockets.getSnapShot({
         sortByPeers: true,
       });
-      expect(primarySnapShot[secondaryPublicKey].length).toBe(2);
       expect(primarySnapShot[secondaryPublicKey]).toEqual([
         space.topicHash,
         randomTopicHash,
