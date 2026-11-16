@@ -8,11 +8,14 @@ import {
 import { now } from '../../src/utils/general.utils.js';
 import {
   buildTestSpacePayload,
-  cleanup,
-  createP2PNetwork,
-  createConnections,
   unframeJson,
 } from '../general.utils.js';
+import { MockCoreFactory } from '../mock.factory.js';
+import {
+  connectProtocolNodes,
+  createProtocolNodes,
+  type ProtocolNode,
+} from '../protocol.harness.js';
 import {
   createBaseMessage,
   createNegentropyContentDeliveryMessage,
@@ -29,14 +32,7 @@ import {
 } from '../../src/utils/space.utils.js';
 import { hex, randomNonce } from '../../src/utils/crypto.utils.js';
 
-type TestNode = {
-  manager: any;
-  socket: any;
-  publicKey: string;
-  secretKey: string;
-  info: { publicKey: Uint8Array };
-  root: string;
-};
+type TestNode = ProtocolNode;
 
 type TestFrame = {
   to: 'provider' | 'requester';
@@ -60,6 +56,7 @@ async function getExistingSpace(db: any, spaceId: number) {
  *    We consider outlier receiving any message from the space, an exception that should be avoided.
  */
 describe('Message Protocols', () => {
+  let factory: MockCoreFactory;
   let nodes: TestNode[] = [];
   let primary: TestNode;
   let primaryDB: any;
@@ -70,7 +67,10 @@ describe('Message Protocols', () => {
   let spaceTopicHash: string;
 
   beforeEach(async () => {
-    nodes = (await createP2PNetwork(4)) as unknown as TestNode[];
+    factory = new MockCoreFactory();
+    await factory.init();
+
+    nodes = await createProtocolNodes(factory, 4);
     [primary, secondary, standby, outlier] = nodes;
 
     spaceParams = await buildTestSpacePayload({
@@ -87,18 +87,13 @@ describe('Message Protocols', () => {
     });
 
     spaceTopicHash = getSpaceTopicHash(spaceParams);
-    createConnections(spaceTopicHash, [primary, secondary, standby, outlier]);
+    connectProtocolNodes(spaceTopicHash, [primary, secondary, standby, outlier]);
 
     primaryDB = primary.manager.session.getDatabase().db;
   });
 
   afterEach(async () => {
-    for (const node of nodes) {
-      const { sqlite } = node.manager.session.getDatabase();
-      await sqlite.close();
-
-      await cleanup(node.manager.root);
-    }
+    await factory.cleanup();
   });
 
   describe('SpaceMessageHandler', () => {
@@ -127,7 +122,7 @@ describe('Message Protocols', () => {
       });
 
       let eventContext: any = null;
-      primary.manager.emitter.on(EVENTS.SpaceMessage, (context: any) => {
+      primary.emitter.on(EVENTS.SpaceMessage, (context: any) => {
         eventContext = context;
       });
 
@@ -258,7 +253,7 @@ describe('Message Protocols', () => {
       const message = await createSyncMessage(secondary);
 
       let eventContext: any = null;
-      primary.manager.emitter.on(EVENTS.NegentropySync, (context: any) => {
+      primary.emitter.on(EVENTS.NegentropySync, (context: any) => {
         eventContext = context;
       });
 
@@ -399,7 +394,7 @@ describe('Message Protocols', () => {
     it('should deliver requested messages and store them byte-identical', async () => {
       const scheduler = standby.manager.sync.getScheduler(spaceTopicHash);
       const delivered: string[] = [];
-      standby.manager.emitter.on(
+      standby.emitter.on(
         EVENTS.NegentropyContentDelivered,
         (context: { messageId: string }) => delivered.push(context.messageId),
       );

@@ -16,14 +16,18 @@ import {
   validateSpaceFileTreeResponsePayload,
 } from '../../src/utils/protocol.utils.js';
 import {
-  createP2PNetwork,
-  createConnections,
   buildTestSpacePayload,
   unframeJson,
   makeTempDir,
   cleanup,
   generateRandomFile,
 } from '../general.utils.js';
+import { MockCoreFactory } from '../mock.factory.js';
+import {
+  connectProtocolNodes,
+  createProtocolNodes,
+  type ProtocolNode,
+} from '../protocol.harness.js';
 import {
   createDownloadRecord,
   createFileIndexRecord,
@@ -48,14 +52,7 @@ import { FrameTypes } from '../../src/managers/multiplexer.manager.js';
 import type { SignedSpace } from '../../src/utils/space.utils.js';
 import type { SpaceFileRecordInput } from '../../src/utils/protocol.utils.js';
 
-type TestNode = {
-  manager: any;
-  socket: any;
-  publicKey: string;
-  secretKey: string;
-  info: { publicKey: Uint8Array };
-  root: string;
-};
+type TestNode = ProtocolNode;
 
 async function getExistingSpace(db: any, spaceId: number) {
   const space = await getSpace(db, spaceId);
@@ -64,6 +61,7 @@ async function getExistingSpace(db: any, spaceId: number) {
 }
 
 describe('Space File Protocols', () => {
+  let factory: MockCoreFactory;
   let nodes: TestNode[] = [];
   let primary: TestNode;
   let primaryDB: any;
@@ -75,7 +73,10 @@ describe('Space File Protocols', () => {
   let spaceTopicHash: string;
 
   beforeEach(async () => {
-    nodes = (await createP2PNetwork(3)) as unknown as TestNode[];
+    factory = new MockCoreFactory();
+    await factory.init();
+
+    nodes = await createProtocolNodes(factory, 3);
     [primary, secondary, standby] = nodes;
 
     primaryDB = primary.manager.session.getDatabase().db;
@@ -106,16 +107,11 @@ describe('Space File Protocols', () => {
 
     spaceTopicHash = getSpaceTopicHash(spaceParams);
 
-    createConnections(spaceTopicHash, [primary, secondary, standby]);
+    connectProtocolNodes(spaceTopicHash, [primary, secondary, standby]);
   });
 
   afterEach(async () => {
-    for (const node of nodes) {
-      const { sqlite } = node.manager.session.getDatabase();
-      await sqlite.close();
-
-      await cleanup(node.manager.root);
-    }
+    await factory.cleanup();
   });
 
   describe('SpaceFileEventHandler', () => {
@@ -537,11 +533,9 @@ describe('Space File Protocols', () => {
 
     it('should reject when the sender is not allowed to read', async () => {
       // create a node not in readWhitelist
-      const [unauthorized] = (await createP2PNetwork(
-        1,
-      )) as unknown as TestNode[];
+      const [unauthorized] = await createProtocolNodes(factory, 1);
       // connect unauthorized to primary
-      createConnections(spaceTopicHash, [primary, unauthorized]);
+      connectProtocolNodes(spaceTopicHash, [primary, unauthorized]);
 
       const message = await createSpaceFileContentRequestMessage({
         topic: spaceTopicHash,
@@ -566,12 +560,6 @@ describe('Space File Protocols', () => {
       expect(rejection.payload.reason).toBe(
         MESSAGES.READ_PERMISSION_NOT_ALLOWED_MESSAGE,
       );
-
-      // cleanup
-      const { sqlite } = unauthorized.manager.session.getDatabase();
-      await sqlite.close();
-
-      await cleanup(unauthorized.manager.root);
     });
 
     it('should reject when space file path is not found', async () => {

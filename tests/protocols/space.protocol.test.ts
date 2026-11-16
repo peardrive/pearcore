@@ -1,12 +1,13 @@
 import * as EVENTS from '../../src/constants/events.constants.js';
 import * as MESSAGES from '../../src/constants/messages.constants.js';
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { buildTestSpacePayload, unframeJson } from '../general.utils.js';
+import { MockCoreFactory } from '../mock.factory.js';
 import {
-  buildTestSpacePayload,
-  cleanup,
-  unframeJson,
-} from '../general.utils.js';
-import { initializeManagers } from '../../src/managers/initialization.js';
+  connectProtocolNodes,
+  createProtocolNodes,
+  type ProtocolNode,
+} from '../protocol.harness.js';
 import {
   createSpaceHashListMessage,
   createSpaceSyncMessage,
@@ -21,18 +22,11 @@ import {
 } from '../../src/utils/space.utils.js';
 import { SpaceSyncHandler } from '../../src/protocols/space.protocol.js';
 import { now, stripIds } from '../../src/utils/general.utils.js';
-import { createP2PNetwork, createConnections } from '../general.utils.js';
 import { saveShareLink } from '../../src/utils/sharelink.utils.js';
 import type { SignedSpace, SpaceInput } from '../../src/utils/space.utils.js';
 import type { SignedProtocolMessage } from '../../src/utils/protocol.utils.js';
 
-type TestNode = {
-  manager: any;
-  socket: any;
-  publicKey: string;
-  secretKey: Uint8Array | string;
-  info: { publicKey: Uint8Array };
-};
+type TestNode = ProtocolNode;
 
 async function getExistingSpace(db: any, spaceId: number) {
   const space = await getSpace(db, spaceId);
@@ -49,6 +43,7 @@ async function getExistingSpace(db: any, spaceId: number) {
  *    We consider outlier receiving any message from the space, an exception that should be avoided.
  */
 describe('Space Protocols', () => {
+  let factory: MockCoreFactory;
   let nodes: TestNode[] = [];
   let primary: TestNode;
   let primaryDB: any;
@@ -60,7 +55,10 @@ describe('Space Protocols', () => {
   let spaceTopicHash: string;
 
   beforeEach(async () => {
-    nodes = (await createP2PNetwork(4)) as unknown as TestNode[];
+    factory = new MockCoreFactory();
+    await factory.init();
+
+    nodes = await createProtocolNodes(factory, 4);
     [primary, secondary, standby, outlier] = nodes;
 
     spaceParams = await buildTestSpacePayload({
@@ -77,19 +75,14 @@ describe('Space Protocols', () => {
     });
 
     spaceTopicHash = getSpaceTopicHash(spaceParams);
-    createConnections(spaceTopicHash, [primary, secondary, standby, outlier]);
+    connectProtocolNodes(spaceTopicHash, [primary, secondary, standby, outlier]);
 
     primaryDB = primary.manager.session.getDatabase().db;
     secondaryDB = secondary.manager.session.getDatabase().db;
   });
 
   afterEach(async () => {
-    for (const node of nodes) {
-      const { sqlite } = node.manager.session.getDatabase();
-      await sqlite.close();
-
-      await cleanup(node.manager.root);
-    }
+    await factory.cleanup();
   });
 
   describe('SpaceHashListHandler', () => {
@@ -104,16 +97,14 @@ describe('Space Protocols', () => {
     });
 
     it('should exist within the protocol map', () => {
-      const managers = initializeManagers();
-      expect(managers.message).toBeDefined();
-      expect(managers.message.protocolHandlers.has(EVENTS.SpaceHashList)).toBe(
+      expect(primary.manager.message.protocolHandlers.has(EVENTS.SpaceHashList)).toBe(
         true,
       );
     });
 
     it('should handle valid SpaceHashList message', async () => {
       let eventContext: unknown = null;
-      primary.manager.emitter.on(
+      primary.emitter.on(
         EVENTS.SpaceHashList,
         ({ message }: { message: unknown }) => {
           eventContext = message;
@@ -271,7 +262,7 @@ describe('Space Protocols', () => {
       });
 
       let actionContext = null;
-      secondary.manager.emitter.on(
+      secondary.emitter.on(
         EVENTS.SpaceSync,
         ({ action }: { message: unknown; action: string }) => {
           actionContext = action;
@@ -322,7 +313,7 @@ describe('Space Protocols', () => {
       });
 
       let actionContext = null;
-      secondary.manager.emitter.on(
+      secondary.emitter.on(
         EVENTS.SpaceSync,
         ({ action }: { message: unknown; action: string }) => {
           actionContext = action;
@@ -390,7 +381,7 @@ describe('Space Protocols', () => {
       });
 
       let actionContext = null;
-      secondary.manager.emitter.on(
+      secondary.emitter.on(
         EVENTS.SpaceSync,
         ({ action }: { message: unknown; action: string }) => {
           actionContext = action;
@@ -475,7 +466,7 @@ describe('Space Protocols', () => {
       });
 
       let actionContext = null;
-      primary.manager.emitter.on(
+      primary.emitter.on(
         EVENTS.SpaceSync,
         ({ action }: { message: unknown; action: string }) => {
           actionContext = action;

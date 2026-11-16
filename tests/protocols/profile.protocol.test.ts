@@ -1,17 +1,19 @@
 import * as EVENTS from '../../src/constants/events.constants.js';
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { stripIds } from '../../src/utils/general.utils.js';
-import { initializeManagers } from '../../src/managers/initialization.js';
 import { getSpaceTopicHash } from '../../src/utils/space.utils.js';
 import { hexToUint8 } from '../../src/utils/crypto.utils.js';
 import { createProfileUpdateMessage } from '../../src/utils/protocol.utils.js';
 import {
   buildTestProfilePayload,
-  createP2PNetwork,
   buildTestSpacePayload,
-  createConnections,
-  cleanup,
 } from '../general.utils.js';
+import { MockCoreFactory } from '../mock.factory.js';
+import {
+  connectProtocolNodes,
+  createProtocolNodes,
+  type ProtocolNode,
+} from '../protocol.harness.js';
 import {
   createProfile,
   createProfileForPublicKey,
@@ -24,14 +26,7 @@ import type {
 } from '../../src/utils/profile.utils.js';
 import type { SignedProtocolMessage } from '../../src/utils/protocol.utils.js';
 
-type TestNode = {
-  manager: any;
-  socket: any;
-  publicKey: string;
-  secretKey: string;
-  info: { publicKey: Uint8Array };
-  root: string;
-};
+type TestNode = ProtocolNode;
 
 async function getExistingProfile(
   db: any,
@@ -44,6 +39,7 @@ async function getExistingProfile(
 
 describe('ProfileProtocolHandler', () => {
   const generalTopicHash = 'a'.repeat(64);
+  let factory: MockCoreFactory;
   let nodes: TestNode[] = [];
   let primary: TestNode;
   let primaryDB: any;
@@ -53,7 +49,10 @@ describe('ProfileProtocolHandler', () => {
   let spaceTopicHash: string;
 
   beforeEach(async () => {
-    nodes = (await createP2PNetwork(2)) as unknown as TestNode[];
+    factory = new MockCoreFactory();
+    await factory.init();
+
+    nodes = await createProtocolNodes(factory, 2);
     [primary, secondary] = nodes;
 
     spaceParams = await buildTestSpacePayload({
@@ -66,27 +65,20 @@ describe('ProfileProtocolHandler', () => {
     });
 
     spaceTopicHash = getSpaceTopicHash(spaceParams);
-    createConnections(spaceTopicHash, [primary, secondary]);
+    connectProtocolNodes(spaceTopicHash, [primary, secondary]);
 
     primaryDB = primary.manager.session.getDatabase().db;
     secondaryDB = secondary.manager.session.getDatabase().db;
   });
 
   afterEach(async () => {
-    for (const node of nodes) {
-      const { sqlite } = node.manager.session.getDatabase();
-      await sqlite.close();
-
-      await cleanup(node.manager.root);
-    }
+    await factory.cleanup();
   });
 
   it('should exist within the protocol map', () => {
-    const managers = initializeManagers();
-    expect(managers.message).toBeDefined();
-    expect(managers.message.protocolHandlers.has(EVENTS.ProfileUpdate)).toBe(
-      true,
-    );
+    expect(
+      secondary.manager.message.protocolHandlers.has(EVENTS.ProfileUpdate),
+    ).toBe(true);
   });
 
   it('should handle valid ProfileUpdate message', async () => {
@@ -110,7 +102,7 @@ describe('ProfileProtocolHandler', () => {
     primary.manager.throttle.updateByMessage(message);
 
     let eventContext: unknown = null;
-    secondary.manager.emitter.on(
+    secondary.emitter.on(
       EVENTS.ProfileUpdate,
       ({ message }: { message: unknown }) => {
         eventContext = message;
@@ -177,7 +169,7 @@ describe('ProfileProtocolHandler', () => {
     }>;
 
     let eventContext: unknown = null;
-    primary.manager.emitter.on(
+    primary.emitter.on(
       EVENTS.ProfileUpdate,
       ({ message }: { message: unknown }) => {
         eventContext = message;
