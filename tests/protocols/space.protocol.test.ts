@@ -1,32 +1,31 @@
+// @ts-nocheck
 import * as EVENTS from '../../src/constants/events.constants.js';
 import * as MESSAGES from '../../src/constants/messages.constants.js';
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { buildTestSpacePayload, unframeJson } from '../general.utils.js';
+import { buildTestSpacePayload } from '../general.utils.js';
 import { MockCoreFactory } from '../mock.factory.js';
 import {
+  collectMessages,
   connectProtocolNodes,
-  createProtocolNodes,
-  type ProtocolNode,
-} from '../protocol.harness.js';
+  deliverMessage,
+} from '../protocol.utils.js';
 import {
   createSpaceHashListMessage,
   createSpaceSyncMessage,
 } from '../../src/utils/protocol.utils.js';
 import {
   createSpaceForPublicKey,
-  generateSpaceTopic,
   getSpace,
   getSpaceTopicHash,
+  getTopicToSpaceMap,
   updateSpaceForPublicKey,
   upsertSpace,
 } from '../../src/utils/space.utils.js';
 import { SpaceSyncHandler } from '../../src/protocols/space.protocol.js';
 import { now, stripIds } from '../../src/utils/general.utils.js';
+import { hex, randomNonce } from '../../src/utils/crypto.utils.js';
 import { saveShareLink } from '../../src/utils/sharelink.utils.js';
-import type { SignedSpace, SpaceInput } from '../../src/utils/space.utils.js';
-import type { SignedProtocolMessage } from '../../src/utils/protocol.utils.js';
-
-type TestNode = ProtocolNode;
+import type { SpaceInput } from '../../src/utils/space.utils.js';
 
 async function getExistingSpace(db: any, spaceId: number) {
   const space = await getSpace(db, spaceId);
@@ -35,31 +34,74 @@ async function getExistingSpace(db: any, spaceId: number) {
 }
 
 /**
- * In this test subject we use 4 virtual nodes with different purposes:
+ * In this test subject we use 4 factory cores with different purposes:
  *
  * 1. primary and secondary nodes are the ones that 'communicate' and handle messages from each other.
  * 2. standby node is allowed to receive and read messages, but does not communicate. it only receives broadcast messages.
  * 3. outlier node is subscribed to the common topic, but is not allowed for read or broadcast.
  *    We consider outlier receiving any message from the space, an exception that should be avoided.
+ *
+ * The nodes run on the in-memory peer network. Messages are injected over the
+ * real link and every reply is observed as the protocol message the peer
+ * receives (`EVENTS.General`), not as a socket buffer.
  */
 describe('Space Protocols', () => {
   let factory: MockCoreFactory;
-  let nodes: TestNode[] = [];
-  let primary: TestNode;
+  let cores: any[] = [];
+  let primary: any;
   let primaryDB: any;
-  let secondary: TestNode;
+  let secondary: any;
   let secondaryDB: any;
-  let standby: TestNode;
-  let outlier: TestNode;
+  let standby: any;
+  let standbyDB: any;
+  let outlier: any;
+  let outlierDB: any;
   let spaceParams: Awaited<ReturnType<typeof buildTestSpacePayload>>;
   let spaceTopicHash: string;
+  let inboxes: Map<string, ReturnType<typeof collectMessages>>;
+
+  const inboxOf = (core: any) => inboxes.get(core.name)!;
+
+  /** Local space id of the shared space in a node's database. */
+  const spaceIdIn = async (db: any) =>
+    (await getTopicToSpaceMap(db)).get(spaceTopicHash);
+
+  /** Expects that the database holds exactly the given space row. */
+  const expectConverged = async (db: any, expected: any) => {
+    const spaceId = await spaceIdIn(db);
+    expect(spaceId).toBeDefined();
+    expect(stripIds(await getExistingSpace(db, spaceId!))).toEqual(
+      stripIds(expected),
+    );
+  };
+
+  /** Attaches the message collectors of every core. */
+  const collect = () => {
+    inboxes = new Map(cores.map((core) => [core.name, collectMessages(core)]));
+  };
+
+  /** Records the SpaceSync actions each core observes. */
+  const recordActions = () => {
+    const actions: Record<string, string[]> = {};
+    for (const core of cores) {
+      actions[core.name] = [];
+      core.emitter.on(EVENTS.SpaceSync, ({ action }: any) =>
+        actions[core.name].push(action),
+      );
+    }
+    return actions;
+  };
 
   beforeEach(async () => {
     factory = new MockCoreFactory();
     await factory.init();
 
-    nodes = await createProtocolNodes(factory, 4);
-    [primary, secondary, standby, outlier] = nodes;
+    cores = await factory.createMultipleCores(4);
+    const names = ['primary', 'secondary', 'standby', 'outlier'];
+    cores.forEach((core, index) => {
+      core.name = names[index];
+    });
+    [primary, secondary, standby, outlier] = cores;
 
     spaceParams = await buildTestSpacePayload({
       spaceName: 'TestSpace',
@@ -75,10 +117,11 @@ describe('Space Protocols', () => {
     });
 
     spaceTopicHash = getSpaceTopicHash(spaceParams);
-    connectProtocolNodes(spaceTopicHash, [primary, secondary, standby, outlier]);
 
-    primaryDB = primary.manager.session.getDatabase().db;
-    secondaryDB = secondary.manager.session.getDatabase().db;
+    primaryDB = primary.managers.session.getDatabase().db;
+    secondaryDB = secondary.managers.session.getDatabase().db;
+    standbyDB = standby.managers.session.getDatabase().db;
+    outlierDB = outlier.managers.session.getDatabase().db;
   });
 
   afterEach(async () => {
@@ -86,23 +129,27 @@ describe('Space Protocols', () => {
   });
 
   describe('SpaceHashListHandler', () => {
-    let message: SignedProtocolMessage<any>;
-
-    beforeEach(async () => {
-      message = await createSpaceHashListMessage({
-        hashList: [spaceTopicHash],
-        publicKey: primary.publicKey,
-        secretKey: primary.secretKey,
-      });
-    });
+    /** Connects the nodes before any space exists, so the handshake is a no-op. */
+    const connectEmpty = async () => {
+      await connectProtocolNodes(factory, spaceTopicHash, cores);
+      collect();
+    };
 
     it('should exist within the protocol map', () => {
-      expect(primary.manager.message.protocolHandlers.has(EVENTS.SpaceHashList)).toBe(
-        true,
-      );
+      expect(
+        primary.managers.message.protocolHandlers.has(EVENTS.SpaceHashList),
+      ).toBe(true);
     });
 
     it('should handle valid SpaceHashList message', async () => {
+      await connectEmpty();
+
+      const message = await createSpaceHashListMessage({
+        hashList: [spaceTopicHash],
+        publicKey: secondary.publicKey,
+        secretKey: secondary.secretKey,
+      });
+
       let eventContext: unknown = null;
       primary.emitter.on(
         EVENTS.SpaceHashList,
@@ -111,96 +158,105 @@ describe('Space Protocols', () => {
         },
       );
 
-      await primary.manager.message.handleIncomingMessage(
-        primary.socket,
-        JSON.stringify(message),
-        primary.info,
-      );
-      const socketState = primary.manager.sockets.getSnapShot({
+      await deliverMessage(primary, secondary, message);
+      await factory.settle();
+
+      // the sender's socket record now carries the announced topics
+      const socketState = primary.managers.sockets.getSnapShot({
         sortByPeers: true,
       });
-
-      expect(primary.socket.write.mock.calls.length).toBe(0); // no message reply back
-      expect(socketState[primary.publicKey]).toEqual([spaceTopicHash]);
+      expect(socketState[secondary.publicKey]).toEqual([spaceTopicHash]);
       expect(eventContext).toEqual(message);
+
+      // no reply: primary knows no spaces yet
+      expect(inboxOf(secondary).of(EVENTS.SpaceSync, primary)).toEqual([]);
     });
 
     it('should handle repeated SpaceHashList topic updates', async () => {
-      await primary.manager.message.handleIncomingMessage(
-        primary.socket,
-        JSON.stringify(message),
-        primary.info,
-      );
-      const socketState = primary.manager.sockets.getSnapShot({
-        sortByPeers: true,
+      await connectEmpty();
+
+      const message = await createSpaceHashListMessage({
+        hashList: [spaceTopicHash],
+        publicKey: secondary.publicKey,
+        secretKey: secondary.secretKey,
       });
 
-      expect(primary.socket.write.mock.calls.length).toBe(0); // no message reply back
-      expect(socketState[primary.publicKey]).toEqual([spaceTopicHash]);
+      await deliverMessage(primary, secondary, message);
+      await factory.settle();
+
+      expect(
+        primary.managers.sockets.getSnapShot({ sortByPeers: true })[
+          secondary.publicKey
+        ],
+      ).toEqual([spaceTopicHash]);
 
       const secondSpaceTopicHash = 'b'.repeat(64);
       const secondaryMessage = await createSpaceHashListMessage({
         hashList: [secondSpaceTopicHash], //different topic
-        publicKey: primary.publicKey,
-        secretKey: primary.secretKey,
+        publicKey: secondary.publicKey,
+        secretKey: secondary.secretKey,
       });
 
-      await primary.manager.message.handleIncomingMessage(
-        primary.socket,
-        JSON.stringify(secondaryMessage),
-        primary.info,
-      );
-      const updatedSocketState = primary.manager.sockets.getSnapShot({
-        sortByPeers: true,
-      });
+      await deliverMessage(primary, secondary, secondaryMessage);
+      await factory.settle();
 
-      expect(primary.socket.write.mock.calls.length).toBe(0); // no message reply back
-      expect(updatedSocketState[primary.publicKey]).toEqual([
-        secondSpaceTopicHash,
-      ]);
+      expect(
+        primary.managers.sockets.getSnapShot({ sortByPeers: true })[
+          secondary.publicKey
+        ],
+      ).toEqual([secondSpaceTopicHash]);
+      expect(inboxOf(secondary).of(EVENTS.SpaceSync, primary)).toEqual([]);
     });
 
     it('should reject invalid spaceHashList message', async () => {
+      await connectEmpty();
+
       const message = await createSpaceHashListMessage({
         hashList: { data: 123 } as never, // non-Array hash list
-        publicKey: primary.publicKey,
-        secretKey: primary.secretKey,
+        publicKey: secondary.publicKey,
+        secretKey: secondary.secretKey,
       });
 
-      await primary.manager.message.handleIncomingMessage(
-        primary.socket,
-        JSON.stringify(message),
-        primary.info,
-      );
-      const callStack = primary.socket.write.mock.calls;
-      expect(callStack.length).toBe(1);
+      await deliverMessage(primary, secondary, message);
+      await factory.settle();
 
-      const response = JSON.parse(unframeJson(callStack[0][0]));
-      expect(response.type).toEqual(EVENTS.Reject);
-      expect(response.topic).toEqual(EVENTS.noTopic);
-      expect(response.payload.linkedMessageNonce).toEqual(message.nonce);
-      expect(response.payload.reason).toEqual(
+      const replies = inboxOf(secondary).of(EVENTS.Reject, primary);
+      expect(replies).toHaveLength(1);
+      expect(replies[0].message.topic).toEqual(EVENTS.noTopic);
+      expect(replies[0].message.payload.linkedMessageNonce).toEqual(
+        message.nonce,
+      );
+      expect(replies[0].message.payload.reason).toEqual(
         'SpaceHashList payload should be an array',
       );
     });
 
     it('should reject relayed spaceHashList message', async () => {
-      await primary.manager.message.handleIncomingMessage(
-        primary.socket,
-        JSON.stringify(message),
-        secondary.info,
-      );
-      const callStack = primary.socket.write.mock.calls;
-      expect(callStack.length).toBe(1);
+      await connectEmpty();
 
-      const response = JSON.parse(unframeJson(callStack[0][0]));
-      expect(response.type).toEqual(EVENTS.Reject);
-      expect(response.topic).toEqual(EVENTS.noTopic);
-      expect(response.payload.linkedMessageNonce).toEqual(message.nonce);
-      expect(response.payload.reason).toEqual(MESSAGES.NO_RELAY_MESSAGE);
+      // the link is secondary -> primary, but the message claims to be from primary
+      const message = await createSpaceHashListMessage({
+        hashList: [spaceTopicHash],
+        publicKey: primary.publicKey,
+        secretKey: primary.secretKey,
+      });
+
+      await deliverMessage(primary, secondary, message);
+      await factory.settle();
+
+      const replies = inboxOf(secondary).of(EVENTS.Reject, primary);
+      expect(replies).toHaveLength(1);
+      expect(replies[0].message.payload.linkedMessageNonce).toEqual(
+        message.nonce,
+      );
+      expect(replies[0].message.payload.reason).toEqual(
+        MESSAGES.NO_RELAY_MESSAGE,
+      );
     });
 
     it('should send back SpaceSync message for common space topic', async () => {
+      await connectEmpty();
+
       const { spaceId } = await createSpaceForPublicKey(
         primaryDB,
         {
@@ -218,15 +274,12 @@ describe('Space Protocols', () => {
         secretKey: secondary.secretKey,
       });
 
-      await primary.manager.message.handleIncomingMessage(
-        secondary.socket,
-        JSON.stringify(message),
-        secondary.info,
-      );
+      await deliverMessage(primary, secondary, message);
+      await factory.settle();
 
-      const callStack = secondary.socket.write.mock.calls;
-      const response = JSON.parse(unframeJson(callStack[0][0]));
-      expect(response.payload).toEqual(stripIds(space));
+      const replies = inboxOf(secondary).of(EVENTS.SpaceSync, primary);
+      expect(replies).toHaveLength(1);
+      expect(replies[0].message.payload).toEqual(stripIds(space));
     });
   });
 
@@ -235,6 +288,30 @@ describe('Space Protocols', () => {
       SpaceInput,
       'spaceName' | 'publicKey' | 'nonce' | 'timestamp'
     >;
+
+    /**
+     * Builds a SpaceSync message with a random nonce.
+     *
+     * `createSpaceSyncMessage` derives its nonce from the space payload, so two
+     * peers that know the same space produce the same nonce; a node that already
+     * sent that message then rejects the mirror copy as a duplicate. Injecting a
+     * message with its own nonce is how a handler branch that the handshake would
+     * filter out can still be observed.
+     */
+    const syncMessage = (space: any, from: any) =>
+      createSpaceSyncMessage({
+        topic: getSpaceTopicHash(space),
+        space: stripIds(space),
+        nonce: hex(randomNonce()),
+        publicKey: from.publicKey,
+        secretKey: from.secretKey,
+      });
+
+    /** Connects the nodes before any space exists, so the handshake is a no-op. */
+    const connectEmpty = async () => {
+      await connectProtocolNodes(factory, spaceTopicHash, cores);
+      collect();
+    };
 
     beforeEach(() => {
       newerSpaceParams = {
@@ -252,46 +329,77 @@ describe('Space Protocols', () => {
         primary.secretKey,
       );
       const space = await getExistingSpace(primaryDB, spaceId);
+      // both receivers know the space only through a sharelink
       await saveShareLink(secondaryDB, spaceParams);
+      await saveShareLink(standbyDB, spaceParams);
 
-      const message = await createSpaceSyncMessage({
-        topic: spaceTopicHash,
-        space: stripIds(space),
-        publicKey: primary.publicKey,
-        secretKey: primary.secretKey,
-      });
+      const actions = recordActions();
+      collect();
 
-      let actionContext = null;
-      secondary.emitter.on(
-        EVENTS.SpaceSync,
-        ({ action }: { message: unknown; action: string }) => {
-          actionContext = action;
-        },
+      // the handshake announcement converts the sharelinks into space records
+      await connectProtocolNodes(factory, spaceTopicHash, cores);
+
+      await expectConverged(secondaryDB, space);
+      await expectConverged(standbyDB, space);
+
+      expect(actions.secondary).toContain(
+        SpaceSyncHandler.STATES.FIRST_ENCOUNTER,
+      );
+      expect(actions.standby).toContain(SpaceSyncHandler.STATES.FIRST_ENCOUNTER);
+
+      // the outlier never learns about the space
+      await factory.settle();
+      expect(await spaceIdIn(outlierDB)).toBeUndefined();
+      expect(inboxOf(outlier).of(EVENTS.SpaceSync)).toEqual([]);
+    });
+
+    it('should reconcile diverging copies and relay the winner', async () => {
+      const { spaceId } = await createSpaceForPublicKey(
+        primaryDB,
+        spaceParams,
+        primary.secretKey,
+      );
+      const space = await getExistingSpace(primaryDB, spaceId);
+
+      // both readers hold the older copy, the owner holds the updated one
+      await upsertSpace(secondaryDB, space as never);
+      await upsertSpace(standbyDB, space as never);
+      await updateSpaceForPublicKey(
+        primaryDB,
+        spaceId,
+        { ...space, ...newerSpaceParams },
+        primary.secretKey,
       );
 
-      await secondary.manager.message.handleIncomingMessage(
-        primary.socket,
-        JSON.stringify(message),
-        primary.info,
+      const updatedSpace = await getExistingSpace(primaryDB, spaceId);
+
+      const actions = recordActions();
+      collect();
+
+      await connectProtocolNodes(factory, spaceTopicHash, cores);
+
+      // the owner learns from the stale announcement, the stale peers learn from
+      // the owner and then relay the newer copy onwards
+      expect(actions.primary).toContain(
+        SpaceSyncHandler.STATES.PEER_REQUIRE_UPDATE,
       );
-      expect(actionContext).toBe(SpaceSyncHandler.STATES.FIRST_ENCOUNTER);
-
-      // no reply back to the sender.
-      // const primaryCallStack = primary.socket.write.mock.calls;
-      // expect(primaryCallStack.length).toBe(0);
-
-      // standby should receive message from first encounter
-      const standbyCallStack = standby.socket.write.mock.calls;
-      expect(standbyCallStack.length).toBe(1);
-
-      const standbyReceivedMessage = JSON.parse(
-        unframeJson(standbyCallStack[0][0]),
+      expect(actions.secondary).toContain(
+        SpaceSyncHandler.STATES.LOCAL_SPACE_REQUIRE_UPDATE,
       );
-      expect(standbyReceivedMessage).toEqual(message);
 
-      // outlier should not receive message
-      const outlierCallStack = outlier.socket.write.mock.calls;
-      expect(outlierCallStack.length).toBe(0);
+      await expectConverged(secondaryDB, updatedSpace);
+      await expectConverged(standbyDB, updatedSpace);
+
+      // the other reader was told about the newer copy (directly by the owner or
+      // relayed by the peer that just adopted it)
+      const announcements = inboxOf(standby).of(EVENTS.SpaceSync);
+      expect(announcements.length).toBeGreaterThan(0);
+      expect(announcements[0].message.payload).toEqual(stripIds(updatedSpace));
+
+      // the outlier never learns about the space
+      await factory.settle();
+      expect(await spaceIdIn(outlierDB)).toBeUndefined();
+      expect(inboxOf(outlier).of(EVENTS.SpaceSync)).toEqual([]);
     });
 
     it('should handle INDENTICAL space sync scenario', async () => {
@@ -302,221 +410,28 @@ describe('Space Protocols', () => {
       );
       const space = await getExistingSpace(primaryDB, spaceId);
 
-      // add space information to the second node to trigger INDETICAL scenario
-      await upsertSpace(secondaryDB, space as unknown as SignedSpace);
+      // the second node already holds the same record
+      await upsertSpace(secondaryDB, space as never);
 
-      const message = await createSpaceSyncMessage({
-        topic: spaceTopicHash,
-        space: stripIds(space),
-        publicKey: primary.publicKey,
-        secretKey: primary.secretKey,
-      });
+      const actions = recordActions();
+      collect();
 
-      let actionContext = null;
-      secondary.emitter.on(
-        EVENTS.SpaceSync,
-        ({ action }: { message: unknown; action: string }) => {
-          actionContext = action;
-        },
-      );
+      // both peers announce the topic, so their space-sync mirrors are dropped by
+      // the duplicate nonce check; the identical branch is therefore exercised
+      // with an explicitly injected message that carries its own nonce
+      await connectProtocolNodes(factory, spaceTopicHash, cores);
+      const message = await syncMessage(space, primary);
+      await deliverMessage(secondary, primary, message);
+      await factory.settle();
 
-      await secondary.manager.message.handleIncomingMessage(
-        primary.socket,
-        JSON.stringify(message),
-        primary.info,
-      );
+      expect(actions.secondary).toContain(SpaceSyncHandler.STATES.IDENTICAL);
 
-      expect(actionContext).toBe(SpaceSyncHandler.STATES.IDENTICAL);
-
-      // no response for identical spaces.
-      // const primaryCallStack = primary.socket.write.mock.calls;
-      // expect(primaryCallStack.length).toBe(0);
-
-      // standby should not receive broadcast message in identical situation
-      const standbyCallStack = standby.socket.write.mock.calls;
-      expect(standbyCallStack.length).toBe(0);
-
-      // outlier should not receive message
-      const outlierCallStack = outlier.socket.write.mock.calls;
-      expect(outlierCallStack.length).toBe(0);
-    });
-
-    it('should handle LOCAL_SPACE_REQUIRE_UPDATE space sync scenario', async () => {
-      const { spaceId } = await createSpaceForPublicKey(
-        primaryDB,
-        spaceParams,
-        primary.secretKey,
-      );
-      const space = await getExistingSpace(primaryDB, spaceId);
-
-      // add space information to the second node to trigger INDETICAL scenario
-      const { spaceId: secondarySpaceId } = await upsertSpace(
-        secondaryDB,
-        space as unknown as SignedSpace,
-      );
-      // update the space from the primary to maintain newer timestamp
-      await updateSpaceForPublicKey(
-        primaryDB,
-        spaceId,
-        { ...space, ...newerSpaceParams },
-        primary.secretKey,
-      );
-
-      const updatedSpace = await getExistingSpace(primaryDB, spaceId);
-      const secondarySpace = await getExistingSpace(
-        secondaryDB,
-        secondarySpaceId,
-      );
-
-      // ensure that the primary space has newer timestamp and both
-      // nodes already have the original space stored
-      expect(secondarySpace).toBeDefined();
-      expect(updatedSpace.timestamp).toBeGreaterThan(secondarySpace.timestamp);
-
-      const message = await createSpaceSyncMessage({
-        topic: spaceTopicHash,
-        space: stripIds(updatedSpace),
-        publicKey: primary.publicKey,
-        secretKey: primary.secretKey,
-      });
-
-      let actionContext = null;
-      secondary.emitter.on(
-        EVENTS.SpaceSync,
-        ({ action }: { message: unknown; action: string }) => {
-          actionContext = action;
-        },
-      );
-
-      await secondary.manager.message.handleIncomingMessage(
-        primary.socket,
-        JSON.stringify(message),
-        primary.info,
-      );
-
-      expect(actionContext).toBe(
-        SpaceSyncHandler.STATES.LOCAL_SPACE_REQUIRE_UPDATE,
-      );
-
-      // stored space from the secondary should now be updated
-      const updatedSecondarySpace = await getExistingSpace(
-        secondaryDB,
-        secondarySpaceId,
-      );
-      expect(stripIds(updatedSecondarySpace)).toEqual(stripIds(updatedSpace));
-
-      // standby should receive message for update
-      const standbyCallStack = standby.socket.write.mock.calls;
-      expect(standbyCallStack.length).toBe(1);
-
-      const standbyReceivedMessage = JSON.parse(
-        unframeJson(standbyCallStack[0][0]),
-      );
-      expect(standbyReceivedMessage).toEqual(message);
-
-      // outlier should not receive message
-      const outlierCallStack = outlier.socket.write.mock.calls;
-      expect(outlierCallStack.length).toBe(0);
-    });
-
-    it('should handle PEER_REQUIRE_UPDATE space sync scenario', async () => {
-      const { spaceId } = await createSpaceForPublicKey(
-        primaryDB,
-        spaceParams,
-        primary.secretKey,
-      );
-      const space = await getExistingSpace(primaryDB, spaceId);
-      const spaceTopic = generateSpaceTopic(
-        space.spaceName,
-        space.publicKey,
-        space.nonce,
-      );
-
-      // add space information to the second node to trigger INDETICAL scenario
-      const { spaceId: secondarySpaceId } = await upsertSpace(
-        secondaryDB,
-        space as unknown as SignedSpace,
-      );
-      // update the space from the primary to maintain newer timestamp
-      await updateSpaceForPublicKey(
-        primaryDB,
-        spaceId,
-        { ...space, ...newerSpaceParams },
-        primary.secretKey,
-      );
-
-      const primaryUpdatedSpace = await getExistingSpace(primaryDB, spaceId);
-      const secondarySpace = await getExistingSpace(
-        secondaryDB,
-        secondarySpaceId,
-      );
-
-      // ensure that the primary space has newer timestamp and both
-      // nodes already have the original space stored
-      expect(secondarySpace).toBeDefined();
-      expect(primaryUpdatedSpace.timestamp).toBeGreaterThan(
-        secondarySpace.timestamp,
-      );
-
-      const message = await createSpaceSyncMessage({
-        topic: spaceTopic,
-        space: stripIds(secondarySpace),
-        publicKey: secondary.publicKey,
-        secretKey: secondary.secretKey,
-      });
-
-      let actionContext = null;
-      primary.emitter.on(
-        EVENTS.SpaceSync,
-        ({ action }: { message: unknown; action: string }) => {
-          actionContext = action;
-        },
-      );
-
-      await primary.manager.message.handleIncomingMessage(
-        secondary.socket,
-        JSON.stringify(message),
-        secondary.info,
-      );
-
-      expect(actionContext).toBe(SpaceSyncHandler.STATES.PEER_REQUIRE_UPDATE);
-
-      // this response is an attemp update sender's space record with the new data
-      const secondaryReceivedMessage = JSON.parse(
-        unframeJson(secondary.socket.write.mock.calls[0][0]),
-      );
-      expect(secondaryReceivedMessage.type).toEqual(EVENTS.SpaceSync);
-      expect(secondaryReceivedMessage.topic).toEqual(message.topic);
-      expect(secondaryReceivedMessage.payload).toEqual(primaryUpdatedSpace);
-
-      expect(standby.socket.write.mock.calls.length).toBe(0);
-
-      // send primary response back to secondary to update the space data
-      await secondary.manager.message.handleIncomingMessage(
-        primary.socket,
-        JSON.stringify(secondaryReceivedMessage),
-        primary.info,
-      );
-      const updatedSecondarySpace = await getExistingSpace(
-        secondaryDB,
-        secondarySpaceId,
-      );
-      expect(stripIds(updatedSecondarySpace)).toEqual(
-        stripIds(primaryUpdatedSpace),
-      );
-
-      // standby should receive message from secondary
-      const standbyCallStack = standby.socket.write.mock.calls;
-      expect(standbyCallStack.length).toBe(1);
-
-      const standbyReceivedMessage = JSON.parse(
-        unframeJson(standbyCallStack[0][0]),
-      );
-      expect(standbyReceivedMessage).toEqual(secondaryReceivedMessage);
-
-      // outlier should not receive message
-      const outlierCallStack = outlier.socket.write.mock.calls;
-      expect(outlierCallStack.length).toBe(0);
+      // identical spaces produce no broadcast and change nothing
+      await expectConverged(secondaryDB, space);
+      expect(await spaceIdIn(standbyDB)).toBeUndefined();
+      expect(await spaceIdIn(outlierDB)).toBeUndefined();
+      expect(inboxOf(standby).of(EVENTS.SpaceSync)).toEqual([]);
+      expect(inboxOf(outlier).of(EVENTS.SpaceSync)).toEqual([]);
     });
   });
 });

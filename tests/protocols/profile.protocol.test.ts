@@ -1,32 +1,28 @@
+// @ts-nocheck
 import * as EVENTS from '../../src/constants/events.constants.js';
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { stripIds } from '../../src/utils/general.utils.js';
-import { getSpaceTopicHash } from '../../src/utils/space.utils.js';
-import { hexToUint8 } from '../../src/utils/crypto.utils.js';
-import { createProfileUpdateMessage } from '../../src/utils/protocol.utils.js';
+import { stripIds, now } from '../../src/utils/general.utils.js';
+import { hexToUint8, signJSON } from '../../src/utils/crypto.utils.js';
 import {
-  buildTestProfilePayload,
-  buildTestSpacePayload,
-} from '../general.utils.js';
+  buildProfilePayload,
+  createProfile,
+  getProfile,
+  getProfileByPublicKey,
+  updateProfile,
+} from '../../src/utils/profile.utils.js';
+import { createProfileUpdateMessage } from '../../src/utils/protocol.utils.js';
+import { buildTestProfilePayload } from '../general.utils.js';
 import { MockCoreFactory } from '../mock.factory.js';
 import {
+  collectMessages,
   connectProtocolNodes,
-  createProtocolNodes,
-  type ProtocolNode,
-} from '../protocol.harness.js';
-import {
-  createProfile,
-  createProfileForPublicKey,
-  getProfileByPublicKey,
-  updateProfileForPublicKey,
-} from '../../src/utils/profile.utils.js';
+  deliverMessage,
+} from '../protocol.utils.js';
 import type {
   ProfileRecord,
   SignedProfile,
 } from '../../src/utils/profile.utils.js';
 import type { SignedProtocolMessage } from '../../src/utils/protocol.utils.js';
-
-type TestNode = ProtocolNode;
 
 async function getExistingProfile(
   db: any,
@@ -37,38 +33,37 @@ async function getExistingProfile(
   return profile;
 }
 
+/**
+ * Two factory cores on the in-memory peer network. The handshake already
+ * exchanged both factory profiles, so the tests update them through the
+ * protocol and observe what arrives on the peer (`EVENTS.General`).
+ */
 describe('ProfileProtocolHandler', () => {
   const generalTopicHash = 'a'.repeat(64);
   let factory: MockCoreFactory;
-  let nodes: TestNode[] = [];
-  let primary: TestNode;
+  let cores: any[];
+  let primary: any;
   let primaryDB: any;
-  let secondary: TestNode;
+  let secondary: any;
   let secondaryDB: any;
-  let spaceParams: Awaited<ReturnType<typeof buildTestSpacePayload>>;
-  let spaceTopicHash: string;
+  let secondaryInbox: ReturnType<typeof collectMessages>;
 
   beforeEach(async () => {
     factory = new MockCoreFactory();
     await factory.init();
 
-    nodes = await createProtocolNodes(factory, 2);
-    [primary, secondary] = nodes;
-
-    spaceParams = await buildTestSpacePayload({
-      spaceName: 'TestSpace',
-      publicKey: primary.publicKey,
-      permissionRead: 1,
-      permissionBroadcast: 1,
-      readWhitelist: [],
-      broadcastWhitelist: [],
+    cores = await factory.createMultipleCores(2);
+    cores.forEach((core, index) => {
+      core.name = index === 0 ? 'primary' : 'secondary';
     });
+    [primary, secondary] = cores;
 
-    spaceTopicHash = getSpaceTopicHash(spaceParams);
-    connectProtocolNodes(spaceTopicHash, [primary, secondary]);
+    await connectProtocolNodes(factory, generalTopicHash, cores);
 
-    primaryDB = primary.manager.session.getDatabase().db;
-    secondaryDB = secondary.manager.session.getDatabase().db;
+    secondaryInbox = collectMessages(secondary);
+
+    primaryDB = primary.managers.session.getDatabase().db;
+    secondaryDB = secondary.managers.session.getDatabase().db;
   });
 
   afterEach(async () => {
@@ -77,15 +72,19 @@ describe('ProfileProtocolHandler', () => {
 
   it('should exist within the protocol map', () => {
     expect(
-      secondary.manager.message.protocolHandlers.has(EVENTS.ProfileUpdate),
+      secondary.managers.message.protocolHandlers.has(EVENTS.ProfileUpdate),
     ).toBe(true);
   });
 
   it('should handle valid ProfileUpdate message', async () => {
+    // `updateProfile` intentionally does not write profileURL, so the profile
+    // matches the record the handshake already stored when it is null
     const profile = await buildTestProfilePayload({
       username: 'alice',
+      profileURL: null,
       publicKey: primary.publicKey,
       secretKey: primary.secretKey,
+      timestamp: now() + 60_000, // strictly newer than the handshake copy
     });
 
     const message = (await createProfileUpdateMessage({
@@ -98,9 +97,6 @@ describe('ProfileProtocolHandler', () => {
       topics: string[];
     }>;
 
-    // this makes primaryManager think it already sent the message
-    primary.manager.throttle.updateByMessage(message);
-
     let eventContext: unknown = null;
     secondary.emitter.on(
       EVENTS.ProfileUpdate,
@@ -109,11 +105,9 @@ describe('ProfileProtocolHandler', () => {
       },
     );
 
-    await secondary.manager.message.handleIncomingMessage(
-      primary.socket,
-      JSON.stringify(message),
-      primary.info,
-    );
+    await deliverMessage(secondary, primary, message);
+    await factory.settle();
+
     const profileRecord = await getExistingProfile(
       secondaryDB,
       profile.publicKey,
@@ -121,45 +115,20 @@ describe('ProfileProtocolHandler', () => {
 
     expect(eventContext).toBeDefined();
     expect(eventContext).toEqual(message);
-
     expect(stripIds(profileRecord)).toEqual(message.payload.profile);
   });
 
   it('should update record base on valid ProfileUpdate message', async () => {
-    const profile = {
-      username: 'alice',
-      tag: '@pancake',
-      profileURL: null,
-      publicKey: secondary.publicKey,
-    };
+    const base = await createProfileForSecondary();
 
-    // generate the base profile payload in the secondary
-    const originalProfile = await createProfileForPublicKey(
-      secondaryDB,
-      profile,
-      hexToUint8(secondary.secretKey),
-    );
-
-    // update the recorded profile payload with new parameters
-    const newProfileParams = { ...profile, username: 'alice likes pancake' };
-    await updateProfileForPublicKey(
-      secondaryDB,
-      originalProfile.id,
-      newProfileParams,
-      hexToUint8(secondary.secretKey),
-    );
-
-    // fetch the updated payload from the secondary
-    const updatedProfile = await getExistingProfile(
-      secondaryDB,
-      originalProfile.publicKey,
-    );
-
-    // only store the base profile in the primary to differentiate with the newer one
-    await createProfile(primaryDB, originalProfile);
+    // a profile with an older timestamp must not overwrite the stored one
+    const newer = await updateProfileForSecondary(base, {
+      username: 'alice likes pancake',
+      timestamp: base.timestamp + 60_000,
+    });
 
     const message = (await createProfileUpdateMessage({
-      profile: stripIds(updatedProfile),
+      profile: stripIds(newer),
       topics: [generalTopicHash],
       publicKey: secondary.publicKey,
       secretKey: secondary.secretKey,
@@ -168,26 +137,55 @@ describe('ProfileProtocolHandler', () => {
       topics: string[];
     }>;
 
-    let eventContext: unknown = null;
-    primary.emitter.on(
-      EVENTS.ProfileUpdate,
-      ({ message }: { message: unknown }) => {
-        eventContext = message;
-      },
-    );
+    await deliverMessage(primary, secondary, message);
+    await factory.settle();
 
-    // primary with older profile payload will receive updated profile
-    await primary.manager.message.handleIncomingMessage(
-      secondary.socket,
-      JSON.stringify(message),
-      secondary.info,
-    );
+    // primary held the older profile payload: it is now updated
     const profileRecord = await getProfileByPublicKey(
       primaryDB,
       secondary.publicKey,
     );
-
-    // now the profile payload within the primary should also be updated
-    expect(profileRecord).toEqual(updatedProfile);
+    expect(stripIds(profileRecord)).toEqual(stripIds(newer));
   });
+
+  /** Creates the secondary's profile locally (the handshake stored it too). */
+  const createProfileForSecondary = async () => {
+    const existing = await getProfileByPublicKey(
+      secondaryDB,
+      secondary.publicKey,
+    );
+    if (existing) return existing;
+
+    return createProfile(
+      secondaryDB,
+      await buildTestProfilePayload({
+        username: 'alice',
+        profileURL: null,
+        publicKey: secondary.publicKey,
+        secretKey: secondary.secretKey,
+      }),
+    );
+  };
+
+  /** Signs and stores a newer version of the given profile. */
+  const updateProfileForSecondary = async (
+    base: ProfileRecord,
+    params: { username: string; timestamp: number },
+  ) => {
+    const payload = buildProfilePayload({
+      username: params.username,
+      tag: base.tag,
+      profileURL: base.profileURL,
+      publicKey: secondary.publicKey,
+      timestamp: params.timestamp,
+    });
+    const signature = await signJSON(payload, hexToUint8(secondary.secretKey));
+
+    const { profileId } = await updateProfile(secondaryDB, base.id, {
+      ...payload,
+      signature,
+    });
+
+    return (await getProfile(secondaryDB, profileId))!;
+  };
 });

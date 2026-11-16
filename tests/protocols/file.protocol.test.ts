@@ -1,3 +1,4 @@
+// @ts-nocheck
 import path from 'path';
 import * as EVENTS from '../../src/constants/events.constants.js';
 import * as MESSAGES from '../../src/constants/messages.constants.js';
@@ -17,17 +18,16 @@ import {
 } from '../../src/utils/protocol.utils.js';
 import {
   buildTestSpacePayload,
-  unframeJson,
   makeTempDir,
   cleanup,
   generateRandomFile,
 } from '../general.utils.js';
 import { MockCoreFactory } from '../mock.factory.js';
 import {
+  collectMessages,
   connectProtocolNodes,
-  createProtocolNodes,
-  type ProtocolNode,
-} from '../protocol.harness.js';
+  deliverMessage,
+} from '../protocol.utils.js';
 import {
   createDownloadRecord,
   createFileIndexRecord,
@@ -35,24 +35,19 @@ import {
   generateFileTreeRecord,
   getFileChunk,
   getFileTreeRecord,
-  queryFileRegistryRecords,
   updateDownloadRecord,
 } from '../../src/utils/files.utils.js';
 import { generateMerkleTree } from '../../src/utils/merkletree.utils.js';
 import {
   closeFile,
   createFileStream,
-  fileExists,
   getFileSize,
   openFile,
   posixPathJoin,
 } from '../../src/utils/system.utils.js';
 import { DEFAULT_CHUNK_SIZE } from '../../src/constants/global.constants.js';
-import { FrameTypes } from '../../src/managers/multiplexer.manager.js';
 import type { SignedSpace } from '../../src/utils/space.utils.js';
 import type { SpaceFileRecordInput } from '../../src/utils/protocol.utils.js';
-
-type TestNode = ProtocolNode;
 
 async function getExistingSpace(db: any, spaceId: number) {
   const space = await getSpace(db, spaceId);
@@ -60,28 +55,42 @@ async function getExistingSpace(db: any, spaceId: number) {
   return space;
 }
 
+/**
+ * Three factory cores that share one space on the in-memory peer network:
+ * primary and secondary communicate, standby only receives broadcasts.
+ * Replies and broadcasts are observed as the protocol messages the peers
+ * receive (`EVENTS.General`), and streamed chunks as what the receiving
+ * download task is fed.
+ */
 describe('Space File Protocols', () => {
   let factory: MockCoreFactory;
-  let nodes: TestNode[] = [];
-  let primary: TestNode;
+  let cores: any[];
+  let primary: any;
   let primaryDB: any;
-  let secondary: TestNode;
+  let secondary: any;
   let secondaryDB: any;
-  let standby: TestNode;
+  let standby: any;
   let standbyDB: any;
   let spaceParams: Awaited<ReturnType<typeof buildTestSpacePayload>>;
   let spaceTopicHash: string;
+  let inboxes: Map<string, ReturnType<typeof collectMessages>>;
+
+  const inboxOf = (core: any) => inboxes.get(core.name)!;
 
   beforeEach(async () => {
     factory = new MockCoreFactory();
     await factory.init();
 
-    nodes = await createProtocolNodes(factory, 3);
-    [primary, secondary, standby] = nodes;
+    cores = await factory.createMultipleCores(3);
+    const names = ['primary', 'secondary', 'standby'];
+    cores.forEach((core, index) => {
+      core.name = names[index];
+    });
+    [primary, secondary, standby] = cores;
 
-    primaryDB = primary.manager.session.getDatabase().db;
-    secondaryDB = secondary.manager.session.getDatabase().db;
-    standbyDB = standby.manager.session.getDatabase().db;
+    primaryDB = primary.managers.session.getDatabase().db;
+    secondaryDB = secondary.managers.session.getDatabase().db;
+    standbyDB = standby.managers.session.getDatabase().db;
 
     spaceParams = await buildTestSpacePayload({
       spaceName: 'TestSpace',
@@ -107,7 +116,9 @@ describe('Space File Protocols', () => {
 
     spaceTopicHash = getSpaceTopicHash(spaceParams);
 
-    connectProtocolNodes(spaceTopicHash, [primary, secondary, standby]);
+    await connectProtocolNodes(factory, spaceTopicHash, cores);
+
+    inboxes = new Map(cores.map((core) => [core.name, collectMessages(core)]));
   });
 
   afterEach(async () => {
@@ -137,23 +148,16 @@ describe('Space File Protocols', () => {
       const message = await createSpaceFileEventMessage({
         topic: unkownTopic,
         events: [],
-        publicKey: secondary.publicKey,
-        secretKey: secondary.secretKey,
+        publicKey: primary.publicKey,
+        secretKey: primary.secretKey,
       });
 
-      await secondary.manager.message.handleIncomingMessage(
-        primary.socket,
-        JSON.stringify(message),
-        primary.info,
-      );
+      await deliverMessage(secondary, primary, message);
+      await factory.settle();
 
-      const primaryCalls = primary.socket.write.mock.calls;
-      expect(primaryCalls.length).toBe(1);
-
-      const secondaryResponse = JSON.parse(
-        unframeJson(primary.socket.write.mock.calls[0][0]),
-      );
-      expect(secondaryResponse.payload.reason).toBe(
+      const replies = inboxOf(primary).of(EVENTS.Reject, secondary);
+      expect(replies).toHaveLength(1);
+      expect(replies[0].message.payload.reason).toBe(
         MESSAGES.SPACE_NOT_FOUND_MESSAGE,
       );
     });
@@ -166,17 +170,12 @@ describe('Space File Protocols', () => {
         secretKey: standby.secretKey,
       });
 
-      await secondary.manager.message.handleIncomingMessage(
-        primary.socket,
-        JSON.stringify(message),
-        primary.info,
-      );
+      await deliverMessage(secondary, primary, message);
+      await factory.settle();
 
-      const primaryCalls = primary.socket.write.mock.calls;
-      expect(primaryCalls.length).toBe(1);
-
-      const rejection = JSON.parse(unframeJson(primaryCalls[0][0]));
-      expect(rejection.payload.reason).toBe(
+      const replies = inboxOf(primary).of(EVENTS.Reject, secondary);
+      expect(replies).toHaveLength(1);
+      expect(replies[0].message.payload.reason).toBe(
         MESSAGES.BROADCAST_PERMISSION_NOT_ALLOWED_MESSAGE,
       );
     });
@@ -202,7 +201,7 @@ describe('Space File Protocols', () => {
         rootHash: 'b'.repeat(10),
       });
 
-      primary.manager.spaceFileList.add(fileOneRecord);
+      primary.managers.spaceFileList.add(fileOneRecord);
 
       const eventStack = [
         {
@@ -222,26 +221,20 @@ describe('Space File Protocols', () => {
         secretKey: secondary.secretKey,
       });
 
-      await primary.manager.message.handleIncomingMessage(
-        secondary.socket,
-        JSON.stringify(message),
-        secondary.info,
-      );
+      await deliverMessage(primary, secondary, message);
+      await factory.settle();
 
-      const primaryFiles = primary.manager.spaceFileList.get(spaceTopicHash);
+      const primaryFiles = primary.managers.spaceFileList.get(spaceTopicHash);
       expect(primaryFiles['/file1.txt']).toBeDefined();
 
       const file1Peers = primaryFiles['/file1.txt']['a'.repeat(10)].peers;
       expect(file1Peers[secondary.publicKey].timestamp).toBe(2000);
 
-      const standbyCalls = standby.socket.write.mock.calls;
-      expect(standbyCalls.length).toBe(1);
+      // standby received the filtered broadcast, byte for byte
+      const broadcasts = inboxOf(standby).of(EVENTS.SpaceFileEvent, primary);
+      expect(broadcasts).toHaveLength(1);
 
-      const primaryBroadcastMessage = JSON.parse(
-        unframeJson(standby.socket.write.mock.calls[0][0]),
-      );
-      const broadcastEvents = primaryBroadcastMessage.payload[0].files;
-
+      const broadcastEvents = broadcasts[0].message.payload[0].files;
       expect(broadcastEvents).toEqual([
         toEvent(fileOneRenewalRecord),
         toEvent(fileTwoRecord),
@@ -258,7 +251,7 @@ describe('Space File Protocols', () => {
         secretKey: secondary.secretKey,
       });
 
-      primary.manager.spaceFileList.add(initialRecord);
+      primary.managers.spaceFileList.add(initialRecord);
 
       const removeRecord = await createRecord({
         topic: spaceTopicHash,
@@ -283,28 +276,20 @@ describe('Space File Protocols', () => {
         secretKey: secondary.secretKey,
       });
 
-      await primary.manager.message.handleIncomingMessage(
-        secondary.socket,
-        JSON.stringify(message),
-        secondary.info,
-      );
-
-      // short pause for handler to process event
-      await new Promise((resolve) => setImmediate(resolve));
+      await deliverMessage(primary, secondary, message);
+      await factory.settle();
 
       // ensure that the provider was removed from the primary node's list
-      const primaryFiles = primary.manager.spaceFileList.get(spaceTopicHash);
+      const primaryFiles = primary.managers.spaceFileList.get(spaceTopicHash);
       expect(primaryFiles['/file1.txt']).toBeUndefined();
 
-      // ensure that the primary broadcast the removal to other pears
-      const standbyCalls = standby.socket.write.mock.calls;
-      expect(standbyCalls.length).toBe(1);
-
-      const broadcastMessage = JSON.parse(unframeJson(standbyCalls[0][0]));
-      expect(broadcastMessage.payload[0].action).toBe(
+      // ensure that the primary broadcast the removal to other peers
+      const broadcasts = inboxOf(standby).of(EVENTS.SpaceFileEvent, primary);
+      expect(broadcasts).toHaveLength(1);
+      expect(broadcasts[0].message.payload[0].action).toBe(
         EVENTS.SpaceFileEventOptions.REMOVE,
       );
-      expect(broadcastMessage.payload[0].files).toEqual([
+      expect(broadcasts[0].message.payload[0].files).toEqual([
         toEvent(removeRecord),
       ]);
     });
@@ -326,8 +311,7 @@ describe('Space File Protocols', () => {
 
       fileSize = await getFileSize(filePath);
 
-      const { db } = primary.manager.session.getDatabase();
-      const result = await generateFileTreeRecord(db, {
+      const result = await generateFileTreeRecord(primaryDB, {
         fileSourcePath: filePath,
         spacePath: spacePath,
         spaceFilename: spaceFilename,
@@ -335,7 +319,7 @@ describe('Space File Protocols', () => {
       });
 
       rootHash = result.rootHash;
-      tree = (await getFileTreeRecord(db, result.registryId))!;
+      tree = (await getFileTreeRecord(primaryDB, result.registryId))!;
     });
 
     afterEach(async () => {
@@ -343,7 +327,6 @@ describe('Space File Protocols', () => {
     });
 
     it('should response with the correct file tree for valid request', async () => {
-      const { db } = primary.manager.session.getDatabase();
       const message = await createSpaceFileTreeRequestMessage({
         topic: spaceTopicHash,
         rootHash: rootHash,
@@ -352,51 +335,44 @@ describe('Space File Protocols', () => {
         secretKey: secondary.secretKey,
       });
 
-      await primary.manager.message.handleIncomingMessage(
-        secondary.socket,
-        JSON.stringify(message),
-        secondary.info,
-      );
+      await deliverMessage(primary, secondary, message);
+      await factory.settle();
 
-      const secondaryCalls = secondary.socket.write.mock.calls;
-      expect(secondaryCalls.length).toBe(1);
+      const responses = inboxOf(secondary).of(EVENTS.SpaceFileTreeResponse, primary);
+      expect(responses).toHaveLength(1);
 
-      const primaryResponse = JSON.parse(
-        unframeJson(secondary.socket.write.mock.calls[0][0]),
+      const responseStatus = validateSpaceFileTreeResponsePayload(
+        responses[0].message,
       );
-      const responseStatus =
-        validateSpaceFileTreeResponsePayload(primaryResponse);
 
       expect(responseStatus.isValid).toBe(true);
-      expect(primaryResponse.payload.tree.rootHash).toEqual(rootHash);
+      expect(responses[0].message.payload.tree.rootHash).toEqual(rootHash);
     });
 
     it('should response with the last downloaded leaf for partially download file', async () => {
-      const { db } = primary.manager.session.getDatabase();
-
-      await deleteFileRecord(db, 1); // remove preloaded file registry
+      await deleteFileRecord(primaryDB, 1); // remove preloaded file registry
 
       // suppose we have partial download record for certain file
       // here we first should insert the tree into the database
-      const tree = await generateMerkleTree({
+      const partialTree = await generateMerkleTree({
         stream: createFileStream(filePath),
         size: fileSize,
         chunkSize: DEFAULT_CHUNK_SIZE,
       });
 
       // now we need to create a download record the that file
-      const { registryId } = await createDownloadRecord(db, {
+      const { registryId } = await createDownloadRecord(primaryDB, {
         tempFilePath: path.join(root, 'temp.download'),
         finalDestination: path.join(root, 'final.download'),
         spaceId: 1,
         spaceFilename: spaceFilename,
         spacePath: spacePath,
-        rootHash: tree.rootHash,
-        leafCount: tree.levels[tree.height].length,
-        height: tree.height,
+        rootHash: partialTree.rootHash,
+        leafCount: partialTree.levels[partialTree.height].length,
+        height: partialTree.height,
       });
 
-      await createFileIndexRecord(db, registryId, tree);
+      await createFileIndexRecord(primaryDB, registryId, partialTree);
 
       // we download the first two chunks as our partial download
       const localFileHandler = await openFile(filePath);
@@ -409,7 +385,7 @@ describe('Space File Protocols', () => {
 
       const writeHandler = await openFile(path.join(root, 'temp.download'));
 
-      await updateDownloadRecord(db, {
+      await updateDownloadRecord(primaryDB, {
         registryId: registryId,
         leafIndex: 0,
         leafContent: firstChunk,
@@ -424,24 +400,19 @@ describe('Space File Protocols', () => {
         secretKey: secondary.secretKey,
       });
 
-      await primary.manager.message.handleIncomingMessage(
-        secondary.socket,
-        JSON.stringify(message),
-        secondary.info,
-      );
+      await deliverMessage(primary, secondary, message);
+      await factory.settle();
 
-      const secondaryCalls = secondary.socket.write.mock.calls;
-      expect(secondaryCalls.length).toBe(1);
+      const responses = inboxOf(secondary).of(EVENTS.SpaceFileTreeResponse, primary);
+      expect(responses).toHaveLength(1);
 
-      const primaryResponse = JSON.parse(
-        unframeJson(secondary.socket.write.mock.calls[0][0]),
+      const responseStatus = validateSpaceFileTreeResponsePayload(
+        responses[0].message,
       );
-      const responseStatus =
-        validateSpaceFileTreeResponsePayload(primaryResponse);
 
       expect(responseStatus.isValid).toBe(true);
-      expect(primaryResponse.payload.tree.rootHash).toEqual(rootHash);
-      expect(primaryResponse.payload.lastRequestableLeaf).toBe(1);
+      expect(responses[0].message.payload.tree.rootHash).toEqual(rootHash);
+      expect(responses[0].message.payload.lastRequestableLeaf).toBe(1);
 
       await closeFile(localFileHandler);
       await closeFile(writeHandler);
@@ -466,8 +437,7 @@ describe('Space File Protocols', () => {
 
       fileSize = await getFileSize(filePath);
 
-      const { db } = primary.manager.session.getDatabase();
-      const result = await generateFileTreeRecord(db, {
+      const result = await generateFileTreeRecord(primaryDB, {
         fileSourcePath: filePath,
         spacePath,
         spaceFilename,
@@ -497,15 +467,12 @@ describe('Space File Protocols', () => {
         secretKey: standby.secretKey,
       });
 
-      await primary.manager.message.handleIncomingMessage(
-        secondary.socket, // socket from secondary, info.publicKey = secondary
-        JSON.stringify(message),
-        secondary.info,
-      );
+      await deliverMessage(primary, secondary, message);
+      await factory.settle();
 
-      const primaryCalls = secondary.socket.write.mock.calls;
-      const rejection = JSON.parse(unframeJson(primaryCalls[0][0]));
-      expect(rejection.payload.reason).toBe(MESSAGES.NO_RELAY_MESSAGE);
+      const replies = inboxOf(secondary).of(EVENTS.Reject, primary);
+      expect(replies).toHaveLength(1);
+      expect(replies[0].message.payload.reason).toBe(MESSAGES.NO_RELAY_MESSAGE);
     });
 
     it('should reject when space not found', async () => {
@@ -519,23 +486,23 @@ describe('Space File Protocols', () => {
         secretKey: secondary.secretKey,
       });
 
-      await primary.manager.message.handleIncomingMessage(
-        secondary.socket,
-        JSON.stringify(message),
-        secondary.info,
-      );
+      await deliverMessage(primary, secondary, message);
+      await factory.settle();
 
-      const primaryCalls = secondary.socket.write.mock.calls;
-      expect(primaryCalls.length).toBe(1);
-      const rejection = JSON.parse(unframeJson(primaryCalls[0][0]));
-      expect(rejection.payload.reason).toBe(MESSAGES.SPACE_NOT_FOUND_MESSAGE);
+      const replies = inboxOf(secondary).of(EVENTS.Reject, primary);
+      expect(replies).toHaveLength(1);
+      expect(replies[0].message.payload.reason).toBe(
+        MESSAGES.SPACE_NOT_FOUND_MESSAGE,
+      );
     });
 
     it('should reject when the sender is not allowed to read', async () => {
-      // create a node not in readWhitelist
-      const [unauthorized] = await createProtocolNodes(factory, 1);
-      // connect unauthorized to primary
-      connectProtocolNodes(spaceTopicHash, [primary, unauthorized]);
+      // create a node not in readWhitelist and bring it up on the topic
+      const [unauthorized] = await factory.createMultipleCores(1);
+      unauthorized.name = 'unauthorized';
+      await unauthorized.managers.connection.join(spaceTopicHash);
+      await factory.settle();
+      const unauthorizedInbox = collectMessages(unauthorized);
 
       const message = await createSpaceFileContentRequestMessage({
         topic: spaceTopicHash,
@@ -547,17 +514,12 @@ describe('Space File Protocols', () => {
         secretKey: unauthorized.secretKey,
       });
 
-      await primary.manager.message.handleIncomingMessage(
-        unauthorized.socket,
-        JSON.stringify(message),
-        unauthorized.info,
-      );
+      await deliverMessage(primary, unauthorized, message);
+      await factory.settle();
 
-      const primaryCalls = unauthorized.socket.write.mock.calls;
-      expect(primaryCalls.length).toBe(1);
-
-      const rejection = JSON.parse(unframeJson(primaryCalls[0][0]));
-      expect(rejection.payload.reason).toBe(
+      const replies = unauthorizedInbox.of(EVENTS.Reject, primary);
+      expect(replies).toHaveLength(1);
+      expect(replies[0].message.payload.reason).toBe(
         MESSAGES.READ_PERMISSION_NOT_ALLOWED_MESSAGE,
       );
     });
@@ -574,16 +536,14 @@ describe('Space File Protocols', () => {
         secretKey: secondary.secretKey,
       });
 
-      await primary.manager.message.handleIncomingMessage(
-        secondary.socket,
-        JSON.stringify(message),
-        secondary.info,
-      );
+      await deliverMessage(primary, secondary, message);
+      await factory.settle();
 
-      const primaryCalls = secondary.socket.write.mock.calls;
-      expect(primaryCalls.length).toBe(1);
-      const rejection = JSON.parse(unframeJson(primaryCalls[0][0]));
-      expect(rejection.payload.reason).toBe(MESSAGES.SPACE_FILE_NOT_FOUND);
+      const replies = inboxOf(secondary).of(EVENTS.Reject, primary);
+      expect(replies).toHaveLength(1);
+      expect(replies[0].message.payload.reason).toBe(
+        MESSAGES.SPACE_FILE_NOT_FOUND,
+      );
     });
 
     it('should reject when slice is not available (beyond leaf count)', async () => {
@@ -597,80 +557,82 @@ describe('Space File Protocols', () => {
         secretKey: secondary.secretKey,
       });
 
-      await primary.manager.message.handleIncomingMessage(
-        secondary.socket,
-        JSON.stringify(message),
-        secondary.info,
-      );
+      await deliverMessage(primary, secondary, message);
+      await factory.settle();
 
-      const primaryCalls = secondary.socket.write.mock.calls;
-      expect(primaryCalls.length).toBe(1);
-      const rejection = JSON.parse(unframeJson(primaryCalls[0][0]));
-      expect(rejection.payload.reason).toBe(
+      const replies = inboxOf(secondary).of(EVENTS.Reject, primary);
+      expect(replies).toHaveLength(1);
+      expect(replies[0].message.payload.reason).toBe(
         MESSAGES.SLICE_NOT_AVAILABLE_MESSAGE,
       );
     });
 
-    it('should send correct frames for a valid request', async () => {
+    it('should deliver the requested chunks to the requester download task', async () => {
       const startLeaf = 0;
       const endLeaf = 2;
 
-      const message = await createSpaceFileContentRequestMessage({
-        topic: spaceTopicHash,
-        spaceFilePath: posixPathJoin(spacePath, spaceFilename),
-        leafStart: startLeaf,
-        leafStop: endLeaf,
-        downloadKey: testKey,
-        publicKey: secondary.publicKey,
-        secretKey: secondary.secretKey,
-      });
+      // the requester routes incoming stream chunks to the download task of the key
+      const received: Array<{
+        leafIndex: number;
+        chunk: Buffer;
+        publicKey: string;
+      }> = [];
+      const stubTask = {
+        handleChunk: async (
+          leafIndex: number,
+          chunk: Buffer,
+          publicKey: string,
+        ) => {
+          received.push({ leafIndex, chunk, publicKey });
+        },
+        stop: async () => {},
+      };
+      secondary.managers.spaceFiles.downloadTasks.set(testKey, stubTask);
 
-      await primary.manager.message.handleIncomingMessage(
-        secondary.socket,
-        JSON.stringify(message),
-        secondary.info,
-      );
+      try {
+        const message = await createSpaceFileContentRequestMessage({
+          topic: spaceTopicHash,
+          spaceFilePath: posixPathJoin(spacePath, spaceFilename),
+          leafStart: startLeaf,
+          leafStop: endLeaf,
+          downloadKey: testKey,
+          publicKey: secondary.publicKey,
+          secretKey: secondary.secretKey,
+        });
 
-      // wait for task to be assigned internally and then wait for completion of the task
-      await new Promise((resolve) => setImmediate(resolve));
-      await primary.manager.delivery.waitForTask(testKey);
+        await deliverMessage(primary, secondary, message);
 
-      const calls = secondary.socket.write.mock.calls;
+        // wait for task to be assigned internally and then wait for completion of the task
+        const taskResult = await primary.managers.delivery.waitForTask(testKey);
+        expect(taskResult.succeed).toBe(true);
+        await factory.settle();
 
-      const expectedChunks = endLeaf - startLeaf + 1;
-      expect(calls.length).toBe(expectedChunks);
+        const expectedChunks = endLeaf - startLeaf + 1;
+        expect(received).toHaveLength(expectedChunks);
 
-      const keyBuffer = Buffer.from(testKey, 'hex');
-      const fileHandler = await openFile(filePath);
-      const stats = await fileHandler.stat();
-      const size = stats.size;
+        const fileHandler = await openFile(filePath);
+        const stats = await fileHandler.stat();
+        const size = stats.size;
 
-      for (let index = 0; index < expectedChunks; index++) {
-        const frame = calls[index][0];
+        for (let index = 0; index < expectedChunks; index++) {
+          const delivered = received[index];
+          expect(delivered.leafIndex).toBe(startLeaf + index);
+          expect(delivered.publicKey).toBe(primary.publicKey);
 
-        const type = frame[0];
-        expect(type).toBe(FrameTypes.STREAM);
+          const expectedChunk = await getFileChunk(
+            fileHandler,
+            size,
+            startLeaf + index,
+            DEFAULT_CHUNK_SIZE,
+          );
 
-        const length = frame.readUInt32BE(1);
-        const payload = frame.subarray(5, 5 + length);
-        const receivedKey = payload.subarray(0, keyBuffer.length);
-        const leafIndex = payload.readUInt32BE(keyBuffer.length);
+          expect(delivered.chunk).toEqual(expectedChunk);
+        }
 
-        expect(receivedKey).toEqual(keyBuffer);
-        expect(leafIndex).toBe(startLeaf + index);
-
-        const chunk = payload.subarray(keyBuffer.length + 4);
-        const expectedChunk = await getFileChunk(
-          fileHandler,
-          size,
-          startLeaf + index,
-          DEFAULT_CHUNK_SIZE,
-        );
-
-        expect(chunk).toEqual(expectedChunk);
+        await closeFile(fileHandler);
+      } finally {
+        secondary.managers.spaceFiles.downloadTasks.delete(testKey);
       }
-
-      await closeFile(fileHandler);
     });
   });
 

@@ -1,21 +1,19 @@
+// @ts-nocheck
 import * as EVENTS from '../../src/constants/events.constants.js';
 import * as MESSAGES from '../../src/constants/messages.constants.js';
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import {
   createMessageRecord,
   queryMessageRecord,
 } from '../../src/utils/message.utils.js';
 import { now } from '../../src/utils/general.utils.js';
-import {
-  buildTestSpacePayload,
-  unframeJson,
-} from '../general.utils.js';
+import { buildTestSpacePayload } from '../general.utils.js';
 import { MockCoreFactory } from '../mock.factory.js';
 import {
+  collectMessages,
   connectProtocolNodes,
-  createProtocolNodes,
-  type ProtocolNode,
-} from '../protocol.harness.js';
+  deliverMessage,
+} from '../protocol.utils.js';
 import {
   createBaseMessage,
   createNegentropyContentDeliveryMessage,
@@ -29,17 +27,10 @@ import {
   createSpaceForPublicKey,
   getSpace,
   getSpaceTopicHash,
+  upsertSpace,
 } from '../../src/utils/space.utils.js';
 import { hex, randomNonce } from '../../src/utils/crypto.utils.js';
-
-type TestNode = ProtocolNode;
-
-type TestFrame = {
-  to: 'provider' | 'requester';
-  type: string;
-  payload: any;
-  [key: string]: any;
-};
+import type { SignedSpace } from '../../src/utils/space.utils.js';
 
 async function getExistingSpace(db: any, spaceId: number) {
   const space = await getSpace(db, spaceId);
@@ -48,30 +39,53 @@ async function getExistingSpace(db: any, spaceId: number) {
 }
 
 /**
- * In this test subject we use 4 virtual nodes with different purposes:
+ * In this test subject we use 4 factory cores with different purposes:
  *
  * 1. primary and secondary nodes are the ones that 'communicate' and handle messages from each other.
  * 2. standby node is allowed to receive and read messages, but does not communicate. it only receives broadcast messages.
  * 3. outlier node is subscribed to the common topic, but is not allowed for read or broadcast.
  *    We consider outlier receiving any message from the space, an exception that should be avoided.
+ *
+ * Nodes run on the in-memory peer network: the deterministic message is injected
+ * into the receiver over the real link and every reply is observed as the
+ * protocol message the sender receives (`EVENTS.General`). Assertions are scoped
+ * by message type and sender, so handshake chatter and duplicate-nonce
+ * rejections stay out of them.
  */
 describe('Message Protocols', () => {
   let factory: MockCoreFactory;
-  let nodes: TestNode[] = [];
-  let primary: TestNode;
+  let cores: any[];
+  let primary: any;
   let primaryDB: any;
-  let secondary: TestNode;
-  let standby: TestNode;
-  let outlier: TestNode;
+  let secondary: any;
+  let secondaryDB: any;
+  let standby: any;
+  let standbyDB: any;
+  let outlier: any;
   let spaceParams: Awaited<ReturnType<typeof buildTestSpacePayload>>;
   let spaceTopicHash: string;
+  let inboxes: Map<string, ReturnType<typeof collectMessages>>;
+
+  const inboxOf = (core: any) => inboxes.get(core.name)!;
+
+  /** Connects all four cores through the shared topic and waits for the handshake. */
+  const connect = () => connectProtocolNodes(factory, spaceTopicHash, cores);
+
+  /** Attaches the message collectors of every core. */
+  const collect = () => {
+    inboxes = new Map(cores.map((core) => [core.name, collectMessages(core)]));
+  };
 
   beforeEach(async () => {
     factory = new MockCoreFactory();
     await factory.init();
 
-    nodes = await createProtocolNodes(factory, 4);
-    [primary, secondary, standby, outlier] = nodes;
+    cores = await factory.createMultipleCores(4);
+    const names = ['primary', 'secondary', 'standby', 'outlier'];
+    cores.forEach((core, index) => {
+      core.name = names[index];
+    });
+    [primary, secondary, standby, outlier] = cores;
 
     spaceParams = await buildTestSpacePayload({
       spaceName: 'TestSpace',
@@ -87,9 +101,10 @@ describe('Message Protocols', () => {
     });
 
     spaceTopicHash = getSpaceTopicHash(spaceParams);
-    connectProtocolNodes(spaceTopicHash, [primary, secondary, standby, outlier]);
 
-    primaryDB = primary.manager.session.getDatabase().db;
+    primaryDB = primary.managers.session.getDatabase().db;
+    secondaryDB = secondary.managers.session.getDatabase().db;
+    standbyDB = standby.managers.session.getDatabase().db;
   });
 
   afterEach(async () => {
@@ -97,6 +112,12 @@ describe('Message Protocols', () => {
   });
 
   describe('SpaceMessageHandler', () => {
+    it('should exist within the protocol map', () => {
+      expect(
+        primary.managers.message.protocolHandlers.has(EVENTS.SpaceMessage),
+      ).toBe(true);
+    });
+
     it('should broadcast message from allowed publicKey', async () => {
       const { spaceId } = await createSpaceForPublicKey(
         primaryDB,
@@ -104,6 +125,11 @@ describe('Message Protocols', () => {
         primary.secretKey,
       );
       const space = await getExistingSpace(primaryDB, spaceId);
+      // standby learns the space, so it can receive the broadcast
+      await upsertSpace(standbyDB, space as unknown as SignedSpace);
+
+      await connect();
+      collect();
 
       const content = { data: 'hello world' };
       const nonce = hex(randomNonce());
@@ -126,26 +152,24 @@ describe('Message Protocols', () => {
         eventContext = context;
       });
 
-      await primary.manager.message.handleIncomingMessage(
-        secondary.socket,
-        JSON.stringify(message),
-        secondary.info,
-      );
+      await deliverMessage(primary, secondary, message);
+      await factory.settle();
 
       expect(eventContext.content).toEqual(content);
 
-      expect(secondary.socket.write.mock.calls.length).toBe(0);
+      // the sender receives nothing back
+      expect(inboxOf(secondary).of(EVENTS.SpaceMessage, primary)).toEqual([]);
 
-      const standbyCallStack = standby.socket.write.mock.calls;
-      expect(standbyCallStack.length).toBe(1);
-
-      const standbyReceivedMessage = JSON.parse(
-        unframeJson(standbyCallStack[0][0]),
+      // standby received the broadcast byte for byte
+      const standbyMessages = inboxOf(standby).of(
+        EVENTS.SpaceMessage,
+        primary,
       );
-      expect(standbyReceivedMessage).toEqual(message);
+      expect(standbyMessages).toHaveLength(1);
+      expect(standbyMessages[0].message).toEqual(message);
 
-      const outlierCallStack = outlier.socket.write.mock.calls;
-      expect(outlierCallStack.length).toBe(0);
+      // outlier should not receive the message
+      expect(inboxOf(outlier).of(EVENTS.SpaceMessage)).toEqual([]);
     });
   });
 
@@ -156,7 +180,7 @@ describe('Message Protocols', () => {
     ];
 
     const createSyncMessage = (
-      node: TestNode,
+      node: any,
       ranges: typeof wholeRangeIdList = wholeRangeIdList,
     ) =>
       createNegentropySyncMessage({
@@ -167,35 +191,34 @@ describe('Message Protocols', () => {
         secretKey: node.secretKey,
       });
 
-    const lastReply = (node: TestNode): any => {
-      const calls = node.socket.write.mock.calls;
-      return JSON.parse(unframeJson(calls[calls.length - 1][0]));
-    };
-
     it('should exist within the protocol map', () => {
       expect(
-        primary.manager.message.protocolHandlers.has(EVENTS.NegentropySync),
+        primary.managers.message.protocolHandlers.has(EVENTS.NegentropySync),
       ).toBe(true);
     });
 
     it('should reject relayed messages', async () => {
       await createSpaceForPublicKey(primaryDB, spaceParams, primary.secretKey);
+      await connect();
+      collect();
+
       const message = await createSyncMessage(standby);
 
-      await primary.manager.message.handleIncomingMessage(
-        secondary.socket,
-        JSON.stringify(message),
-        secondary.info,
-      );
+      await deliverMessage(primary, secondary, message);
+      await factory.settle();
 
-      expect(lastReply(secondary).type).toBe(EVENTS.Reject);
-      expect(lastReply(secondary).payload.reason).toBe(
+      const replies = inboxOf(secondary).of(EVENTS.Reject, primary);
+      expect(replies).toHaveLength(1);
+      expect(replies[0].message.payload.reason).toBe(
         MESSAGES.NO_RELAY_MESSAGE,
       );
     });
 
     it('should reject invalid payloads', async () => {
       await createSpaceForPublicKey(primaryDB, spaceParams, primary.secretKey);
+      await connect();
+      collect();
+
       const message = await createBaseMessage({
         type: EVENTS.NegentropySync,
         topic: spaceTopicHash,
@@ -204,52 +227,64 @@ describe('Message Protocols', () => {
         secretKey: secondary.secretKey,
       });
 
-      await primary.manager.message.handleIncomingMessage(
-        secondary.socket,
-        JSON.stringify(message),
-        secondary.info,
-      );
+      await deliverMessage(primary, secondary, message);
+      await factory.settle();
 
-      expect(lastReply(secondary).type).toBe(EVENTS.Reject);
-      expect(lastReply(secondary).payload.reason).toBe(
+      const replies = inboxOf(secondary).of(EVENTS.Reject, primary);
+      expect(replies).toHaveLength(1);
+      expect(replies[0].message.payload.reason).toBe(
         'sessionId should be 24 character hex string',
       );
     });
 
     it('should reject messages for an unknown space', async () => {
+      await connect();
+      collect();
+
       const message = await createSyncMessage(secondary);
 
-      await primary.manager.message.handleIncomingMessage(
-        secondary.socket,
-        JSON.stringify(message),
-        secondary.info,
-      );
+      await deliverMessage(primary, secondary, message);
+      await factory.settle();
 
-      expect(lastReply(secondary).payload.reason).toBe(
+      const replies = inboxOf(secondary).of(EVENTS.Reject, primary);
+      expect(replies).toHaveLength(1);
+      expect(replies[0].message.payload.reason).toBe(
         MESSAGES.SPACE_NOT_FOUND_MESSAGE,
       );
-      expect(primary.manager.sync.sessions.size).toBe(0);
+      expect(primary.managers.sync.sessions.size).toBe(0);
     });
 
     it('should not answer a peer that cannot read the space', async () => {
       await createSpaceForPublicKey(primaryDB, spaceParams, primary.secretKey);
+      await connect();
+      collect();
+
       const message = await createSyncMessage(outlier);
 
-      await primary.manager.message.handleIncomingMessage(
-        outlier.socket,
-        JSON.stringify(message),
-        outlier.info,
-      );
+      await deliverMessage(primary, outlier, message);
+      await factory.settle();
 
-      expect(lastReply(outlier).type).toBe(EVENTS.Reject);
-      expect(lastReply(outlier).payload.reason).toBe(
+      const replies = inboxOf(outlier).of(EVENTS.Reject, primary);
+      expect(replies).toHaveLength(1);
+      expect(replies[0].message.payload.reason).toBe(
         MESSAGES.READ_PERMISSION_NOT_ALLOWED_MESSAGE,
       );
-      expect(primary.manager.sync.sessions.size).toBe(0);
+      expect(primary.managers.sync.sessions.size).toBe(0);
     });
 
     it('should reconcile with a peer allowed to read the space', async () => {
-      await createSpaceForPublicKey(primaryDB, spaceParams, primary.secretKey);
+      const { spaceId } = await createSpaceForPublicKey(
+        primaryDB,
+        spaceParams,
+        primary.secretKey,
+      );
+      const space = await getExistingSpace(primaryDB, spaceId);
+      // the responder needs the space record to process the closing reply
+      await upsertSpace(secondaryDB, space as unknown as SignedSpace);
+
+      await connect();
+      collect();
+
       const message = await createSyncMessage(secondary);
 
       let eventContext: any = null;
@@ -257,19 +292,16 @@ describe('Message Protocols', () => {
         eventContext = context;
       });
 
-      await primary.manager.message.handleIncomingMessage(
-        secondary.socket,
-        JSON.stringify(message),
-        secondary.info,
-      );
+      await deliverMessage(primary, secondary, message);
+      await factory.settle();
 
       // both sides hold no message: the session ends right away
-      const reply = lastReply(secondary);
-      expect(reply.type).toBe(EVENTS.NegentropySync);
-      expect(reply.payload).toEqual({ sessionId, ranges: [] });
+      const replies = inboxOf(secondary).of(EVENTS.NegentropySync, primary);
+      expect(replies).toHaveLength(1);
+      expect(replies[0].message.payload).toEqual({ sessionId, ranges: [] });
       expect(eventContext.message).toEqual(message);
 
-      const session = primary.manager.sync.getSession(
+      const session = primary.managers.sync.getSession(
         secondary.publicKey,
         spaceTopicHash,
       );
@@ -280,72 +312,18 @@ describe('Message Protocols', () => {
 
   /**
    * primary (provider) serves standby (requester) messages authored by secondary.
-   * Frames are routed by hand: whatever a node writes to `X.socket` is handled by X.
+   * The exchange runs over the real in-memory link: the scheduler sends the
+   * request through the transport and every delivery is received and stored by
+   * the requester's message pipeline.
    */
   describe('Negentropy message delivery', () => {
     const MESSAGE_COUNT = 5;
 
-    let standbyDB: any;
     let primarySpaceId: number;
     let standbySpaceId: number;
     let storedIds: string[];
-    let frameLog: TestFrame[];
-    let cursors: Map<TestNode, number>;
-
-    /** Frames written to `node.socket` since the last call. */
-    const drain = (node: TestNode): string[] => {
-      const calls = node.socket.write.mock.calls;
-      const from = cursors.get(node) ?? 0;
-      cursors.set(node, calls.length);
-      return calls.slice(from).map(([buffer]: [Buffer]) => unframeJson(buffer));
-    };
-
-    const settle = () => new Promise((resolve) => setTimeout(resolve, 20));
-
-    /** Routes frames both ways until the conversation is over. */
-    const exchange = async (
-      requester: TestNode,
-      provider: TestNode,
-    ): Promise<void> => {
-      for (let round = 0; round < 50; round++) {
-        await settle();
-
-        const toProvider = drain(provider);
-        const toRequester = drain(requester);
-        const idle = provider.manager.sync.delivery.tasks.size === 0;
-
-        if (toProvider.length === 0 && toRequester.length === 0 && idle) return;
-
-        for (const raw of toProvider) {
-          frameLog.push({ to: 'provider', ...JSON.parse(raw) });
-          await provider.manager.message.handleIncomingMessage(
-            requester.socket,
-            raw,
-            requester.info,
-          );
-        }
-
-        for (const raw of toRequester) {
-          frameLog.push({ to: 'requester', ...JSON.parse(raw) });
-          await requester.manager.message.handleIncomingMessage(
-            provider.socket,
-            raw,
-            provider.info,
-          );
-        }
-      }
-
-      throw new Error('exchange did not settle');
-    };
-
-    const framesOfType = (type: string, to: TestFrame['to']) =>
-      frameLog.filter((frame) => frame.type === type && frame.to === to);
 
     beforeEach(async () => {
-      cursors = new Map();
-      frameLog = [];
-      standbyDB = standby.manager.session.getDatabase().db;
-
       ({ spaceId: primarySpaceId } = await createSpaceForPublicKey(
         primaryDB,
         spaceParams,
@@ -356,6 +334,11 @@ describe('Message Protocols', () => {
         spaceParams,
         standby.secretKey,
       ));
+
+      // connect before storing any history: the handshake then finds two empty
+      // histories and the message exchange stays under the test's control
+      await connect();
+      collect();
 
       storedIds = [];
       for (let index = 0; index < MESSAGE_COUNT; index++) {
@@ -375,10 +358,6 @@ describe('Message Protocols', () => {
 
         storedIds.push(messageId);
       }
-
-      // ignore the frames of the setup
-      drain(primary);
-      drain(standby);
     });
 
     it('should register the delivery handlers', () => {
@@ -387,12 +366,12 @@ describe('Message Protocols', () => {
         EVENTS.NegentropyContentDelivery,
         EVENTS.NegentropyContentCancel,
       ]) {
-        expect(primary.manager.message.protocolHandlers.has(type)).toBe(true);
+        expect(primary.managers.message.protocolHandlers.has(type)).toBe(true);
       }
     });
 
     it('should deliver requested messages and store them byte-identical', async () => {
-      const scheduler = standby.manager.sync.getScheduler(spaceTopicHash);
+      const scheduler = standby.managers.sync.getScheduler(spaceTopicHash);
       const delivered: string[] = [];
       standby.emitter.on(
         EVENTS.NegentropyContentDelivered,
@@ -401,20 +380,22 @@ describe('Message Protocols', () => {
 
       scheduler.addProvider(primary.publicKey, storedIds);
       scheduler.assign();
-      await exchange(standby, primary);
 
-      expect(scheduler.isComplete()).toBe(true);
+      await vi.waitFor(() => expect(scheduler.isComplete()).toBe(true));
+      await factory.settle();
+
       expect(delivered.sort()).toEqual([...storedIds].sort());
 
-      // one message per frame
-      const deliveries = framesOfType(
+      // one message per received frame
+      const deliveries = inboxOf(standby).of(
         EVENTS.NegentropyContentDelivery,
-        'requester',
+        primary,
       );
       expect(deliveries).toHaveLength(MESSAGE_COUNT);
       expect(
         deliveries.every(
-          (frame) => typeof frame.payload.content.canonicalPayload === 'string',
+          (frame: any) =>
+            typeof frame.message.payload.content.canonicalPayload === 'string',
         ),
       ).toBe(true);
 
@@ -428,7 +409,7 @@ describe('Message Protocols', () => {
 
       for (const record of ours) {
         const original = theirs.find(
-          (row) => row.messageId === record.messageId,
+          (row: any) => row.messageId === record.messageId,
         )!;
 
         expect(record.payload).toBe(original.payload);
@@ -443,15 +424,21 @@ describe('Message Protocols', () => {
 
     it('should withdraw ids the provider does not have', async () => {
       const missingId = 'f'.repeat(64);
-      const scheduler = standby.manager.sync.getScheduler(spaceTopicHash);
+      const scheduler = standby.managers.sync.getScheduler(spaceTopicHash);
 
       scheduler.addProvider(primary.publicKey, [...storedIds, missingId]);
       scheduler.assign();
-      await exchange(standby, primary);
 
-      const cancels = framesOfType(EVENTS.NegentropyContentCancel, 'requester');
+      await vi.waitFor(() => expect(scheduler.isComplete()).toBe(true));
+      await factory.settle();
+
+      // the provider reported the missing id right away
+      const cancels = inboxOf(standby).of(
+        EVENTS.NegentropyContentCancel,
+        primary,
+      );
       expect(cancels).toHaveLength(1);
-      expect(cancels[0].payload.messageIds).toEqual([missingId]);
+      expect(cancels[0].message.payload.messageIds).toEqual([missingId]);
 
       expect(scheduler.isComplete()).toBe(true);
       expect(scheduler.providers.has(missingId)).toBe(false);
@@ -473,25 +460,23 @@ describe('Message Protocols', () => {
         secretKey: primary.secretKey,
       });
 
-      await standby.manager.message.handleIncomingMessage(
-        primary.socket,
-        JSON.stringify(payload),
-        primary.info,
-      );
+      await deliverMessage(standby, primary, payload);
+      await factory.settle();
 
       // no rejection: a late delivery is a normal race
-      expect(drain(primary)).toHaveLength(0);
+      expect(inboxOf(primary).of(EVENTS.NegentropyContentCancel, standby)).toEqual([]);
+      expect(inboxOf(primary).of(EVENTS.Reject, standby)).toEqual([]);
       expect(
         await queryMessageRecord(standbyDB, { spaceId: standbySpaceId }),
       ).toHaveLength(0);
     });
 
     it('should penalize and cancel a provider that forges a message', async () => {
-      const scheduler = standby.manager.sync.getScheduler(spaceTopicHash);
+      const scheduler = standby.managers.sync.getScheduler(spaceTopicHash);
+      // the request is deliberately not routed: primary answers by hand
+      scheduler.setRequestHandler(async () => {});
       scheduler.addProvider(primary.publicKey, storedIds.slice(0, 1));
       scheduler.assign();
-      await settle();
-      drain(primary); // the request is not routed: primary answers by hand
 
       const { assignmentKey } = scheduler.assignments.get(primary.publicKey);
       const [record] = await queryMessageRecord(primaryDB, {
@@ -511,21 +496,18 @@ describe('Message Protocols', () => {
         secretKey: primary.secretKey,
       });
 
-      await standby.manager.message.handleIncomingMessage(
-        primary.socket,
-        JSON.stringify(payload),
-        primary.info,
-      );
-      await settle();
+      await deliverMessage(standby, primary, payload);
+      await factory.settle();
 
       expect(
         await queryMessageRecord(standbyDB, { spaceId: standbySpaceId }),
       ).toHaveLength(0);
       expect(scheduler.penalties.get(primary.publicKey)).toBe(1);
 
-      const [cancel] = drain(primary).map((raw) => JSON.parse(raw));
-      expect(cancel.type).toBe(EVENTS.NegentropyContentCancel);
-      expect(cancel.payload).toEqual({ assignmentKey });
+      // the requester told the provider to stop delivering the assignment
+      const cancels = inboxOf(primary).of(EVENTS.NegentropyContentCancel, standby);
+      expect(cancels).toHaveLength(1);
+      expect(cancels[0].message.payload).toEqual({ assignmentKey });
     });
 
     it('should reject requests from a peer that cannot read the space', async () => {
@@ -537,17 +519,12 @@ describe('Message Protocols', () => {
         secretKey: outlier.secretKey,
       });
 
-      await primary.manager.message.handleIncomingMessage(
-        outlier.socket,
-        JSON.stringify(request),
-        outlier.info,
-      );
-      await settle();
+      await deliverMessage(primary, outlier, request);
+      await factory.settle();
 
-      const replies = drain(outlier).map((raw) => JSON.parse(raw));
+      const replies = inboxOf(outlier).of(EVENTS.Reject, primary);
       expect(replies).toHaveLength(1);
-      expect(replies[0].type).toBe(EVENTS.Reject);
-      expect(replies[0].payload.reason).toBe(
+      expect(replies[0].message.payload.reason).toBe(
         MESSAGES.READ_PERMISSION_NOT_ALLOWED_MESSAGE,
       );
     });

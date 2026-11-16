@@ -6,12 +6,12 @@ import { initializeManagers } from '../../src/managers/initialization.js';
 import { createSpaceHashListMessage } from '../../src/utils/protocol.utils.js';
 import {
   buildTestSpacePayload,
+  getMockSocket,
   unframeJson,
 } from '../general.utils.js';
 import { MockCoreFactory } from '../mock.factory.js';
-import { createProtocolNode } from '../protocol.harness.js';
 import { BaseProtocolHandler } from '../../src/protocols/base.js';
-import { hex, randomNonce } from '../../src/utils/crypto.utils.js';
+import { hex, hexToUint8, randomNonce } from '../../src/utils/crypto.utils.js';
 import { getSpaceTopicHash } from '../../src/utils/space.utils.js';
 import { queryMessageRecord } from '../../src/utils/message.utils.js';
 
@@ -27,6 +27,19 @@ describe('MessageManager', () => {
     await factory.cleanup();
   });
 
+  /**
+   * Creates a factory core with a plain sink socket: handlers write their
+   * replies to it and the tests read them back through the mock calls.
+   */
+  const createNode = async (): Promise<any> => {
+    const core: any = await factory.createCore();
+    const manager = core.managers;
+    const socket = getMockSocket('message-manager');
+    const info = { publicKey: hexToUint8(core.publicKey) };
+    const emitter = core.emitter;
+    return { manager, socket, info, emitter };
+  };
+
   it('should exist within the initialized managers object', async () => {
     const managers: any = initializeManagers();
     expect(managers.message).toBeDefined();
@@ -35,9 +48,7 @@ describe('MessageManager', () => {
 
   describe('sendMessageToSocket', () => {
     it('should send message to socket', async () => {
-      const { manager, socket, info, emitter } = await createProtocolNode(
-        factory,
-      );
+      const { manager, socket, info, emitter } = await createNode();
       const { publicKey, secretKey } = manager.session.getCredentials();
       const db = manager.session.getDatabase().db;
 
@@ -62,9 +73,7 @@ describe('MessageManager', () => {
 
   describe('handleIncommingMessage', () => {
     it('should handle incoming messages with valid protocol handler', async () => {
-      const { manager, socket, info, emitter } = await createProtocolNode(
-        factory,
-      );
+      const { manager, socket, info, emitter } = await createNode();
       const { publicKey, secretKey } = manager.session.getCredentials();
 
       class TestProtocolHandler {
@@ -103,9 +112,7 @@ describe('MessageManager', () => {
     });
 
     it('should handle event callbacks for messages', async () => {
-      const { manager, socket, info, emitter } = await createProtocolNode(
-        factory,
-      );
+      const { manager, socket, info, emitter } = await createNode();
       const { publicKey, secretKey } = manager.session.getCredentials();
 
       class TestProtocolHandler extends BaseProtocolHandler {
@@ -151,9 +158,7 @@ describe('MessageManager', () => {
     });
 
     it('should reject messages that exceed size limit', async () => {
-      const { manager, socket, info, emitter } = await createProtocolNode(
-        factory,
-      );
+      const { manager, socket, info, emitter } = await createNode();
       const messageSize = manager.session.get('messaging.rawLimitSize');
       const largeRawMessage = Buffer.from(
         new Array(messageSize + 1).fill('a').join(''),
@@ -176,9 +181,7 @@ describe('MessageManager', () => {
     });
 
     it('should reject messages with invalid json', async () => {
-      const { manager, socket, info, emitter } = await createProtocolNode(
-        factory,
-      );
+      const { manager, socket, info, emitter } = await createNode();
       await manager.message.handleIncomingMessage(
         socket,
         '{"invalid": json}',
@@ -196,9 +199,7 @@ describe('MessageManager', () => {
     });
 
     it('should reject messages with invalid signature', async () => {
-      const { manager, socket, info, emitter } = await createProtocolNode(
-        factory,
-      );
+      const { manager, socket, info, emitter } = await createNode();
       const { publicKey, secretKey } = manager.session.getCredentials();
       const badMessage = await createSpaceHashListMessage({
         hashList: [],
@@ -225,9 +226,7 @@ describe('MessageManager', () => {
     });
 
     it('should reject messages when handlers thows error', async () => {
-      const { manager, socket, info, emitter } = await createProtocolNode(
-        factory,
-      );
+      const { manager, socket, info, emitter } = await createNode();
       const { publicKey, secretKey } = manager.session.getCredentials();
 
       class TempSpaceHanlder {
@@ -266,9 +265,7 @@ describe('MessageManager', () => {
     });
 
     it('should reject message when the message type has no handler', async () => {
-      const { manager, socket, info, emitter } = await createProtocolNode(
-        factory,
-      );
+      const { manager, socket, info, emitter } = await createNode();
       const { publicKey, secretKey } = manager.session.getCredentials();
 
       manager.message.setProtocolMap([]);
@@ -296,9 +293,7 @@ describe('MessageManager', () => {
     });
 
     it('should reject reject message duplicates', async () => {
-      const { manager, socket, info, emitter } = await createProtocolNode(
-        factory,
-      );
+      const { manager, socket, info, emitter } = await createNode();
       const { publicKey, secretKey } = manager.session.getCredentials();
 
       // enable throttle rejection
@@ -337,9 +332,7 @@ describe('MessageManager', () => {
     });
 
     it('should throttle and quarantine node for certain time period when node sends too many messages', async () => {
-      const { manager, socket, info, emitter } = await createProtocolNode(
-        factory,
-      );
+      const { manager, socket, info, emitter } = await createNode();
       const { publicKey, secretKey } = manager.session.getCredentials();
 
       // enable throttle rejection
