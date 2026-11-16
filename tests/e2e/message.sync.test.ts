@@ -2,7 +2,7 @@
 import * as EVENTS from '../../src/constants/events.constants.js';
 import * as MESSAGES from '../../src/constants/messages.constants.js';
 import { describe, it, expect, afterEach, vi } from 'vitest';
-import { CoreFactory } from '../factory.js';
+import { CoreFactory } from '../helpers/factory.js';
 import { NegentropySyncManager } from '../../src/managers/negentropy/negentropy.manager.js';
 import { getTopicToSpaceMap } from '../../src/utils/space.utils.js';
 import {
