@@ -3,10 +3,11 @@ import path from 'path';
 import { describe, beforeEach, afterEach, it, expect } from 'vitest';
 import {
   cleanup,
-  createP2PNetwork,
   generateRandomFile,
+  getMockSocket,
   makeTempDir,
 } from '../general.utils.js';
+import { MockCoreFactory } from '../mock.factory.js';
 import { FileHandlerCache } from '../../src/managers/delivery.manager.js';
 import { hex, hexToUint8, randomNonce } from '../../src/utils/crypto.utils.js';
 
@@ -87,6 +88,8 @@ describe('FileHandlerCache', () => {
 });
 
 describe('FileContentDeliveryManager', () => {
+  let factory: MockCoreFactory;
+  let core: any;
   let rootDirectory: any;
   let testFilePath: any;
   let manager: any;
@@ -99,21 +102,18 @@ describe('FileContentDeliveryManager', () => {
 
     await generateRandomFile(testFilePath, 1); // 1MB
 
-    const [nodeInstance] = (await createP2PNetwork(1)) as any[];
-    manager = nodeInstance.manager;
-    deliveryManager = manager.delivery;
-    mockSocket = nodeInstance.socket;
+    factory = new MockCoreFactory();
+    await factory.init();
+    core = await factory.createCore();
 
-    await deliveryManager.init();
+    manager = core.managers;
+    deliveryManager = manager.delivery;
+    mockSocket = getMockSocket('delivery-peer');
   });
 
   afterEach(async () => {
     await deliveryManager.stop();
-
-    const { sqlite } = manager.session.getDatabase();
-    await sqlite.close();
-
-    await cleanup(manager.root);
+    await factory.cleanup();
     await cleanup(rootDirectory);
   });
 
@@ -235,7 +235,7 @@ describe('FileContentDeliveryManager', () => {
 
     await new Promise((resolve) => setImmediate(resolve));
     // artifically trigger file-change event
-    manager.emitter.emit(EVENTS.LocalFileChange, testFilePath);
+    core.emitter.emit(EVENTS.LocalFileChange, testFilePath);
 
     const [comp1, comp2] = await Promise.all([
       deliveryManager.waitForTask(key1),

@@ -15,7 +15,6 @@ import { MockCoreFactory } from '../mock.factory.js';
 import { exampleFileList, exampleFileStack } from '../samples.js';
 import {
   cleanup,
-  createP2PNetwork,
   generateRandomFile,
   makeTempDir,
 } from '../general.utils.js';
@@ -1011,23 +1010,20 @@ describe('ProviderList', () => {
   const ROOT_HASH = 'hash01';
   const TOPIC = 'topic1';
 
-  let sqlite: any;
-  let root: any;
+  let factory: MockCoreFactory;
   let publicKey: any;
   let spaceFileListManager: any;
   let onDrop: any;
   let providerList: any;
 
   beforeEach(async () => {
-    const peers: any = await createP2PNetwork(1);
-    const { manager, publicKey: current } = peers[0];
-
-    sqlite = manager.session.getDatabase().sqlite;
-    root = manager.root;
+    factory = new MockCoreFactory();
+    await factory.init();
+    const core = await factory.createCore();
 
     onDrop = vi.fn();
-    publicKey = current;
-    spaceFileListManager = manager.spaceFileList;
+    publicKey = core.publicKey;
+    spaceFileListManager = core.managers.spaceFileList;
     providerList = new ProviderList({
       spaceFileListManager: spaceFileListManager,
       topic: TOPIC,
@@ -1038,8 +1034,7 @@ describe('ProviderList', () => {
   });
 
   afterEach(async () => {
-    await sqlite.close();
-    await cleanup(root);
+    await factory.cleanup();
   });
 
   it('should add a new provider with an unkown lastRequestableLeaf', () => {
