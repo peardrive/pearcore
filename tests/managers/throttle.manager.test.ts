@@ -1,16 +1,27 @@
-import { describe, it, expect } from 'vitest';
-import { createManagerInstance } from '../general.utils.js';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { MockCoreFactory } from '../mock.factory.js';
 import { createBaseMessage } from '../../src/utils/protocol.utils.js';
 
 describe('ThrottleManager', () => {
+  let factory: MockCoreFactory;
+
+  beforeEach(async () => {
+    factory = new MockCoreFactory();
+    await factory.init();
+  });
+
+  afterEach(async () => {
+    await factory.cleanup();
+  });
+
   it('should exist within manager stack', async () => {
-    const managers = await createManagerInstance();
+    const managers = (await factory.createCore()).managers;
     expect(managers.throttle).toBeDefined();
   });
 
   describe('updateByMessage', () => {
     it('should update nonce record', async () => {
-      const managers = await createManagerInstance();
+      const managers = (await factory.createCore()).managers;
       const { publicKey, secretKey } = managers.session.getCredentials();
       if (!publicKey || !secretKey) throw new Error('Credentials are missing');
 
@@ -30,7 +41,7 @@ describe('ThrottleManager', () => {
 
   describe('updateByFrequency', () => {
     it('should throttle by frequency when exceeding the limit', async () => {
-      const managers = await createManagerInstance();
+      const managers = (await factory.createCore()).managers;
       const { publicKey } = managers.session.getCredentials();
       if (!publicKey) throw new Error('Public key is missing');
       const { MAX_FREQUENCY_THROTTLE } = managers.throttle;
@@ -49,7 +60,7 @@ describe('ThrottleManager', () => {
     });
 
     it('should clear frequency count periodically', async () => {
-      const managers = await createManagerInstance();
+      const managers = (await factory.createCore()).managers;
       const { publicKey } = managers.session.getCredentials();
       if (!publicKey) throw new Error('Public key is missing');
       const { MAX_FREQUENCY_THROTTLE } = managers.throttle;
@@ -68,7 +79,7 @@ describe('ThrottleManager', () => {
     });
 
     it('should stop throttling after quarantine duration', async () => {
-      const managers = await createManagerInstance();
+      const managers = (await factory.createCore()).managers;
 
       // temporary set quarantine time to 100ms
       managers.session.set('messaging.maxQuarantineTime', 100);

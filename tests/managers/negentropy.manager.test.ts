@@ -8,7 +8,7 @@ import {
   afterEach,
   vi,
 } from 'vitest';
-import { createManagerInstance, cleanup } from '../general.utils.js';
+import { MockCoreFactory } from '../mock.factory.js';
 import { MessageRequestScheduler } from '../../src/managers/negentropy/components/scheduler.js';
 import { MessageDeliveryTasks } from '../../src/managers/negentropy/components/delivery.js';
 import * as EVENTS from '../../src/constants/events.constants.js';
@@ -106,13 +106,16 @@ describe('MessageRequestScheduler', () => {
   const PEER_B = 'peer-b';
   const PEER_C = 'peer-c';
 
+  let factory: MockCoreFactory;
   let managers: any;
   let scheduler: any;
   let request: any;
   let cancel: any;
 
   beforeAll(async () => {
-    managers = await createManagerInstance();
+    factory = new MockCoreFactory();
+    await factory.init();
+    managers = (await factory.createCore()).managers;
     managers.session.set(
       'messaging.reconciliation.requestBatchSize',
       BATCH_SIZE,
@@ -152,10 +155,7 @@ describe('MessageRequestScheduler', () => {
   });
 
   afterAll(async () => {
-    const { sqlite } = managers.session.getDatabase();
-
-    await sqlite.close();
-    await cleanup(managers.root);
+    await factory.cleanup();
   });
 
   it('should read batch size and timeout from the session config', () => {
@@ -984,6 +984,7 @@ describe('MessageDeliveryTasks', () => {
   const REQUESTER = 'b'.repeat(64);
   const KEY = 'c'.repeat(24);
 
+  let factory: MockCoreFactory;
   let managers: any;
   let storedIds: any;
   let delivery: any;
@@ -999,7 +1000,9 @@ describe('MessageDeliveryTasks', () => {
     );
 
   beforeAll(async () => {
-    managers = await createManagerInstance();
+    factory = new MockCoreFactory();
+    await factory.init();
+    managers = (await factory.createCore()).managers;
 
     const { db } = managers.session.getDatabase();
     const { publicKey, secretKey } = managers.session.getCredentials();
@@ -1042,9 +1045,7 @@ describe('MessageDeliveryTasks', () => {
   });
 
   afterAll(async () => {
-    const { sqlite } = managers.session.getDatabase();
-    await sqlite.close();
-    await cleanup(managers.root);
+    await factory.cleanup();
   });
 
   const start = (messageIds: string[], assignmentKey = KEY) =>
