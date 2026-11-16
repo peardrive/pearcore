@@ -1,47 +1,27 @@
 import * as EVENTS from '../../src/constants/events.constants.js';
 import { describe, it, beforeEach, afterEach, expect } from 'vitest';
-import { startBootstrapper } from '../../src/utils/network.utils.js';
-import {
-  buildTestSpacePayload,
-  createManagerInstance,
-  getRandomPort,
-} from '../general.utils.js';
+import { buildTestSpacePayload } from '../general.utils.js';
+import { CoreFactory } from '../factory.js';
 import { upsertSpace } from '../../src/utils/space.utils.js';
 
-type Bootstrapper = Awaited<ReturnType<typeof startBootstrapper>>;
-
-const killBootstapper = (bootstrapper: Bootstrapper): void => {
-  bootstrapper.bootstrapperNode.destroy();
-  bootstrapper.persistentNode.destroy();
-};
-
 describe('ConnectionManager', () => {
-  let bootstrapperInstance: Bootstrapper | null = null;
-  let bootstrapperEndpoint = '';
+  let factory: CoreFactory;
 
   beforeEach(async () => {
-    const randomPort = getRandomPort();
-    bootstrapperInstance = await startBootstrapper({
-      ipv4: '127.0.0.1',
-      port: randomPort,
-    });
-
-    bootstrapperEndpoint = `127.0.0.1:${randomPort}`;
+    factory = new CoreFactory();
+    await factory.init();
   });
 
-  afterEach(() => {
-    killBootstapper(bootstrapperInstance!);
+  afterEach(async () => {
+    await factory.cleanup();
   });
 
   it('should connect two nodes to each other under same space topic', async () => {
-    const primary = await createManagerInstance();
-    const secondary = await createManagerInstance();
+    const primary = await factory.createBareCore();
+    const secondary = await factory.createBareCore();
 
-    primary.session.setBootstrapperEndpoint(bootstrapperEndpoint);
-    secondary.session.setBootstrapperEndpoint(bootstrapperEndpoint);
-
-    const primaryDB = primary.session.getDatabase().db!;
-    const secondaryDB = secondary.session.getDatabase().db!;
+    const primaryDB = primary.managers.session.getDatabase().db!;
+    const secondaryDB = secondary.managers.session.getDatabase().db!;
 
     const spaceParams = await buildTestSpacePayload({
       spaceName: 'Connection Test',
@@ -73,8 +53,8 @@ describe('ConnectionManager', () => {
       });
     });
 
-    await primary.connection.init();
-    await secondary.connection.init();
+    await primary.managers.connection.init();
+    await secondary.managers.connection.init();
 
     // waiting for connect to stablish
     await connectionPromise;

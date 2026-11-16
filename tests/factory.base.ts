@@ -1,9 +1,19 @@
 // @ts-nocheck
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { createCore } from '../src/core.js';
+import { createDatabase } from '../src/database/database.js';
+import { hex } from '../src/utils/crypto.utils.js';
 import { createProfileForPublicKey } from '../src/utils/profile.utils.js';
-import { cleanup as removeDir, makeTempDir } from './general.utils.js';
+import {
+  cleanup as removeDir,
+  generateKeypair,
+  makeTempDir,
+} from './general.utils.js';
 
 const PASSWORD = 'testPassword';
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const MIGRATIONS_DIR = path.resolve(__dirname, '../migrations');
 
 /**
  * Shared factory surface for test cores.
@@ -50,7 +60,50 @@ export class BaseCoreFactory {
 
     await createProfileForPublicKey(db, { ...profile, publicKey }, secretKey);
 
-    const extendedCore = { ...core, root, username, publicKey, secretKey };
+    const extendedCore = {
+      ...core,
+      root,
+      username,
+      publicKey,
+      secretKey,
+      authenticated: true,
+    };
+    this.cores.push(extendedCore);
+    return extendedCore;
+  }
+
+  /**
+   * Creates a core with a database and credentials but without authenticating.
+   *
+   * Useful for tests that drive manager initialization themselves while still
+   * using the factory's transport options and temp-root lifecycle.
+   */
+  async createBareCore() {
+    const root = await makeTempDir();
+    const core = await createCore({
+      rootPath: root,
+      ...this.createOptions(),
+    });
+
+    const { db, sqlite } = await createDatabase(
+      path.join(root, 'db.sqlite'),
+      MIGRATIONS_DIR,
+    );
+    const { publicKey, secretKey } = await generateKeypair();
+
+    core.managers.session.setDatabase({ db, sqlite });
+    core.managers.session.setCredentials({
+      publicKey: hex(publicKey),
+      secretKey: hex(secretKey),
+    });
+
+    const extendedCore = {
+      ...core,
+      root,
+      publicKey: hex(publicKey),
+      secretKey: hex(secretKey),
+      authenticated: false,
+    };
     this.cores.push(extendedCore);
     return extendedCore;
   }
@@ -58,13 +111,24 @@ export class BaseCoreFactory {
   async cleanup() {
     for (const core of this.cores) {
       try {
-        await core.accounts.logout();
-
-        if (core.root) {
-          await removeDir(core.root);
+        if (core.authenticated === false) {
+          await core.managers.connection.destroy();
+          await core.managers.sync.stop();
+          await core.managers.delivery.stop();
+          core.managers.session.getDatabase().sqlite?.close();
+        } else {
+          await core.accounts.logout();
         }
       } catch (error) {
         console.error(error);
+      }
+
+      if (core.root) {
+        try {
+          await removeDir(core.root);
+        } catch (error) {
+          console.error(error);
+        }
       }
     }
 
