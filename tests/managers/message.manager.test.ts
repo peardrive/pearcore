@@ -1,4 +1,4 @@
-import { describe, beforeEach, it, expect, vi } from 'vitest';
+import { describe, beforeEach, afterEach, it, expect, vi } from 'vitest';
 import * as EVENTS from '../../src/constants/events.constants.js';
 import * as MESSAGES from '../../src/constants/messages.constants.js';
 import { MessageManager } from '../../src/managers/message.manager.js';
@@ -6,15 +6,27 @@ import { initializeManagers } from '../../src/managers/initialization.js';
 import { createSpaceHashListMessage } from '../../src/utils/protocol.utils.js';
 import {
   buildTestSpacePayload,
-  createFakeP2PConnection,
   unframeJson,
 } from '../general.utils.js';
+import { MockCoreFactory } from '../mock.factory.js';
+import { createProtocolNode } from '../protocol.harness.js';
 import { BaseProtocolHandler } from '../../src/protocols/base.js';
 import { hex, randomNonce } from '../../src/utils/crypto.utils.js';
 import { getSpaceTopicHash } from '../../src/utils/space.utils.js';
 import { queryMessageRecord } from '../../src/utils/message.utils.js';
 
 describe('MessageManager', () => {
+  let factory: MockCoreFactory;
+
+  beforeEach(async () => {
+    factory = new MockCoreFactory();
+    await factory.init();
+  });
+
+  afterEach(async () => {
+    await factory.cleanup();
+  });
+
   it('should exist within the initialized managers object', async () => {
     const managers: any = initializeManagers();
     expect(managers.message).toBeDefined();
@@ -23,8 +35,9 @@ describe('MessageManager', () => {
 
   describe('sendMessageToSocket', () => {
     it('should send message to socket', async () => {
-      const [manager, socket, info] =
-        (await createFakeP2PConnection()) as any[];
+      const { manager, socket, info, emitter } = await createProtocolNode(
+        factory,
+      );
       const { publicKey, secretKey } = manager.session.getCredentials();
       const db = manager.session.getDatabase().db;
 
@@ -49,8 +62,9 @@ describe('MessageManager', () => {
 
   describe('handleIncommingMessage', () => {
     it('should handle incoming messages with valid protocol handler', async () => {
-      const [manager, socket, info] =
-        (await createFakeP2PConnection()) as any[];
+      const { manager, socket, info, emitter } = await createProtocolNode(
+        factory,
+      );
       const { publicKey, secretKey } = manager.session.getCredentials();
 
       class TestProtocolHandler {
@@ -89,8 +103,9 @@ describe('MessageManager', () => {
     });
 
     it('should handle event callbacks for messages', async () => {
-      const [manager, socket, info] =
-        (await createFakeP2PConnection()) as any[];
+      const { manager, socket, info, emitter } = await createProtocolNode(
+        factory,
+      );
       const { publicKey, secretKey } = manager.session.getCredentials();
 
       class TestProtocolHandler extends BaseProtocolHandler {
@@ -99,7 +114,7 @@ describe('MessageManager', () => {
         }
       }
 
-      const testHandler = new TestProtocolHandler(manager.emitter, manager);
+      const testHandler = new TestProtocolHandler(emitter, manager);
       const protocols = [
         {
           type: EVENTS.SpaceHashList,
@@ -118,10 +133,10 @@ describe('MessageManager', () => {
       let firstCallbackCalled = false;
       let secondCallbackCalled = false;
 
-      manager.emitter.on(EVENTS.SpaceHashList, () => {
+      emitter.on(EVENTS.SpaceHashList, () => {
         firstCallbackCalled = true;
       });
-      manager.emitter.on(EVENTS.SpaceHashList, () => {
+      emitter.on(EVENTS.SpaceHashList, () => {
         secondCallbackCalled = true;
       });
 
@@ -136,8 +151,9 @@ describe('MessageManager', () => {
     });
 
     it('should reject messages that exceed size limit', async () => {
-      const [manager, socket, info] =
-        (await createFakeP2PConnection()) as any[];
+      const { manager, socket, info, emitter } = await createProtocolNode(
+        factory,
+      );
       const messageSize = manager.session.get('messaging.rawLimitSize');
       const largeRawMessage = Buffer.from(
         new Array(messageSize + 1).fill('a').join(''),
@@ -160,8 +176,9 @@ describe('MessageManager', () => {
     });
 
     it('should reject messages with invalid json', async () => {
-      const [manager, socket, info] =
-        (await createFakeP2PConnection()) as any[];
+      const { manager, socket, info, emitter } = await createProtocolNode(
+        factory,
+      );
       await manager.message.handleIncomingMessage(
         socket,
         '{"invalid": json}',
@@ -179,8 +196,9 @@ describe('MessageManager', () => {
     });
 
     it('should reject messages with invalid signature', async () => {
-      const [manager, socket, info] =
-        (await createFakeP2PConnection()) as any[];
+      const { manager, socket, info, emitter } = await createProtocolNode(
+        factory,
+      );
       const { publicKey, secretKey } = manager.session.getCredentials();
       const badMessage = await createSpaceHashListMessage({
         hashList: [],
@@ -207,8 +225,9 @@ describe('MessageManager', () => {
     });
 
     it('should reject messages when handlers thows error', async () => {
-      const [manager, socket, info] =
-        (await createFakeP2PConnection()) as any[];
+      const { manager, socket, info, emitter } = await createProtocolNode(
+        factory,
+      );
       const { publicKey, secretKey } = manager.session.getCredentials();
 
       class TempSpaceHanlder {
@@ -247,8 +266,9 @@ describe('MessageManager', () => {
     });
 
     it('should reject message when the message type has no handler', async () => {
-      const [manager, socket, info] =
-        (await createFakeP2PConnection()) as any[];
+      const { manager, socket, info, emitter } = await createProtocolNode(
+        factory,
+      );
       const { publicKey, secretKey } = manager.session.getCredentials();
 
       manager.message.setProtocolMap([]);
@@ -276,8 +296,9 @@ describe('MessageManager', () => {
     });
 
     it('should reject reject message duplicates', async () => {
-      const [manager, socket, info] =
-        (await createFakeP2PConnection()) as any[];
+      const { manager, socket, info, emitter } = await createProtocolNode(
+        factory,
+      );
       const { publicKey, secretKey } = manager.session.getCredentials();
 
       // enable throttle rejection
@@ -290,7 +311,7 @@ describe('MessageManager', () => {
       });
 
       let callCount = 0;
-      manager.emitter.on(EVENTS.SpaceHashList, () => {
+      emitter.on(EVENTS.SpaceHashList, () => {
         callCount++;
       });
 
@@ -316,8 +337,9 @@ describe('MessageManager', () => {
     });
 
     it('should throttle and quarantine node for certain time period when node sends too many messages', async () => {
-      const [manager, socket, info] =
-        (await createFakeP2PConnection()) as any[];
+      const { manager, socket, info, emitter } = await createProtocolNode(
+        factory,
+      );
       const { publicKey, secretKey } = manager.session.getCredentials();
 
       // enable throttle rejection
@@ -330,7 +352,7 @@ describe('MessageManager', () => {
       const { frequencyThrottle, maxQuarantineTime } = messageConfig;
 
       let callCount = 0;
-      manager.emitter.on(EVENTS.SpaceHashList, () => {
+      emitter.on(EVENTS.SpaceHashList, () => {
         callCount++;
       });
 
