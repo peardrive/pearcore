@@ -1,7 +1,7 @@
 // @ts-nocheck
 import * as EVENTS from '../../src/constants/events.constants.js';
 import { describe, it, beforeEach, expect } from 'vitest';
-import { CoreFactory } from '../factory.js';
+import { MockCoreFactory } from '../mock.factory.js';
 import { publicKeyIsAllowedToRead } from '../../src/utils/policy.utils.js';
 
 describe('MessageService', () => {
@@ -12,7 +12,7 @@ describe('MessageService', () => {
   let badSpace = null;
 
   beforeEach(async () => {
-    factory = new CoreFactory();
+    factory = new MockCoreFactory();
     await factory.init();
 
     const cores = await factory.createMultipleCores(4);

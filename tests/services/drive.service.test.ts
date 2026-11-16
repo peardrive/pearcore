@@ -11,7 +11,7 @@ import {
   expect,
   vi,
 } from 'vitest';
-import { CoreFactory } from '../factory.js';
+import { MockCoreFactory } from '../mock.factory.js';
 import { exampleFileHierarchy } from '../samples.js';
 import { cleanup, generateRandomFile, makeTempDir } from '../general.utils.js';
 import { LocalFileEntry } from '../../src/services/drive/components/entries.js';
@@ -38,7 +38,7 @@ describe('SpaceDriveService', () => {
   let space;
 
   beforeAll(async () => {
-    factory = new CoreFactory();
+    factory = new MockCoreFactory();
     await factory.init();
 
     primary = await factory.createCore();

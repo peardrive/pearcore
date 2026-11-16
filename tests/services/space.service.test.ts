@@ -4,13 +4,13 @@ import * as EVENTS from '../../src/constants/events.constants.js';
 import { buildTestSpacePayload, getMockSocket } from '../general.utils.js';
 import { getSpaceTopicHash } from '../../src/utils/space.utils.js';
 import { encodeShareLink } from '../../src/utils/sharelink.utils.js';
-import { CoreFactory } from '../factory.js';
+import { MockCoreFactory } from '../mock.factory.js';
 
 describe('spaceService', () => {
   let factory;
 
   beforeEach(async () => {
-    factory = new CoreFactory();
+    factory = new MockCoreFactory();
     await factory.init();
   });
 

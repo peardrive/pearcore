@@ -1,7 +1,7 @@
 // @ts-nocheck
 import * as EVENTS from '../../src/constants/events.constants.js';
 import { describe, it, beforeEach, afterEach, expect } from 'vitest';
-import { CoreFactory } from '../factory.js';
+import { MockCoreFactory } from '../mock.factory.js';
 import { buildTestProfilePayload } from '../general.utils.js';
 import {
   createProfile,
@@ -13,7 +13,7 @@ describe('ProfileService', () => {
   let factory = null;
 
   beforeEach(async () => {
-    factory = new CoreFactory();
+    factory = new MockCoreFactory();
     await factory.init();
   });
 
@@ -84,8 +84,10 @@ describe('ProfileService', () => {
       // wait for nodes to receive and process profile update
       await factory.condition(
         async (core, success, failure) => {
-          core.emitter.on(EVENTS.ProfileUpdate, () => {
-            success();
+          core.emitter.on(EVENTS.ProfileUpdate, (event) => {
+            if (event.message?.payload?.profile?.username === newUseraname) {
+              success();
+            }
           });
         },
         { excludeIndices: [0] },
@@ -129,8 +131,10 @@ describe('ProfileService', () => {
 
       await factory.condition(
         async (core, success, failure) => {
-          core.emitter.on(EVENTS.ProfileUpdate, () => {
-            success();
+          core.emitter.on(EVENTS.ProfileUpdate, (event) => {
+            if (event.message?.payload?.profile?.username === newUseraname) {
+              success();
+            }
           });
         },
         { excludeIndices: [0] },
