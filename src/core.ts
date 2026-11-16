@@ -7,6 +7,7 @@ import { SpaceDriveService } from './services/drive/drive.service.js';
 
 import { DEFAULT_ACCOUNT_DIR } from './constants/global.constants.js';
 import { initializeManagers } from './managers/initialization.js';
+import type { PeerNetworkFactory } from './types/peer-network.js';
 
 export interface CreateCoreOptions {
   rootPath?: string;
@@ -15,6 +16,11 @@ export interface CreateCoreOptions {
     username: string;
     password: string;
   } | null;
+  /**
+   * Optional peer network used for discovery and connections.
+   * Defaults to HyperDHT/Hyperswarm. Intended for custom deployments and tests.
+   */
+  peerNetworkFactory?: PeerNetworkFactory;
 }
 
 export interface CoreServices {
@@ -45,9 +51,10 @@ export async function createCore({
   rootPath = DEFAULT_ACCOUNT_DIR,
   bootstrap = null,
   user = null,
+  peerNetworkFactory = undefined,
 }: CreateCoreOptions = {}): Promise<CoreServices> {
   const emitter = new EventEmitter();
-  const managers = initializeManagers(emitter);
+  const managers = initializeManagers(emitter, { peerNetworkFactory });
   const space = new SpaceService(emitter, { managers });
   const drives = new SpaceDriveService(emitter, { managers });
   const messages = new MessageService(emitter, { managers });

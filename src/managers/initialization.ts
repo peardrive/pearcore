@@ -12,8 +12,20 @@ import {
 } from './files/files.manager.js';
 import { FileContentDeliveryManager } from './delivery.manager.js';
 import { NegentropySyncManager } from './negentropy/negentropy.manager.js';
+import type { PeerNetworkFactory } from '../types/peer-network.js';
 
-export function initializeManagers(emitter: any = new EventEmitter()) {
+export interface ManagerOptions {
+  /**
+   * Optional peer network used by the connection manager.
+   * Defaults to HyperDHT/Hyperswarm.
+   */
+  peerNetworkFactory?: PeerNetworkFactory;
+}
+
+export function initializeManagers(
+  emitter: any = new EventEmitter(),
+  options: ManagerOptions = {},
+) {
   const sessionManager = new SessionManager();
   const socketManager = new SocketManager();
   const muxManager = new MuxManager(emitter, { sessionManager });
@@ -39,6 +51,7 @@ export function initializeManagers(emitter: any = new EventEmitter()) {
     socketManager,
     messageManager,
     muxManager,
+    peerNetworkFactory: options.peerNetworkFactory,
   });
 
   const spaceFileManager = new SpaceFileManager(emitter, {

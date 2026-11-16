@@ -1,19 +1,25 @@
 import type { EventEmitter } from 'node:events';
-import Hyperswarm, { type PeerDiscovery } from 'hyperswarm';
 import * as EVENTS from '../constants/events.constants.js';
 import { createChild } from '../logger.js';
-import { hex, hexToUint8 } from '../utils/crypto.utils.js';
-import type { SocketManager, ManagedSocket } from './sockets.manager.js';
+import { hexToUint8 } from '../utils/crypto.utils.js';
+import type { SocketManager } from './sockets.manager.js';
 import type {
   MuxConnectionInfo,
   MuxManager,
-  MuxSocket,
 } from './multiplexer.manager.js';
 import type { MessageManager } from './message.manager.js';
 import type { SessionManager } from './session.manager.js';
 import type { Database } from '../types/database.js';
 import type { ProfileRecord } from '../utils/profile.utils.js';
-import { connectSwarm, joinSwarmTopic } from '../utils/network.utils.js';
+import {
+  hyperswarmPeerNetworkFactory,
+} from '../utils/network.utils.js';
+import type {
+  PeerNetwork,
+  PeerNetworkFactory,
+  PeerSocket,
+  PeerTopicSubscription,
+} from '../types/peer-network.js';
 import {
   createProfileUpdateMessage,
   createSpaceHashListMessage,
@@ -30,20 +36,11 @@ export interface ConnectionManagerDependencies {
   messageManager: MessageManager;
   sessionManager: SessionManager;
   muxManager: MuxManager;
-}
-
-interface ConnectionSocket extends Omit<MuxSocket, 'destroy'>, ManagedSocket {
-  on(event: 'data', listener: (buffer: Buffer) => void): ConnectionSocket;
-  on(event: 'close', listener: () => void): ConnectionSocket;
-  on(event: 'error', listener: (error: Error) => void): ConnectionSocket;
-}
-
-interface ConnectionSwarm extends Hyperswarm {
-  joinPeer(publicKey: Uint8Array): void;
-}
-
-interface ConnectionInfo extends MuxConnectionInfo {
-  topics: Uint8Array[];
+  /**
+   * Optional peer network transport. Defaults to Hyperswarm; tests can
+   * inject an in-memory implementation.
+   */
+  peerNetworkFactory?: PeerNetworkFactory;
 }
 
 export interface ConnectionHandshakeResult {
@@ -56,8 +53,9 @@ export class ConnectionManager {
   messageManager: MessageManager;
   sessionManager: SessionManager;
   muxManager: MuxManager;
-  swarmInstance: ConnectionSwarm | null;
-  discoveryMap: Record<string, PeerDiscovery>;
+  peerNetworkFactory: PeerNetworkFactory;
+  peerNetwork: PeerNetwork | null;
+  subscriptions: Map<string, PeerTopicSubscription>;
   emitter: Pick<EventEmitter, 'emit'>;
 
   constructor(
@@ -68,9 +66,11 @@ export class ConnectionManager {
     this.messageManager = managers.messageManager;
     this.sessionManager = managers.sessionManager;
     this.muxManager = managers.muxManager;
+    this.peerNetworkFactory =
+      managers.peerNetworkFactory ?? hyperswarmPeerNetworkFactory;
 
-    this.swarmInstance = null;
-    this.discoveryMap = {};
+    this.peerNetwork = null;
+    this.subscriptions = new Map();
 
     this.emitter = emitter;
   }
@@ -90,22 +90,26 @@ export class ConnectionManager {
     const { publicKey, secretKey } = this.sessionManager.getCredentials();
     const boostrapper = this.sessionManager.getBootstrapperEndpoint();
 
-    this.swarmInstance = connectSwarm({
+    this.peerNetwork = this.peerNetworkFactory({
       keyPair: {
         publicKey: hexToUint8(publicKey!),
         secretKey: hexToUint8(secretKey!),
       },
       bootstrap: boostrapper ? parseBootstrapAddress(boostrapper) : {},
-    }) as ConnectionSwarm;
+    });
 
-    this.swarmInstance.on(
-      'connection',
-      async (socket: ConnectionSocket, info: ConnectionInfo) => {
-        const publicKey = hex(info.publicKey);
-        const topics = info.topics.map((t) => hex(t));
+    this.peerNetwork.onConnection(
+      async (socket: PeerSocket, info) => {
+        const publicKey = info.publicKey;
+        const topics = info.topics;
+
+        const muxInfo: MuxConnectionInfo = {
+          publicKey: hexToUint8(publicKey),
+          topics: topics.map((topic) => hexToUint8(topic)),
+        };
 
         socket.on('data', async (buffer: Buffer) => {
-          await this.muxManager.route(socket, buffer, info);
+          await this.muxManager.route(socket, buffer, muxInfo);
         });
 
         socket.on('close', () => {
@@ -115,6 +119,7 @@ export class ConnectionManager {
             this.muxManager.cleanup(socket);
           } catch (error) {} // do nothing
         });
+        
         socket.on('error', (_error: Error) => {
           this.emitter.emit(EVENTS.Disconnect, { publicKey });
           try {
@@ -128,7 +133,7 @@ export class ConnectionManager {
         this.emitter.emit(EVENTS.Connection, { publicKey, topics });
 
         if (this.connectionConfig.enableHandshake) {
-          const context = await this.handshake(socket, info);
+          const context = await this.handshake(socket);
           this.emitter.emit(EVENTS.Handshake, { publicKey, context });
         }
       },
@@ -152,7 +157,7 @@ export class ConnectionManager {
    * @returns Whether the topic has been added to discovery.
    */
   isDiscoverable(spaceTopicHash: string): boolean {
-    return this.discoveryMap.hasOwnProperty(spaceTopicHash);
+    return this.subscriptions.has(spaceTopicHash);
   }
 
   /**
@@ -163,13 +168,8 @@ export class ConnectionManager {
   async join(spaceTopicHash: string): Promise<void> {
     if (this.isDiscoverable(spaceTopicHash)) return;
 
-    const discoveryOptions = { server: true, client: true };
-    const discovery = await joinSwarmTopic(
-      this.swarmInstance!,
-      spaceTopicHash,
-      discoveryOptions,
-    );
-    this.discoveryMap[spaceTopicHash] = discovery;
+    const subscription = await this.peerNetwork!.join(spaceTopicHash);
+    this.subscriptions.set(spaceTopicHash, subscription);
   }
 
   /**
@@ -177,8 +177,8 @@ export class ConnectionManager {
    * @param publicKey - 64-character hex string public key.
    */
   connectWith(publicKey: string): void {
-    if (this.swarmInstance) {
-      this.swarmInstance.joinPeer(hexToUint8(publicKey));
+    if (this.peerNetwork) {
+      this.peerNetwork.connect(publicKey);
     }
   }
 
@@ -188,10 +188,10 @@ export class ConnectionManager {
    */
   async leave(spaceTopicHash: string): Promise<void> {
     if (this.isDiscoverable(spaceTopicHash)) {
-      const discovery = this.discoveryMap[spaceTopicHash];
-      await discovery.destroy();
+      const subscription = this.subscriptions.get(spaceTopicHash)!;
+      await subscription.destroy();
 
-      delete this.discoveryMap[spaceTopicHash];
+      this.subscriptions.delete(spaceTopicHash);
     }
   }
 
@@ -200,7 +200,7 @@ export class ConnectionManager {
    * @returns Resolves after the recent space topic list is sent to connected peers.
    */
   async update(): Promise<void> {
-    const topics = Object.keys(this.discoveryMap);
+    const topics = Array.from(this.subscriptions.keys());
     const { publicKey, secretKey } = this.sessionManager.getCredentials();
 
     const message = await createSpaceHashListMessage({
@@ -216,12 +216,10 @@ export class ConnectionManager {
   /**
    * Handles the initial handshake to enable basic functionality between two connected nodes.
    * @param socket - The peer socket.
-   * @param info - Hyperswarm connection details.
    * @returns The handshake context when all messages are sent.
    */
   async handshake(
-    socket: ConnectionSocket,
-    _info: ConnectionInfo,
+    socket: PeerSocket,
   ): Promise<ConnectionHandshakeResult | undefined> {
     try {
       const { publicKey, secretKey } = this.sessionManager.getCredentials();
@@ -262,13 +260,16 @@ export class ConnectionManager {
   }
 
   /**
-   * Destroys the hyperswarm and all socket connections,
+   * Destroys the peer network and all socket connections,
    * calling this method after account logout or service shutdown
    * will notify all peers that this node is now out of reach.
    */
   async destroy(): Promise<void> {
-    await this.swarmInstance!.destroy();
-    this.swarmInstance = null;
-    this.discoveryMap = {};
+    if (this.peerNetwork) {
+      await this.peerNetwork.destroy();
+      this.peerNetwork = null;
+    }
+
+    this.subscriptions.clear();
   }
 }
