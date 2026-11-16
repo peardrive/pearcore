@@ -1,18 +1,10 @@
 // @ts-nocheck
 import * as EVENTS from '../../src/constants/events.constants.js';
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import {
-  buildTestSpacePayload,
-  cleanup,
-  createP2PNetwork,
-  getMockSocket,
-  unframeJson,
-} from '../general.utils.js';
-import {
-  createSpaceForPublicKey,
-  getSpace,
-  getSpaceTopicHash,
-} from '../../src/utils/space.utils.js';
+import * as MESSAGES from '../../src/constants/messages.constants.js';
+import { describe, it, expect, afterEach, vi } from 'vitest';
+import { CoreFactory } from '../factory.js';
+import { NegentropySyncManager } from '../../src/managers/negentropy/negentropy.manager.js';
+import { getTopicToSpaceMap } from '../../src/utils/space.utils.js';
 import {
   createMessageRecord,
   queryMessageRecord,
@@ -25,240 +17,86 @@ import { hex, randomNonce } from '../../src/utils/crypto.utils.js';
 import { now } from '../../src/utils/general.utils.js';
 
 /**
- * In-memory network for end-to-end tests.
+ * Full message sync over the real transport:
+ * space discovery -> reconciliation (NegentropySync) -> scheduler assignments ->
+ * content requests -> one-message deliveries -> verified, stored rows.
  *
- * Every direction of a link has its own mock socket, registered in the sender's socket
- * manager. Frames written to it are queued and handled one at a time (FIFO) by the
- * receiver's real message pipeline (`handleIncomingMessage`): size check, signature,
- * throttle, protocol handlers. Every handled frame is logged for assertions.
- */
-class VirtualNetwork {
-  constructor(topic) {
-    this.topic = topic;
-    this.queue = [];
-    this.frames = [];
-    /** `${from}>${to}` -> { socket, up } */
-    this.links = new Map();
-    this.nodes = new Set();
-  }
-
-  static linkKey(from, to) {
-    return `${from.publicKey}>${to.publicKey}`;
-  }
-
-  /** Connects two nodes in both directions. */
-  connect(a, b) {
-    this.attach(a, b);
-    this.attach(b, a);
-  }
-
-  /** @private */
-  attach(from, to) {
-    const socket = getMockSocket(`${from.name}>${to.name}`);
-    const key = VirtualNetwork.linkKey(from, to);
-
-    socket.write.mockImplementation((buffer) => {
-      if (this.links.get(key).up) {
-        this.queue.push({ from, to, raw: unframeJson(buffer) });
-      }
-      return true;
-    });
-
-    from.manager.sockets.addSocket(socket, to.publicKey, [this.topic]);
-    this.links.set(key, { socket, up: true });
-    this.nodes.add(from);
-    this.nodes.add(to);
-  }
-
-  /** The socket `from` uses to talk to `to`. */
-  socketOf(from, to) {
-    return this.links.get(VirtualNetwork.linkKey(from, to)).socket;
-  }
-
-  /** Cuts a link in both directions; frames still in flight are lost. */
-  cut(a, b) {
-    for (const [from, to] of [
-      [a, b],
-      [b, a],
-    ]) {
-      const link = this.links.get(VirtualNetwork.linkKey(from, to));
-      link.up = false;
-      link.socket.destroyed = true;
-    }
-
-    this.queue = this.queue.filter(
-      ({ from, to }) => !((from === a && to === b) || (from === b && to === a)),
-    );
-  }
-
-  /** @private */
-  async deliverNext() {
-    const { from, to, raw } = this.queue.shift();
-    const message = JSON.parse(raw);
-    this.frames.push({
-      from: from.name,
-      to: to.name,
-      type: message.type,
-      message,
-    });
-
-    // `to` receives the frame on its own socket towards `from`
-    await to.manager.message.handleIncomingMessage(
-      this.socketOf(to, from),
-      raw,
-      from.info,
-    );
-  }
-
-  /** True when nothing is queued and no node is serving a delivery. */
-  isIdle() {
-    if (this.queue.length > 0) return false;
-    return Array.from(this.nodes).every(
-      (node) => node.manager.sync.delivery.tasks.size === 0,
-    );
-  }
-
-  /**
-   * Delivers frames until the network is quiet (or `until` returns true).
-   * Background work (delivery tasks, scheduler requests) gets a few event-loop turns
-   * to produce new frames before the network is considered quiet.
-   * @param [options]
-   * @param [options.until] - Stop early once this returns true.
-   * @param [options.timeout=8000] - Fails if the network never settles.
-   */
-  async settle({ until = null, timeout = 8000 } = {}) {
-    const deadline = Date.now() + timeout;
-    let quietTurns = 0;
-
-    while (quietTurns < 3) {
-      if (Date.now() > deadline) throw new Error('network did not settle');
-
-      if (this.queue.length > 0) {
-        quietTurns = 0;
-        await this.deliverNext();
-        if (until?.()) return;
-        continue;
-      }
-
-      await new Promise((resolve) => setImmediate(resolve));
-      quietTurns = this.isIdle() ? quietTurns + 1 : 0;
-    }
-  }
-
-  /** Frames of a type, optionally on one directed link (by node name). */
-  framesOf(type, { from = null, to = null } = {}) {
-    return this.frames.filter(
-      (frame) =>
-        frame.type === type &&
-        (from === null || frame.from === from) &&
-        (to === null || frame.to === to),
-    );
-  }
-
-  /** Number of frames per directed link: { 'alice>bob': 123 } */
-  countPerLink() {
-    const counts = {};
-    for (const { from, to } of this.frames) {
-      counts[`${from}>${to}`] = (counts[`${from}>${to}`] ?? 0) + 1;
-    }
-    return counts;
-  }
-}
-
-/**
- * Full message sync between in-memory nodes:
- * reconciliation (NegentropySync) -> scheduler assignments -> content requests ->
- * one-message deliveries -> verified, stored rows.
- *
- * The load stays below the throttle (`frequencyThrottle` frames per sender, counted over
- * the whole test, so the per-second window cannot trip) and the reconciliation limits.
+ * Every node is a real `CoreFactory` core: real account, database, managers and
+ * Hyperswarm transport over a local bootstrap node. Only the transport is local,
+ * so the suites assert what the protocol guarantees rather than its framing:
+ * identical histories, exactly-once delivery, provider split, disconnect recovery,
+ * no rejections and no throttling.
  */
 describe('Message sync (end-to-end)', () => {
-  let nodes;
-  let network;
-  let topic;
-  let spaceParams;
-  /** node name -> { spaceId, space } */
-  let spaces;
+  let factory: CoreFactory;
+  let cores: any[];
+  let coreByName: Map<string, any>;
+  /** Space topic hash shared by every node. */
+  let topic: string;
+  /** Space secret used for the encrypted messages. */
+  let spaceSecret: string;
+  /** core name -> local space id */
+  let spaceIds: Map<string, number>;
+  /** core name -> NegentropyContentDelivered contexts of the receiving core. */
+  let deliveries: Map<string, any[]>;
+  /** core name -> NegentropySyncComplete contexts. */
+  let syncCompletes: Map<string, any[]>;
+  /** core name -> Reject contexts. */
+  let rejections: Map<string, any[]>;
+  /** nonce -> type of every message a core sent during the sync phase. */
+  let sentTypes: Map<string, string>;
 
-  const settings = (node) => node.manager.session.getMessageConfig();
-  const dbOf = (node) => node.manager.session.getDatabase().db;
+  const dbOf = (core: any) => core.managers.session.getDatabase().db;
+  const spaceIdOf = (core: any) => spaceIds.get(core.name)!;
+  const deliveredTo = (core: any) => deliveries.get(core.name)!;
+  const deliveredIds = (core: any) =>
+    deliveredTo(core).map((entry) => entry.messageId);
 
-  /** Creates an authored space message (optionally encrypted with the space secret). */
-  const authorMessage = async (author, index, { encrypted = false } = {}) => {
-    const content = {
-      text: `#${index} from ${author.name}: "quotes", \\ and 🍐`,
-      index,
-    };
-
-    if (!encrypted) {
-      return createSpaceMessage({
-        topic,
-        messagePayload: content,
-        publicKey: author.publicKey,
-        secretKey: author.secretKey,
-      });
+  /** provider public key -> number of messages it delivered to `core`. */
+  const providerCounts = (core: any) => {
+    const counts: Record<string, number> = {};
+    for (const { publicKey } of deliveredTo(core)) {
+      counts[publicKey] = (counts[publicKey] ?? 0) + 1;
     }
-
-    const nonce = hex(randomNonce());
-    const cipher = await encryptPayload({
-      payload: content,
-      spaceSecret: spaces[author.name].space.secret,
-      nonce,
-    });
-
-    return createSpaceMessage({
-      topic,
-      messagePayload: cipher,
-      publicKey: author.publicKey,
-      secretKey: author.secretKey,
-      nonce,
-    });
+    return counts;
   };
 
-  /** Stores the same messages in the history of every given node. */
-  const store = async (holders, messages) => {
-    const ids = [];
+  /** Sessions that are still reconciling plus running delivery tasks. */
+  const pendingSync = (core: any) =>
+    [...core.managers.sync.sessions.values()].filter(
+      (session: any) => !session.sync.isDone,
+    ).length + core.managers.sync.delivery.tasks.size;
 
-    for (const message of messages) {
-      for (const holder of holders) {
-        const { messageId } = await createMessageRecord(dbOf(holder), {
-          message,
-          spaceId: spaces[holder.name].spaceId,
-          senderPublicKey: message.publicKey,
-          broadcastTimestamp: now(),
-        });
-
-        if (holder === holders[0]) ids.push(messageId);
-      }
-    }
-
-    return ids;
+  const waitForQuiet = async (list: any[], timeout = 60000) => {
+    await vi.waitFor(
+      () => {
+        for (const core of list) {
+          expect(pendingSync(core), `${core.name} is still syncing`).toBe(0);
+        }
+      },
+      { timeout, interval: 100 },
+    );
   };
 
-  /** `count` messages authored by `author`, every other one encrypted, stored at `holders`. */
-  const seed = async (author, holders, count, offset = 0) => {
-    const messages = [];
-    for (let index = offset; index < offset + count; index++) {
-      messages.push(
-        await authorMessage(author, index, { encrypted: index % 2 === 1 }),
-      );
-    }
-
-    return store(holders, messages);
-  };
-
-  /** messageId -> row */
-  const historyOf = async (node) => {
-    const rows = await queryMessageRecord(dbOf(node), {
-      spaceId: spaces[node.name].spaceId,
+  const historyOf = async (core: any) => {
+    const rows = await queryMessageRecord(dbOf(core), {
+      spaceId: spaceIdOf(core),
       limit: 1000,
     });
-    return new Map(rows.map((row) => [row.messageId, row]));
+    return new Map(rows.map((row: any) => [row.messageId, row]));
+  };
+
+  const waitForHistory = async (core: any, size: number, timeout = 90000) => {
+    await vi.waitFor(
+      async () => {
+        expect((await historyOf(core)).size).toBe(size);
+      },
+      { timeout, interval: 250 },
+    );
   };
 
   /** Both nodes hold the same messages, byte for byte. */
-  const expectSameHistory = async (a, b) => {
+  const expectSameHistory = async (a: any, b: any) => {
     const historyA = await historyOf(a);
     const historyB = await historyOf(b);
 
@@ -276,49 +114,100 @@ describe('Message sync (end-to-end)', () => {
     }
   };
 
-  /** The run never hit the throttle or the reconciliation limits, and nobody was rejected. */
-  const expectWithinLimits = () => {
-    const { frequencyThrottle, reconciliation } = settings(nodes[0]);
+  const expectWithinLimits = (list: any[]) => {
+    for (const core of list) {
+      // a space record can be relayed more than once while peers are discovering each
+      // other; a duplicate space message is rejected deterministically. Message sync
+      // itself must never be rejected.
+      const syncRejections = rejections
+        .get(core.name)!
+        .filter((context) =>
+          sentTypes.get(context.linkedMessageNonce)?.startsWith('Negentropy'),
+        );
+      expect(
+        syncRejections,
+        `${core.name} had a sync message rejected`,
+      ).toEqual([]);
 
-    expect(network.framesOf(EVENTS.Reject)).toEqual([]);
+      for (const context of rejections.get(core.name)!) {
+        expect(
+          context.message.payload.reason,
+          `${core.name} hit the message rate limit`,
+        ).not.toBe(MESSAGES.MESSAGE_RATE_LIMIT_EXCEEDED);
+      }
 
-    for (const [link, count] of Object.entries(network.countPerLink())) {
-      expect(count, `${link} sent ${count} frames`).toBeLessThan(
-        frequencyThrottle,
-      );
-    }
-
-    const syncFrames = network.framesOf(EVENTS.NegentropySync);
-    for (const frame of syncFrames) {
-      expect(frame.message.payload.ranges.length).toBeLessThanOrEqual(
-        reconciliation.maxRanges,
-      );
-    }
-
-    const roundsPerLink = {};
-    for (const { from, to } of syncFrames) {
-      roundsPerLink[`${from}>${to}`] =
-        (roundsPerLink[`${from}>${to}`] ?? 0) + 1;
-    }
-    for (const rounds of Object.values(roundsPerLink)) {
-      expect(rounds).toBeLessThanOrEqual(reconciliation.maxRounds);
+      for (const [peer, record] of Object.entries(
+        core.managers.throttle.getSnapShot(),
+      )) {
+        expect(
+          (record as any).isThrottled,
+          `${core.name} throttled ${peer}`,
+        ).toBe(false);
+      }
     }
   };
 
-  /** Message ids carried by the delivery frames sent to `to`. */
-  const deliveredTo = (to) =>
-    network
-      .framesOf(EVENTS.NegentropyContentDelivery, { to: to.name })
-      .map((frame) => frame.message.payload.content.nonce);
+  const recordEvents = (core: any) => {
+    const name = core.name;
 
-  beforeEach(async () => {
-    nodes = await createP2PNetwork(3);
-    ['alice', 'bob', 'carol'].forEach((name, index) => {
-      nodes[index].name = name;
+    deliveries.set(name, []);
+    syncCompletes.set(name, []);
+    rejections.set(name, []);
+
+    core.emitter.on(EVENTS.NegentropyContentDelivered, (context: any) =>
+      deliveries.get(name)!.push(context),
+    );
+    core.emitter.on(EVENTS.NegentropySyncComplete, (context: any) =>
+      syncCompletes.get(name)!.push(context),
+    );
+    core.emitter.on(EVENTS.Reject, (context: any) =>
+      rejections.get(name)!.push(context),
+    );
+  };
+
+  /**
+   * The space handshake relays space records between peers; space messages carry a
+   * deterministic nonce, so a relayed copy can legitimately be rejected as a duplicate.
+   * Message sync starts after the handshake, so rejections are only asserted from here on.
+   */
+  const beginSyncPhase = () => {
+    for (const list of rejections.values()) list.length = 0;
+  };
+
+  /**
+   * Creates `count` authenticated cores that join the same space. Peers discover
+   * each other through the space topic, so no connection is dialed twice.
+   */
+  const setup = async (count: number) => {
+    factory = new CoreFactory();
+    await factory.init();
+
+    cores = await factory.createMultipleCores(count);
+    const names = count === 2 ? ['alice', 'bob'] : ['alice', 'bob', 'carol'];
+    cores.forEach((core, index) => {
+      core.name = names[index];
     });
+    coreByName = new Map(cores.map((core) => [core.name, core]));
 
-    const keys = nodes.map((node) => node.publicKey);
-    spaceParams = await buildTestSpacePayload({
+    deliveries = new Map();
+    syncCompletes = new Map();
+    rejections = new Map();
+    sentTypes = new Map();
+    for (const core of cores) {
+      recordEvents(core);
+
+      const manager = core.managers.message;
+      const original = manager.sendMessageToSocket.bind(manager);
+      manager.sendMessageToSocket = (message: any, socket: any) => {
+        sentTypes.set(message.nonce, message.type);
+        return original(message, socket);
+      };
+    }
+
+    const [primary] = cores;
+    const keys = cores.map((core) => core.publicKey);
+
+    const space = await primary.space.create({
       spaceName: 'SyncSpace',
       permissionRead: 0,
       permissionBroadcast: 0,
@@ -326,162 +215,363 @@ describe('Message sync (end-to-end)', () => {
       broadcastWhitelist: keys,
     });
 
-    topic = getSpaceTopicHash(spaceParams);
-    network = new VirtualNetwork(topic);
-    spaces = {};
+    topic = space.topicHash;
+    spaceSecret = space.secret;
 
-    for (const node of nodes) {
-      const { spaceId } = await createSpaceForPublicKey(
-        dbOf(node),
-        spaceParams,
-        node.secretKey,
-      );
-      spaces[node.name] = {
-        spaceId,
-        space: await getSpace(dbOf(node), spaceId),
-      };
+    for (const core of cores.slice(1)) {
+      await core.space.join(space.sharelink);
     }
-  });
 
-  afterEach(async () => {
-    for (const node of nodes) {
-      await node.manager.sync.stop();
+    // peers find each other through the space topic (real discovery): dialing the
+    // same peer twice would open two connections and duplicate deterministically
+    // nonced handshake messages
 
-      const { sqlite } = node.manager.session.getDatabase();
-      await sqlite.close();
-      await cleanup(node.manager.root);
-    }
-  });
-
-  it('should converge two peers with diverging histories', async () => {
-    const [alice, bob] = nodes;
-    network.connect(alice, bob);
-
-    const shared = await seed(alice, [alice, bob], 40);
-    const aliceOnly = await seed(alice, [alice], 100, 1000);
-    const bobOnly = await seed(bob, [bob], 100, 2000);
-
-    await alice.manager.sync.startSession(bob.publicKey, topic);
-    await network.settle();
-
-    await expectSameHistory(alice, bob);
-    expect((await historyOf(alice)).size).toBe(
-      shared.length + aliceOnly.length + bobOnly.length,
+    // the newcomer learns the space from the creator (sharelink -> space record)
+    await vi.waitFor(
+      async () => {
+        for (const core of cores) {
+          const map = await getTopicToSpaceMap(dbOf(core));
+          expect(map.has(topic), `${core.name} has no space record`).toBe(true);
+        }
+      },
+      { timeout: 30000, interval: 200 },
     );
 
-    // each missing message crossed the link exactly once
-    expect(deliveredTo(bob)).toHaveLength(aliceOnly.length);
-    expect(deliveredTo(alice)).toHaveLength(bobOnly.length);
-    expect(new Set(deliveredTo(bob)).size).toBe(aliceOnly.length);
+    // every pair must have both directions up, handshake included
+    await vi.waitFor(
+      () => {
+        for (const core of cores) {
+          for (const peer of cores) {
+            if (peer === core) continue;
 
-    for (const node of [alice, bob]) {
-      expect(node.manager.sync.getScheduler(topic).isComplete()).toBe(true);
+            const sockets = core.managers.sockets.getConnectedSockets({
+              peers: [peer.publicKey],
+            });
+            expect(
+              sockets.length,
+              `${core.name} is not connected to ${peer.name}`,
+            ).toBeGreaterThan(0);
+
+            const info = core.managers.sockets.getPeerInfoBySocket(sockets[0]);
+            expect(
+              info.topics,
+              `${core.name} and ${peer.name} did not handshake`,
+            ).toContain(topic);
+          }
+        }
+      },
+      { timeout: 60000, interval: 200 },
+    );
+
+    spaceIds = new Map();
+    for (const core of cores) {
+      const map = await getTopicToSpaceMap(dbOf(core));
+      spaceIds.set(core.name, map.get(topic)!);
     }
 
-    expectWithinLimits();
-  });
+    // let the space handshake (and the empty first exchange) finish
+    await waitForQuiet(cores);
+  };
 
-  it('should do nothing on a second sync once peers are converged', async () => {
-    const [alice, bob] = nodes;
-    network.connect(alice, bob);
+  /**
+   * Starts a fresh reconciliation between two peers, as a reconnect would: the
+   * finished session of the pair is dropped on both sides first.
+   */
+  const startSync = async (from: any, to: any) => {
+    for (const [core, peer] of [
+      [from, to],
+      [to, from],
+    ]) {
+      core.managers.sync.sessions.delete(
+        NegentropySyncManager.sessionKey(peer.publicKey, topic),
+      );
+    }
 
-    await seed(alice, [alice], 60);
-    await seed(bob, [bob], 60, 1000);
+    const session = await from.managers.sync.startSession(to.publicKey, topic);
+    expect(session, `${from.name} could not start a session`).not.toBeNull();
+    return session;
+  };
 
-    await alice.manager.sync.startSession(bob.publicKey, topic);
-    await network.settle();
-    const framesOfFirstSync = network.frames.length;
+  /** Creates an authored space message (optionally encrypted with the space secret). */
+  const authorMessage = async (
+    author: any,
+    index: number,
+    { encrypted = false } = {},
+  ) => {
+    const content = {
+      text: `#${index} from ${author.name}: "quotes", \\ and 🍐`,
+      index,
+    };
 
-    // a new session (e.g. after a reconnect)
-    alice.manager.sync.sessions.clear();
-    bob.manager.sync.sessions.clear();
-    await alice.manager.sync.startSession(bob.publicKey, topic);
-    await network.settle();
+    if (!encrypted) {
+      return createSpaceMessage({
+        topic,
+        messagePayload: content,
+        publicKey: author.publicKey,
+        secretKey: author.secretKey,
+      });
+    }
 
-    const secondSync = network.frames.slice(framesOfFirstSync);
-    expect(secondSync.length).toBeGreaterThan(0);
-    expect(
-      secondSync.every((frame) => frame.type === EVENTS.NegentropySync),
-    ).toBe(true);
-    expectWithinLimits();
-  });
-
-  it('should split a newcomer sync between two providers and deliver every message once', async () => {
-    const [alice, bob, carol] = nodes;
-    network.connect(carol, alice);
-    network.connect(carol, bob);
-
-    const history = [
-      ...(await seed(alice, [alice, bob], 100)),
-      ...(await seed(bob, [alice, bob], 100, 1000)),
-    ];
-
-    await carol.manager.sync.startSession(alice.publicKey, topic);
-    await carol.manager.sync.startSession(bob.publicKey, topic);
-    await network.settle();
-
-    await expectSameHistory(alice, carol);
-    await expectSameHistory(bob, carol);
-
-    const delivered = deliveredTo(carol);
-    expect(delivered).toHaveLength(history.length);
-    expect(new Set(delivered).size).toBe(history.length);
-
-    // both providers took a share of the work
-    const fromAlice = network.framesOf(EVENTS.NegentropyContentDelivery, {
-      from: 'alice',
-      to: 'carol',
-    }).length;
-    const fromBob = network.framesOf(EVENTS.NegentropyContentDelivery, {
-      from: 'bob',
-      to: 'carol',
-    }).length;
-    expect(fromAlice).toBeGreaterThan(0);
-    expect(fromBob).toBeGreaterThan(0);
-    expect(fromAlice + fromBob).toBe(history.length);
-
-    expect(carol.manager.sync.getScheduler(topic).isComplete()).toBe(true);
-    expectWithinLimits();
-  });
-
-  it('should finish from the remaining provider when one disconnects mid-delivery', async () => {
-    const [alice, bob, carol] = nodes;
-    network.connect(carol, alice);
-    network.connect(carol, bob);
-
-    const history = await seed(alice, [alice, bob], 160);
-
-    await carol.manager.sync.startSession(alice.publicKey, topic);
-    await carol.manager.sync.startSession(bob.publicKey, topic);
-
-    // run until bob has delivered something, then pull the plug
-    await network.settle({
-      until: () =>
-        network.framesOf(EVENTS.NegentropyContentDelivery, { from: 'bob' })
-          .length > 0,
+    const nonce = hex(randomNonce());
+    const cipher = await encryptPayload({
+      payload: content,
+      spaceSecret: spaceSecret,
+      nonce,
     });
 
-    network.cut(carol, bob);
-    carol.manager.sync.onDisconnect({ publicKey: bob.publicKey });
-    bob.manager.sync.onDisconnect({ publicKey: carol.publicKey });
+    return createSpaceMessage({
+      topic,
+      messagePayload: cipher,
+      publicKey: author.publicKey,
+      secretKey: author.secretKey,
+      nonce,
+    });
+  };
 
-    await network.settle();
+  /** Stores the same messages in the history of every given node. */
+  const store = async (holders: any[], messages: any[]) => {
+    const ids = [];
 
-    await expectSameHistory(alice, carol);
-    expect((await historyOf(carol)).size).toBe(history.length);
+    for (const message of messages) {
+      for (const holder of holders) {
+        const { messageId } = await createMessageRecord(dbOf(holder), {
+          message,
+          spaceId: spaceIdOf(holder),
+          senderPublicKey: message.publicKey,
+          broadcastTimestamp: now(),
+        });
 
-    const scheduler = carol.manager.sync.getScheduler(topic);
-    expect(scheduler.isComplete()).toBe(true);
-    // a disconnect is not misbehaviour
-    expect(scheduler.penalties.has(bob.publicKey)).toBe(false);
-    // bob's unfinished batch was picked up by alice
-    expect(
-      network.framesOf(EVENTS.NegentropyContentDelivery, {
-        from: 'alice',
-        to: 'carol',
-      }).length,
-    ).toBeGreaterThan(128);
+        if (holder === holders[0]) ids.push(messageId);
+      }
+    }
 
-    expectWithinLimits();
+    return ids;
+  };
+
+  /** `count` messages authored by `author`, every other one encrypted, stored at `holders`. */
+  const seed = async (
+    author: any,
+    holders: any[],
+    count: number,
+    offset = 0,
+  ) => {
+    const messages = [];
+    for (let index = offset; index < offset + count; index++) {
+      messages.push(
+        await authorMessage(author, index, { encrypted: index % 2 === 1 }),
+      );
+    }
+
+    return store(holders, messages);
+  };
+
+  afterEach(async () => {
+    await factory?.cleanup();
   });
+
+  it(
+    'should converge two peers with diverging histories',
+    async () => {
+      await setup(2);
+      beginSyncPhase();
+      const alice = coreByName.get('alice');
+      const bob = coreByName.get('bob');
+
+      const shared = await seed(alice, [alice, bob], 40);
+      const aliceOnly = await seed(alice, [alice], 100, 1000);
+      const bobOnly = await seed(bob, [bob], 100, 2000);
+
+      await startSync(alice, bob);
+
+      const total = shared.length + aliceOnly.length + bobOnly.length;
+      await waitForHistory(bob, total);
+      await waitForHistory(alice, total);
+      await waitForQuiet([alice, bob]);
+
+      await expectSameHistory(alice, bob);
+
+      // each message crossed the link exactly once
+      expect(deliveredTo(bob)).toHaveLength(aliceOnly.length);
+      expect(new Set(deliveredIds(bob)).size).toBe(aliceOnly.length);
+      expect(
+        deliveredTo(bob).every((entry) => entry.publicKey === alice.publicKey),
+      ).toBe(true);
+
+      expect(deliveredTo(alice)).toHaveLength(bobOnly.length);
+      expect(new Set(deliveredIds(alice)).size).toBe(bobOnly.length);
+      expect(
+        deliveredTo(alice).every((entry) => entry.publicKey === bob.publicKey),
+      ).toBe(true);
+
+      expect(alice.managers.sync.getScheduler(topic).isComplete()).toBe(true);
+      expect(bob.managers.sync.getScheduler(topic).isComplete()).toBe(true);
+      expectWithinLimits([alice, bob]);
+    },
+    120_000,
+  );
+
+  it(
+    'should do nothing on a second sync once peers are converged',
+    async () => {
+      await setup(2);
+      beginSyncPhase();
+      const alice = coreByName.get('alice');
+      const bob = coreByName.get('bob');
+
+      await seed(alice, [alice], 60);
+      await seed(bob, [bob], 60, 1000);
+
+      await startSync(alice, bob);
+      await waitForHistory(alice, 120);
+      await waitForHistory(bob, 120);
+      await waitForQuiet([alice, bob]);
+
+      const firstRoundDeliveries =
+        deliveredTo(alice).length + deliveredTo(bob).length;
+      expect(firstRoundDeliveries).toBe(120);
+
+      const completesBefore = new Map(
+        [alice, bob].map((core) => [
+          core.name,
+          syncCompletes.get(core.name)!.length,
+        ]),
+      );
+      const completeCount = () =>
+        syncCompletes.get('alice')!.length + syncCompletes.get('bob')!.length;
+      const completesBeforeTotal = completeCount();
+
+      // a new session (e.g. after a reconnect)
+      await startSync(bob, alice);
+
+      await vi.waitFor(
+        () => {
+          expect(completeCount()).toBeGreaterThan(completesBeforeTotal);
+        },
+        { timeout: 30000, interval: 100 },
+      );
+
+      await waitForQuiet([alice, bob]);
+
+      // the session ran, found nothing to exchange and delivered nothing
+      const newCompletes = [alice, bob].flatMap((core) =>
+        syncCompletes
+          .get(core.name)!
+          .slice(completesBefore.get(core.name)),
+      );
+      expect(newCompletes.length).toBeGreaterThan(0);
+      for (const context of newCompletes) {
+        expect(context.need).toEqual([]);
+      }
+
+      expect(
+        deliveredTo(alice).length + deliveredTo(bob).length,
+      ).toBe(firstRoundDeliveries);
+      expect((await historyOf(alice)).size).toBe(120);
+      expect((await historyOf(bob)).size).toBe(120);
+      await expectSameHistory(alice, bob);
+      expectWithinLimits([alice, bob]);
+    },
+    120_000,
+  );
+
+  it(
+    'should split a newcomer sync between two providers and deliver every message once',
+    async () => {
+      await setup(3);
+      beginSyncPhase();
+      const alice = coreByName.get('alice');
+      const bob = coreByName.get('bob');
+      const carol = coreByName.get('carol');
+
+      const history = [
+        ...(await seed(alice, [alice, bob], 100)),
+        ...(await seed(bob, [alice, bob], 100, 1000)),
+      ];
+
+      await startSync(carol, alice);
+      await startSync(carol, bob);
+
+      await waitForHistory(carol, history.length);
+      await waitForQuiet([alice, bob, carol]);
+
+      await expectSameHistory(alice, carol);
+      await expectSameHistory(bob, carol);
+
+      // every message crossed exactly once
+      expect(deliveredTo(carol)).toHaveLength(history.length);
+      expect(new Set(deliveredIds(carol)).size).toBe(history.length);
+
+      // both providers took a share of the work
+      const counts = providerCounts(carol);
+      expect(counts[alice.publicKey]).toBeGreaterThan(0);
+      expect(counts[bob.publicKey]).toBeGreaterThan(0);
+      expect(
+        (counts[alice.publicKey] ?? 0) + (counts[bob.publicKey] ?? 0),
+      ).toBe(history.length);
+
+      expect(carol.managers.sync.getScheduler(topic).isComplete()).toBe(true);
+      expectWithinLimits([alice, bob, carol]);
+    },
+    180_000,
+  );
+
+  it(
+    'should finish from the remaining provider when one disconnects mid-delivery',
+    async () => {
+      await setup(3);
+      beginSyncPhase();
+      const alice = coreByName.get('alice');
+      const bob = coreByName.get('bob');
+      const carol = coreByName.get('carol');
+
+      const history = await seed(alice, [alice, bob], 160);
+
+      // the link must not come back: stop discovery before cutting the socket
+      await carol.managers.connection.leave(topic);
+      await bob.managers.connection.leave(topic);
+
+      // cut the link on bob's first delivery, i.e. in the middle of his batch
+      let cut = false;
+      const cutOnDelivery = (context: any) => {
+        if (cut || context.publicKey !== bob.publicKey) return;
+
+        cut = true;
+        carol.emitter.off(EVENTS.NegentropyContentDelivered, cutOnDelivery);
+
+        const [socket] = carol.managers.sockets.getConnectedSockets({
+          peers: [bob.publicKey],
+        });
+        if (socket) carol.managers.sockets.removeSocket(socket);
+      };
+      carol.emitter.on(EVENTS.NegentropyContentDelivered, cutOnDelivery);
+
+      await startSync(carol, alice);
+      await startSync(carol, bob);
+
+      await vi.waitFor(() => expect(cut).toBe(true), {
+        timeout: 90000,
+        interval: 50,
+      });
+
+      await waitForHistory(carol, history.length);
+      await waitForQuiet([alice, bob, carol]);
+
+      await expectSameHistory(alice, carol);
+      expect(new Set(deliveredIds(carol)).size).toBe(history.length);
+
+      // bob was interrupted mid-batch; alice served the remainder
+      const counts = providerCounts(carol);
+      expect(counts[bob.publicKey]).toBeGreaterThan(0);
+      expect(counts[bob.publicKey]).toBeLessThan(history.length);
+      expect(counts[alice.publicKey]).toBeGreaterThan(0);
+
+      const scheduler = carol.managers.sync.getScheduler(topic);
+      expect(scheduler.isComplete()).toBe(true);
+      // a disconnect is not misbehaviour
+      expect(scheduler.penalties.has(bob.publicKey)).toBe(false);
+
+      expectWithinLimits([alice, bob, carol]);
+    },
+    180_000,
+  );
 });
