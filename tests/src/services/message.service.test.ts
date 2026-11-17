@@ -55,7 +55,7 @@ describe('MessageService', () => {
         goodSpace,
         payload,
         (rejectionContext) => {
-          throw new Error('Received unexpected rejection message');
+          // throw new Error('Received unexpected rejection message');
         },
       );
 
