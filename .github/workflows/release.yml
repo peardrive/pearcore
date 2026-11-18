@@ -1,0 +1,97 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: release
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Verify tag against package metadata
+        run: npm run release:verify-tag
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Test
+        run: npm test -- --run
+
+      - name: Pack
+        run: npm pack
+
+      - name: Verify tarball contents
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME#v}"
+          TARBALL="pearcore-${VERSION}.tgz"
+          test -f "$TARBALL"
+          tar -tzf "$TARBALL" > tarball-contents.txt
+          grep -qx 'package/dist/core.js' tarball-contents.txt
+          grep -qx 'package/dist/core.d.ts' tarball-contents.txt
+          grep -qx 'package/package.json' tarball-contents.txt
+
+      - name: Determine release notes
+        id: notes
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME#v}"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+          if [ -f CHANGELOG.md ]; then
+            awk -v v="$VERSION" \
+              '$0 == "## " v { found = 1; next } found && /^## / { exit } found { print }' \
+              CHANGELOG.md > release-notes.md
+
+            if [ -s release-notes.md ]; then
+              echo "mode=changelog" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          fi
+
+          echo "mode=generated" >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${{ steps.notes.outputs.version }}"
+          TARBALL="pearcore-${VERSION}.tgz"
+
+          if [ "${{ steps.notes.outputs.mode }}" = "changelog" ]; then
+            gh release create "$GITHUB_REF_NAME" "$TARBALL" \
+              --title "PearCore $VERSION" \
+              --notes-file release-notes.md
+          else
+            gh release create "$GITHUB_REF_NAME" "$TARBALL" \
+              --title "PearCore $VERSION" \
+              --generate-notes
+          fi

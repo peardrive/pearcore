@@ -1,41 +1,58 @@
-<h1 align="center">PearCore</h1>
+<p align="center">
+  <img src="./docs/assets/pearcore-header-dark.png" alt="PearCore — the peer-to-peer networking engine behind Peardrive">
+</p>
 
 <p align="center">
-  <a href="https://github.com/peardrive/Pearcore">
+  <a href="https://github.com/peardrive/pearcore">
     <img src="https://img.shields.io/badge/version-0.2.1-blue" alt="version">
   </a>
   <a href="LICENSE">
     <img src="https://img.shields.io/badge/license-MIT-green" alt="license">
   </a>
-  <a href="https://github.com/peardrive/Pearcore/pulls">
+  <a href="https://github.com/peardrive/pearcore/pulls">
     <img src="https://img.shields.io/badge/PRs-welcome-brightgreen.svg" alt="PRs Welcome">
+  </a>
+  <a href="https://peardrive.github.io/pearcore/">
+    <img src="https://img.shields.io/badge/docs-live-brightgreen" alt="Documentation">
   </a>
 </p>
 
 <p align="center">
-  <strong>PearCore</strong> is a modular, peer‑to‑peer framework for building decentralized applications. It provides account management, encrypted spaces (topics), profile broadcasting, message routing, and multi‑source file download system. Built on top of <code>hyperdht</code> and <code>hyperswarm</code>, it enables secure, permissioned communication without central servers.
+  <strong>PearCore</strong> is a modular peer-to-peer framework for building decentralized applications. It provides persistent accounts, private spaces, messaging, and a virtual file system.
 </p>
 
 <br>
 
 ## 📦 Installation
 
-Since PearCore is not yet published to npm, you can install it directly from Github:
+PearCore is not published to npm yet. Install an explicit version from the
+[Releases](https://github.com/peardrive/pearcore/releases) page:
+
 ```bash
-npm install npm install git+https://github.com/peardrive/pearcore.git
+npm install https://github.com/peardrive/pearcore/releases/download/v0.2.1/pearcore-0.2.1.tgz
 ```
 
-Or if you prefer to clone and build locally:
+Replace `v0.2.1` in both places with the release you want. Releases stay pinned
+to explicit versions until `1.0.0`.
+
+<br>
+
+You can also install from the git tag, which builds the package on your machine
+and needs Node.js 22 or newer:
+
 ```bash
-git clone https://github.com/peardrive/pearcore.git
-cd pearcore
-npm install
+npm install github:peardrive/pearcore#v0.2.1
 ```
+
+If no prebuilt binaries exist for `better-sqlite3` or `sqlite3`, that build also
+needs a C/C++ toolchain.
 
 <br>
 
 ## Quick Example
+
 Here's a minimal setup to create an account, authenticate, and start using PearCore:
+
 ```javascript
 import { createCore } from 'pearcore';
 
@@ -53,23 +70,41 @@ async function main() {
 
   // create new space for peers to join
   const space = await core.space.create({ spaceName: 'ChatApp' });
-  
+
   console.log('PearCore is running!');
   console.log(`use this sharelink to join space: ${space.sharelink}`);
 }
 
-main().catch(error => {
-  console.error(`Setting up PearCore has failed: ${error}`)
+main().catch((error) => {
+  console.error(`Setting up PearCore has failed: ${error}`);
 });
 ```
 
-For more practical examples checkout **[examples/](./docs/examples.md)** directory.
+For more practical examples, see the **[Quick Start guide](./docs/examples.md)**.
+
+<br>
+
+## Networking
+
+PearCore runs without central servers. Peer discovery and connections are handled by two libraries:
+
+- **[HyperDHT](https://github.com/holepunchto/hyperdht)** — the distributed hash table that maps each space to a topic, so peers can find each other without knowing addresses in advance.
+- **[Hyperswarm](https://github.com/holepunchto/hyperswarm)** — joins those topics and maintains direct, encrypted connections to the peers it finds. A peer can announce itself, look up others, or both.
+
+Networking sits behind a small `PeerNetwork` abstraction in [`src/utils/network.utils.ts`](./src/utils/network.utils.ts), so the transport can be swapped without touching the higher-level services.
+
+<br>
+
+## Contributing
+
+Branch model, commit conventions, local checks, and release-impact changesets
+are documented in [CONTRIBUTING.md](./CONTRIBUTING.md).
 
 <br>
 
 ## Documentation
 
-Full API documentation and advanced usage examples are located in the [`docs/`](./docs) folder:
+The published documentation is available at **https://peardrive.github.io/pearcore/**. Its Markdown sources live in the [`docs/`](./docs) folder:
 
 - **[Core Services Overview](./docs/core-services.md)** – all services and low‑level managers
 - **[P2P Networking Overview](./docs/networking.md)** - all topics related to p2p networking of pearcore
@@ -78,3 +113,15 @@ Full API documentation and advanced usage examples are located in the [`docs/`](
 - **[Profile Management](./docs/profiles.md)** – update, broadcast, and list profiles
 - **[Messaging](./docs/messages.md)** – send, receive, and filter messages
 - **[File Sharing](./docs/files.md)** – upload, download, and monitor file transfers
+
+<br>
+
+### Working on the docs
+
+The site is built with VitePress from the `docs/` directory:
+
+```bash
+npm run docs:dev
+npm run docs:build
+npm run docs:preview
+```

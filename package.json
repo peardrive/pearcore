@@ -1,6 +1,6 @@
 {
   "name": "pearcore",
-  "version": "0.1.0",
+  "version": "0.2.1",
   "description": "decentralized networking toolkit",
   "type": "module",
   "main": "./dist/core.js",
@@ -21,14 +21,23 @@
     "node": ">=22"
   },
   "scripts": {
-    "start": "node src/index.js run",
     "prebuild": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\"",
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc --noEmit",
-    "test": "cross-env NODE_ENV=test vitest",
-    "prepack": "npm run build",
+    "test": "vitest",
+    "precommit": "npm run typecheck && npm run build && npm test -- --run && npm run docs:build",
+    "prepare": "npm run build",
     "db:generate": "drizzle-kit generate",
-    "db:migrate": "drizzle-kit migrate"
+    "db:migrate": "drizzle-kit migrate",
+    "docs:dev": "vitepress dev docs",
+    "docs:build": "vitepress build docs",
+    "docs:preview": "vitepress preview docs",
+    "changeset": "changeset",
+    "changeset:check": "changeset status --since=origin/develop",
+    "changeset:guard": "node scripts/check-changeset-bumps.mjs",
+    "release:verify-tag": "node scripts/check-tag-version.mjs",
+    "release:version": "changeset version",
+    "release:publish": "changeset publish"
   },
   "keywords": [
     "p2p",
@@ -40,22 +49,15 @@
   "license": "MIT",
   "repository": "https://github.com/peardrive/pearcore/",
   "devDependencies": {
+    "@changesets/cli": "^3.0.3",
     "@types/better-sqlite3": "^9.6.0",
-    "@types/jest": "^30.0.0",
     "@types/node": "^24.10.0",
     "@types/ws": "^8.18.1",
-    "@types/yargs": "^17.0.34",
-    "@typescript-eslint/eslint-plugin": "^8.46.3",
-    "@typescript-eslint/parser": "^8.46.3",
-    "cross-env": "^10.1.0",
     "drizzle-kit": "^0.31.11",
-    "eslint": "^9.39.0",
-    "jest": "^30.2.0",
-    "nodemon": "^3.1.10",
     "pear-interface": "^1.1.0",
     "prettier": "^3.9.10",
-    "ts-jest": "^29.4.5",
     "typescript": "^5.9.3",
+    "vitepress": "^1.6.4",
     "vitest": "^4.0.8"
   },
   "dependencies": {
