@@ -54,6 +54,7 @@
     "@types/node": "^24.10.0",
     "@types/ws": "^8.18.1",
     "drizzle-kit": "^0.31.11",
+    "esbuild": "^0.28.2",
     "pear-interface": "^1.1.0",
     "prettier": "^3.9.10",
     "typescript": "^5.9.3",
