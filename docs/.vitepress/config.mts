@@ -1,7 +1,7 @@
 import { defineConfig } from 'vitepress';
 
 const SITE_ORIGIN = 'https://peardrive.github.io';
-const BASE = '/Pearcore/';
+const BASE = '/pearcore/';
 const SITE_URL = `${SITE_ORIGIN}${BASE}`;
 const SITE_NAME = 'PearCore';
 const SITE_DESCRIPTION =
@@ -100,7 +100,7 @@ export default defineConfig({
       { text: 'Reference', link: '/core-services' },
       {
         text: 'GitHub',
-        link: 'https://github.com/peardrive/Pearcore',
+        link: 'https://github.com/peardrive/pearcore',
       },
     ],
     sidebar: [
@@ -133,11 +133,11 @@ export default defineConfig({
     socialLinks: [
       {
         icon: 'github',
-        link: 'https://github.com/peardrive/Pearcore',
+        link: 'https://github.com/peardrive/pearcore',
       },
     ],
     editLink: {
-      pattern: 'https://github.com/peardrive/Pearcore/edit/main/docs/:path',
+      pattern: 'https://github.com/peardrive/pearcore/edit/main/docs/:path',
       text: 'Edit this page on GitHub',
     },
     lastUpdated: {

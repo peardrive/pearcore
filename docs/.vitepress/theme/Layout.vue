@@ -25,7 +25,7 @@ const { Layout } = DefaultTheme;
           </a>
           <a
             class="pc-home-banner__button"
-            href="https://github.com/peardrive/Pearcore"
+            href="https://github.com/peardrive/pearcore"
             target="_blank"
             rel="noreferrer"
           >

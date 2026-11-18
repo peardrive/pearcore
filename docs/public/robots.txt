@@ -1,4 +1,4 @@
 User-agent: *
 Allow: /
 
-Sitemap: https://peardrive.github.io/Pearcore/sitemap.xml
+Sitemap: https://peardrive.github.io/pearcore/sitemap.xml

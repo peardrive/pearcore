@@ -3,16 +3,16 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/peardrive/Pearcore">
+  <a href="https://github.com/peardrive/pearcore">
     <img src="https://img.shields.io/badge/version-0.2.1-blue" alt="version">
   </a>
   <a href="LICENSE">
     <img src="https://img.shields.io/badge/license-MIT-green" alt="license">
   </a>
-  <a href="https://github.com/peardrive/Pearcore/pulls">
+  <a href="https://github.com/peardrive/pearcore/pulls">
     <img src="https://img.shields.io/badge/PRs-welcome-brightgreen.svg" alt="PRs Welcome">
   </a>
-  <a href="https://peardrive.github.io/Pearcore/">
+  <a href="https://peardrive.github.io/pearcore/">
     <img src="https://img.shields.io/badge/docs-live-brightgreen" alt="Documentation">
   </a>
 </p>
@@ -26,10 +26,10 @@
 ## 📦 Installation
 
 PearCore is not published to npm yet. Install an explicit version from the
-[Releases](https://github.com/peardrive/Pearcore/releases) page:
+[Releases](https://github.com/peardrive/pearcore/releases) page:
 
 ```bash
-npm install https://github.com/peardrive/Pearcore/releases/download/v0.2.1/pearcore-0.2.1.tgz
+npm install https://github.com/peardrive/pearcore/releases/download/v0.2.1/pearcore-0.2.1.tgz
 ```
 
 Replace `v0.2.1` in both places with the release you want. Releases stay pinned
@@ -41,7 +41,7 @@ You can also install from the git tag, which builds the package on your machine
 and needs Node.js 22 or newer:
 
 ```bash
-npm install github:peardrive/Pearcore#v0.2.1
+npm install github:peardrive/pearcore#v0.2.1
 ```
 
 If no prebuilt binaries exist for `better-sqlite3` or `sqlite3`, that build also
@@ -104,7 +104,7 @@ are documented in [CONTRIBUTING.md](./CONTRIBUTING.md).
 
 ## Documentation
 
-The published documentation is available at **https://peardrive.github.io/Pearcore/**. Its Markdown sources live in the [`docs/`](./docs) folder:
+The published documentation is available at **https://peardrive.github.io/pearcore/**. Its Markdown sources live in the [`docs/`](./docs) folder:
 
 - **[Core Services Overview](./docs/core-services.md)** – all services and low‑level managers
 - **[P2P Networking Overview](./docs/networking.md)** - all topics related to p2p networking of pearcore

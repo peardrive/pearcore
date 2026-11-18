@@ -18,7 +18,7 @@ changesets we require.
 ## Local setup
 
 ```bash
-git clone https://github.com/peardrive/Pearcore.git
+git clone https://github.com/peardrive/pearcore.git
 cd pearcore
 npm install
 ```
