@@ -1,9 +1,19 @@
+---
+title: Accounts
+description: Create, authenticate, recover, and manage PearCore accounts.
+---
+
 # Accounts
-Accounts in PearCore are your idenitity on the network. Think of them as your digital passport that proves who you are, and enables you to create and manage spaces. Every account is tighed to a cryptography keypair that ensures only you can control spaces and content.
+
+Accounts in PearCore are your idenitity on the network. Think of them as your digital passport that proves who you are, and enables you to create and manage spaces.
+
+Every account is tighed to a cryptography keypair that ensures only you can control spaces and content.
 
 When you create and account, PearCore generates a secure keypair for you. The `publicKey` becomes you network identity, while the `secretKey` which is kept encrypted locally with your password, allowes you to sign messages and prove ownership of your spaces. This means your credentials are entirely local and only managed by you.
 
-Each account required both a **username** and **password**, and PearCore requires to authenticate the account to local the credentials internally during runtime. Here is an example:
+Each account required both a **username** and **password**, and PearCore requires to authenticate the account to local the credentials internally during runtime.
+
+Here is an example:
 
 ```javascript
 import { createCore } from 'pearcore';
@@ -30,7 +40,10 @@ Explanation:
 
 **Note**: The `authenticate()` method immediately attempts to reach the network and starts to communicate with the rest of the peers. This means PearCore will internally starts to handshake with the rest of the network.
 
+<br>
+
 ## Account Recovery
+
 What happens if you lose access to your device? PearCore provides a recovery mechanism using **BIP39 mnemonic phrases** which introduces 12 words that can regenerate your keypair. This is your backup plan, and it's crucial to store these words safely.
 
 When you create an account, the mnemonic is generated automatically. You can use it to recover you identity on any new device.
@@ -42,13 +55,16 @@ console.log(`Mnemonics: ${account.mnemonic}`);
 const backup = await core.accounts.recover("backupAccount", "pass123", account.mnemonics);
 ```
 
->>> **Warning:** Anyone with your mnemonics can recover your idenitity and access your spaces. Keep it safe and never share it digitally.
+> **Warning:** Anyone with your mnemonics can recover your idenitity and access your spaces. Keep it safe and never share it digitally.
+
+<br>
 
 ## State Management
 
 Account authentication is session-based. Once authenticated, PearCore maintains your session until you explicitly logout
 
 Here's how to check your current state:
+
 ```javascript
 const state = core.accounts.getCurrentState();
 
@@ -62,7 +78,10 @@ if (state.state === 'authenticated') {
 
 All operations within PearCore are disabled and will throw error if you intend to interact with network without an authenticated account.
 
+<br>
+
 ## Account Operations
+
 You can manage multiple accounts on a single device. Each account maintains its own independent identity, spaces, and data:
 
 ```javascript
@@ -81,6 +100,7 @@ await core.accounts.logout();
 ```
 
 This operation:
+
 1. Disconnects from the P2P network
 2. Closes all database connections
 3. Clears session credentials from memory
