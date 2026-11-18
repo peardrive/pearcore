@@ -9,3 +9,7 @@ drizzle
 .DS_Store
 dist
 *.tsbuildinfo
+
+# VitePress build artifacts
+docs/.vitepress/cache/
+docs/.vitepress/dist/
