@@ -1,21 +1,30 @@
 name: Release
 
+# Every push to main is a release: a merged `develop -> main` release PR, a
+# hotfix, or a re-run of this workflow. The job builds the installable package,
+# smoke-tests it, tags the commit v<package.json version>, publishes the package
+# to npm, and creates a GitHub Release whose notes are that version's section of
+# CHANGELOG.md, with the package tarball attached.
+#
+# Nothing is tagged or published if the checks, tests, build or smoke test fail.
 on:
   push:
-    tags: ['v*']
+    branches: [main]
+  workflow_dispatch:
 
 permissions:
   contents: write
+  id-token: write # npm provenance
 
 concurrency:
-  group: release-${{ github.ref }}
+  group: release
   cancel-in-progress: false
 
 jobs:
   release:
     name: release
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 40
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -29,11 +38,28 @@ jobs:
           cache: npm
           cache-dependency-path: package-lock.json
 
+      - name: Read package version
+        id: v
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(node -p "require('./package.json').version")"
+          {
+            echo "version=$version"
+            echo "tag=v$version"
+            echo "tarball=pearcore-$version.tgz"
+          } >> "$GITHUB_OUTPUT"
+          echo "Releasing PearCore $version"
+
       - name: Install dependencies
         run: npm ci --ignore-scripts
 
-      - name: Verify tag against package metadata
-        run: npm run release:verify-tag
+      # Fails when package.json / package-lock.json disagree with the version, or
+      # when changesets are still pending (i.e. release:prepare was skipped).
+      - name: Verify package metadata
+        env:
+          TAG: ${{ steps.v.outputs.tag }}
+        run: npm run release:verify-tag -- "$TAG"
 
       - name: Typecheck
         run: npm run typecheck
@@ -41,57 +67,181 @@ jobs:
       - name: Test
         run: npm test -- --run
 
+      - name: Build
+        run: npm run build
+
+      # Build and pack first: a package that cannot be built must never create a tag.
       - name: Pack
-        run: npm pack
+        env:
+          TARBALL: ${{ steps.v.outputs.tarball }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/pkg"
+          npm pack --pack-destination "$RUNNER_TEMP/pkg"
+          test -f "$RUNNER_TEMP/pkg/$TARBALL"
+          # The same package under a stable name:
+          # /releases/latest/download/pearcore.tgz
+          cp "$RUNNER_TEMP/pkg/$TARBALL" "$RUNNER_TEMP/pkg/pearcore.tgz"
+          ls -l "$RUNNER_TEMP/pkg"
 
       - name: Verify tarball contents
+        env:
+          TARBALL: ${{ steps.v.outputs.tarball }}
         shell: bash
         run: |
           set -euo pipefail
-          VERSION="${GITHUB_REF_NAME#v}"
-          TARBALL="pearcore-${VERSION}.tgz"
-          test -f "$TARBALL"
-          tar -tzf "$TARBALL" > tarball-contents.txt
-          grep -qx 'package/dist/core.js' tarball-contents.txt
-          grep -qx 'package/dist/core.d.ts' tarball-contents.txt
-          grep -qx 'package/package.json' tarball-contents.txt
+          tar -tzf "$RUNNER_TEMP/pkg/$TARBALL" > "$RUNNER_TEMP/tarball-contents.txt"
+          grep -qx 'package/package.json' "$RUNNER_TEMP/tarball-contents.txt"
+          grep -qx 'package/dist/core.js' "$RUNNER_TEMP/tarball-contents.txt"
+          grep -qx 'package/dist/core.d.ts' "$RUNNER_TEMP/tarball-contents.txt"
+          grep -q '^package/migrations/' "$RUNNER_TEMP/tarball-contents.txt"
+          cat "$RUNNER_TEMP/tarball-contents.txt"
 
-      - name: Determine release notes
-        id: notes
+      # Proves the artifact installs and its entry point resolves before anything
+      # is tagged or published.
+      - name: Smoke-test the package
+        env:
+          TARBALL: ${{ steps.v.outputs.tarball }}
         shell: bash
         run: |
           set -euo pipefail
-          VERSION="${GITHUB_REF_NAME#v}"
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          work="$RUNNER_TEMP/smoke"
+          mkdir -p "$work"
+          cd "$work"
+          npm init -y > /dev/null
+          npm install "$RUNNER_TEMP/pkg/$TARBALL" --ignore-scripts --no-audit --no-fund
+          node -e "
+            const path = require('node:path');
+            const resolved = require.resolve('pearcore');
+            if (path.basename(resolved) !== 'core.js' || path.basename(path.dirname(resolved)) !== 'dist') {
+              throw new Error('Unexpected entry point: ' + resolved);
+            }
+            console.log('resolved', resolved);
+          "
+          test -f node_modules/pearcore/dist/core.d.ts
+          test -d node_modules/pearcore/migrations
 
-          if [ -f CHANGELOG.md ]; then
-            awk -v v="$VERSION" \
-              '$0 == "## " v { found = 1; next } found && /^## / { exit } found { print }' \
-              CHANGELOG.md > release-notes.md
-
-            if [ -s release-notes.md ]; then
-              echo "mode=changelog" >> "$GITHUB_OUTPUT"
+      - name: Tag release
+        env:
+          TAG: ${{ steps.v.outputs.tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
+            if [ "$(git rev-list -n1 "$TAG")" = "$GITHUB_SHA" ]; then
+              echo "$TAG already points at this commit; re-publishing its assets."
               exit 0
             fi
+            echo "::error::$TAG already exists on another commit. Bump the version (npm run release:prepare) and merge again."
+            exit 1
           fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "$TAG" -m "PearCore ${TAG#v}"
+          git push origin "$TAG"
 
-          echo "mode=generated" >> "$GITHUB_OUTPUT"
-
-      - name: Create GitHub Release
+      # Publishing needs one of:
+      #   - the NPM_TOKEN repository secret (granular access token), or
+      #   - npm trusted publishing: set the repository variable
+      #     NPM_TRUSTED_PUBLISHING=true and configure this workflow as a
+      #     trusted publisher on npmjs.com.
+      # Without either, the GitHub Release is still produced and the step warns.
+      - name: Publish to npm
         env:
-          GH_TOKEN: ${{ github.token }}
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NPM_TRUSTED_PUBLISHING: ${{ vars.NPM_TRUSTED_PUBLISHING }}
+          VERSION: ${{ steps.v.outputs.version }}
+          TARBALL: ${{ steps.v.outputs.tarball }}
         shell: bash
         run: |
           set -euo pipefail
-          VERSION="${{ steps.notes.outputs.version }}"
-          TARBALL="pearcore-${VERSION}.tgz"
 
-          if [ "${{ steps.notes.outputs.mode }}" = "changelog" ]; then
-            gh release create "$GITHUB_REF_NAME" "$TARBALL" \
-              --title "PearCore $VERSION" \
-              --notes-file release-notes.md
+          if [ -n "${NPM_TOKEN:-}" ]; then
+            echo "Publishing with NPM_TOKEN."
+            printf '//registry.npmjs.org/:_authToken=%s\n' "$NPM_TOKEN" > "$RUNNER_TEMP/npmrc"
+            export NPM_CONFIG_USERCONFIG="$RUNNER_TEMP/npmrc"
+          elif [ "${NPM_TRUSTED_PUBLISHING:-}" = "true" ]; then
+            echo "Publishing with npm trusted publishing (OIDC)."
+            npm install --global npm@^11
           else
-            gh release create "$GITHUB_REF_NAME" "$TARBALL" \
-              --title "PearCore $VERSION" \
-              --generate-notes
+            echo "::warning::npm publishing is not configured; skipping. Set the NPM_TOKEN secret or the NPM_TRUSTED_PUBLISHING variable to publish 'npm install pearcore'."
+            exit 0
           fi
+
+          if npm view "pearcore@$VERSION" version >/dev/null 2>&1; then
+            echo "pearcore@$VERSION is already on npm; skipping."
+            exit 0
+          fi
+
+          npm publish "$RUNNER_TEMP/pkg/$TARBALL" --provenance --access public
+
+      - name: Extract release notes
+        env:
+          VERSION: ${{ steps.v.outputs.version }}
+          TAG: ${{ steps.v.outputs.tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          notes="$RUNNER_TEMP/notes.md"
+
+          if [ -f CHANGELOG.md ]; then
+            awk -v v="$VERSION" '
+              $0 == "## " v { on = 1; next }
+              on && /^## / { exit }
+              on { print }
+            ' CHANGELOG.md > "$notes"
+          fi
+
+          if [ ! -s "$notes" ]; then
+            echo "PearCore $VERSION" > "$notes"
+          fi
+
+          cat >> "$notes" <<EOF
+
+          ## Install
+
+          Requires Node.js 22 or newer.
+
+          \`\`\`bash
+          npm install pearcore@$VERSION
+          \`\`\`
+
+          Or pin the release tarball:
+
+          \`\`\`bash
+          npm install https://github.com/${GITHUB_REPOSITORY}/releases/download/$TAG/pearcore-$VERSION.tgz
+          \`\`\`
+
+          The newest release is always available as
+          \`https://github.com/${GITHUB_REPOSITORY}/releases/latest/download/pearcore.tgz\`.
+          EOF
+
+          cat "$notes"
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.v.outputs.version }}
+          TAG: ${{ steps.v.outputs.tag }}
+          TARBALL: ${{ steps.v.outputs.tarball }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          assets=(
+            "$RUNNER_TEMP/pkg/$TARBALL"
+            "$RUNNER_TEMP/pkg/pearcore.tgz"
+          )
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG already exists; updating its assets."
+            gh release upload "$TAG" "${assets[@]}" --clobber
+          else
+            prerelease=""
+            case "$VERSION" in *-*) prerelease="--prerelease" ;; esac
+            gh release create "$TAG" --verify-tag --title "PearCore $VERSION" \
+              --notes-file "$RUNNER_TEMP/notes.md" $prerelease "${assets[@]}"
+          fi
+
+          gh release view "$TAG" --json url,assets \
+            --jq '.url, (.assets[] | "  \(.name) (\(.size) bytes)")'

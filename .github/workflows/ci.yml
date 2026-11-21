@@ -46,7 +46,12 @@ jobs:
 
   changeset:
     name: changeset
-    if: github.event_name == 'pull_request'
+    # Feature/fix PRs into develop must describe their change for the changelog.
+    # Release PRs consume changesets, so they are exempt.
+    if: >-
+      github.event_name == 'pull_request' &&
+      github.base_ref == 'develop' &&
+      !startsWith(github.head_ref, 'release/')
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -73,3 +78,50 @@ jobs:
 
       - name: Guard pre-1.0 bump levels
         run: npm run changeset:guard
+
+  release-source:
+    name: release-source
+    # main only accepts release PRs from develop, or hotfix branches. Merging one
+    # triggers the Release workflow, which tags and publishes the package.
+    if: github.event_name == 'pull_request' && github.base_ref == 'main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+
+      - name: Check source branch
+        env:
+          HEAD_REF: ${{ github.head_ref }}
+        run: |
+          case "$HEAD_REF" in
+            develop|hotfix/*) echo "Source branch '$HEAD_REF' is allowed." ;;
+            *)
+              echo "::error::PRs into main must come from 'develop' (a release) or 'hotfix/*'. Retarget this PR to develop."
+              exit 1
+              ;;
+          esac
+
+      - name: Check the version is ready to release
+        run: |
+          set -euo pipefail
+          version="$(node -p "require('./package.json').version")"
+
+          if git rev-parse -q --verify "refs/tags/v$version" >/dev/null; then
+            echo "::error::v$version is already released. Run 'npm run release:prepare' on develop first."
+            exit 1
+          fi
+
+          if find .changeset -maxdepth 1 -name '*.md' ! -name 'README.md' | grep -q .; then
+            echo "::error::Unconsumed changesets found. Run 'npm run release:prepare' on develop first."
+            exit 1
+          fi
+
+          echo "Releasing v$version"

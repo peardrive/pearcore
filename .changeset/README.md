@@ -30,6 +30,6 @@ Add sharelink expiration to `core.space`.
 Valid bump types are `patch`, `minor`, and `major`. While PearCore is below
 `1.0.0`, breaking changes use `minor`; reserve `major` for the deliberate
 `1.0.0` release. Merging the pull request collects the changesets;
-`npm run release:version` applies them to the package version and changelog.
+`npm run release:prepare` applies them to the package version and changelog.
 
 See [CONTRIBUTING.md](../CONTRIBUTING.md) for the full workflow.

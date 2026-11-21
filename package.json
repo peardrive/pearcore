@@ -37,6 +37,7 @@
     "changeset:guard": "node scripts/check-changeset-bumps.mjs",
     "release:verify-tag": "node scripts/check-tag-version.mjs",
     "release:version": "changeset version",
+    "release:prepare": "node scripts/release-prepare.mjs",
     "release:publish": "changeset publish"
   },
   "keywords": [
@@ -47,7 +48,17 @@
   ],
   "author": "Anjou Team",
   "license": "MIT",
-  "repository": "https://github.com/peardrive/pearcore/",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/peardrive/pearcore.git"
+  },
+  "homepage": "https://peardrive.github.io/pearcore/",
+  "bugs": {
+    "url": "https://github.com/peardrive/pearcore/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
   "devDependencies": {
     "@changesets/cli": "^3.0.3",
     "@types/better-sqlite3": "^9.6.0",
