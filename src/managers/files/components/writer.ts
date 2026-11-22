@@ -1,5 +1,4 @@
 import { isNumber } from '../../../utils/general.utils.js';
-import { closeFile } from '../../../utils/system.utils.js';
 import { updateDownloadRecord } from '../../../utils/files.utils.js';
 
 export class SequentialWriter {
@@ -93,9 +92,7 @@ export class SequentialWriter {
   }
 
   async close(): Promise<void> {
-    if (this.fileHandler) {
-      await closeFile(this.fileHandler);
-      this.fileHandler = null;
-    }
+    this.buffer.clear();
+    this.fileHandler = null;
   }
 }

@@ -5,7 +5,9 @@ import { hex, randomNonce } from '../../utils/crypto.utils.js';
 import { FileEventBroadcaster } from './components/events.js';
 import { LocalFileRegistry } from './components/registry.js';
 import { SpaceDownloadTask } from './components/download.js';
-import { ProgressTracker } from './components/progress.js';
+import { FileHandlerCache } from './components/cache.js';
+import { FileContentDeliveryManager } from './components/delivery.js';
+import { LocalFileWatcher } from './components/watcher.js';
 
 const logger = createChild('FileManager');
 const entries = (value: any): Array<[string, any]> => Object.entries(value);
@@ -324,7 +326,18 @@ export class SpaceFileManager {
     this.socketManager = managers.socketManager;
     this.messageManager = managers.messageManager;
     this.connectionManager = managers.connectionManager;
+    this.muxManager = managers.muxManager;
     this.spaceFileListManager = managers.spaceFileListManager;
+
+    this.fileCache = new FileHandlerCache();
+    this.fileWatcher = new LocalFileWatcher();
+
+    this.deliveryManager = new FileContentDeliveryManager({
+      sessionManager: this.sessionManager,
+      muxManager: this.muxManager,
+      fileCache: this.fileCache,
+      fileWatcher: this.fileWatcher,
+    });
 
     this.fileEventBroadcaster = new FileEventBroadcaster(this.emitter, {
       sessionManager: this.sessionManager,
@@ -336,6 +349,8 @@ export class SpaceFileManager {
       sessionManager: this.sessionManager,
       spaceFileListManager: this.spaceFileListManager,
       fileEventBroadcaster: this.fileEventBroadcaster,
+      fileCache: this.fileCache,
+      fileWatcher: this.fileWatcher,
     });
 
     // key -> download task instance
@@ -364,6 +379,7 @@ export class SpaceFileManager {
       socketManager: this.socketManager,
       connectionManager: this.connectionManager,
       fileEventBroadcaster: this.fileEventBroadcaster,
+      fileCache: this.fileCache,
     });
 
     return task;
@@ -377,7 +393,33 @@ export class SpaceFileManager {
     return this.downloadTasks.get(key);
   }
 
+  /**
+   * Creates a new file-content delivery task.
+   * @param params - Delivery task parameters.
+   */
+  async createDeliveryTask(params: any) {
+    return await this.deliveryManager.createTask(params);
+  }
+
+  /**
+   * Wait for a file-content delivery task to finish.
+   * @param key - Delivery task key.
+   */
+  async waitForDeliveryTask(key: string) {
+    return await this.deliveryManager.waitForTask(key);
+  }
+
+  /**
+   * Abort file-content delivery tasks for a key.
+   * @param key - Delivery task key.
+   * @param [publicKey=null] - When given, only tasks requested by this peer are aborted.
+   */
+  abortDeliveryTask(key: string, publicKey: string | null = null) {
+    this.deliveryManager.abortTask(key, publicKey);
+  }
+
   async init() {
+    await this.deliveryManager.init();
     await this.localFileRegistry.init();
 
     const downloads = await listDownloadRecords(this.db);
@@ -430,7 +472,7 @@ export class SpaceFileManager {
    * @param registryId - Local file registry ID
    */
   async removeLocalFile(registryId: number) {
-    await this.localFileRegistry.delete(registryId);
+    await this.localFileRegistry.delete({ registryId });
   }
 
   /**
@@ -500,5 +542,11 @@ export class SpaceFileManager {
     for (const task of tasks) {
       await task.stop();
     }
+
+    this.downloadTasks.clear();
+
+    await this.deliveryManager.stop();
+    await this.fileWatcher.close();
+    await this.fileCache.stop();
   }
 }

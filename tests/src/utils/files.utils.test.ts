@@ -134,7 +134,7 @@ describe('File Utils', () => {
       const expectedLeafCount = Math.ceil(fileSize / DEFAULT_CHUNK_SIZE);
       expect(leafs.length).toBe(expectedLeafCount);
 
-      const rootHash = registry.rootHash!;
+      const rootHash = registry.rootHash;
       leafs.forEach((leaf, index) => {
         expect(leaf.registryId).toBe(registryId);
         expect(leaf.rootHash).toBe(rootHash);

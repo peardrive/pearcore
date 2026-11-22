@@ -8,7 +8,6 @@ import {
   type MuxManager,
   type MuxSocket,
 } from '../managers/multiplexer.manager.js';
-import type { FileContentDeliveryManager } from '../managers/delivery.manager.js';
 import type { NegentropySyncManager } from '../managers/negentropy/negentropy.manager.js';
 import type {
   SpaceFileListManager,
@@ -38,8 +37,7 @@ export interface ProtocolManagers {
   socket: SocketManager;
   message: MessageManager;
   spaceFileList: SpaceFileListManager;
-  spaceFiles?: SpaceFileManager;
-  delivery?: FileContentDeliveryManager;
+  spaceFiles: SpaceFileManager;
   mux: MuxManager;
   sync?: NegentropySyncManager;
 }
@@ -50,20 +48,18 @@ export class BaseProtocolHandler {
   socketManager: SocketManager;
   messageManager: MessageManager;
   spaceFileListManager: SpaceFileListManager;
-  spaceFileManager: SpaceFileManager | undefined;
-  deliveryManager: FileContentDeliveryManager | undefined;
+  spaceFileManager: SpaceFileManager;
   muxManager: MuxManager;
   syncManager: NegentropySyncManager | undefined;
-  emitter: Pick<EventEmitter, 'emit'>;
+  emitter: EventEmitter;
   emit: EventEmitter['emit'];
 
-  constructor(emitter: Pick<EventEmitter, 'emit'>, managers: ProtocolManagers) {
+  constructor(emitter: EventEmitter, managers: ProtocolManagers) {
     this.sessionManager = managers.session;
     this.socketManager = managers.socket;
     this.messageManager = managers.message;
     this.spaceFileListManager = managers.spaceFileList;
     this.spaceFileManager = managers.spaceFiles;
-    this.deliveryManager = managers.delivery;
     this.muxManager = managers.mux;
     this.syncManager = managers.sync;
 

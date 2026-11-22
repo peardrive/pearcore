@@ -13,7 +13,7 @@ The file sharing API reference is being expanded. In the meantime, start from th
 
 - `src/services/drive/drive.service.ts` - public drive and file operations
 - `src/managers/files/files.manager.ts` - file transfer orchestration
-- `src/managers/files/components/` - downloads, providers, scheduling, progress, and local storage
+- `src/managers/files/components/` - downloads, delivery, watching, providers, scheduling, progress, and local storage
 - `src/protocols/files.protocol.ts` - peer-to-peer file protocol
 
 <br>

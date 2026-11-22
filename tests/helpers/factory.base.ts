@@ -114,7 +114,7 @@ export class BaseCoreFactory {
         if (core.authenticated === false) {
           await core.managers.connection.destroy();
           await core.managers.sync.stop();
-          await core.managers.delivery.stop();
+          await core.managers.spaceFiles.stop();
           core.managers.session.getDatabase().sqlite?.close();
         } else {
           await core.accounts.logout();

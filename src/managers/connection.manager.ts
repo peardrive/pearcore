@@ -56,10 +56,10 @@ export class ConnectionManager {
   peerNetworkFactory: PeerNetworkFactory;
   peerNetwork: PeerNetwork | null;
   subscriptions: Map<string, PeerTopicSubscription>;
-  emitter: Pick<EventEmitter, 'emit'>;
+  emitter: EventEmitter;
 
   constructor(
-    emitter: Pick<EventEmitter, 'emit'>,
+    emitter: EventEmitter,
     managers: ConnectionManagerDependencies,
   ) {
     this.socketManager = managers.socketManager;

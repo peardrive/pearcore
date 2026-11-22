@@ -117,8 +117,6 @@ export class AccountService {
     await this.managers.connection.init();
     // load space file management
     await this.managers.spaceFiles.init();
-    // load file-content delivery managerment
-    await this.managers.delivery.init();
     // load message-history reconciliation
     await this.managers.sync.init();
 
@@ -136,7 +134,6 @@ export class AccountService {
   async logout() {
     await this.managers.connection.destroy();
     await this.managers.spaceFiles.stop();
-    await this.managers.delivery.stop();
     await this.managers.sync.stop();
 
     const { sqlite } = this.managers.session.getDatabase();

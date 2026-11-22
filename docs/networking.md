@@ -19,7 +19,7 @@ This page is being expanded. The source tree is the best reference for now.
 - **Sessions** - `src/managers/session.manager.ts` tracks peer sessions and authentication state.
 - **Multiplexing** - `src/managers/multiplexer.manager.ts` manages protocol streams over a connection.
 - **Protocols** - `src/protocols/` defines the messages exchanged between peers.
-- **Delivery** - `src/managers/delivery.manager.ts` and `src/managers/throttle.manager.ts` coordinate outbound work.
+- **Delivery** - `src/managers/files/components/delivery.ts` and `src/managers/throttle.manager.ts` coordinate outbound work.
 
 <br>
 

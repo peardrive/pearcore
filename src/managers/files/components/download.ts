@@ -1,11 +1,7 @@
 import * as EVENTS from '../../../constants/events.constants.js';
 import { isDefined } from '../../../utils/general.utils.js';
 import { getSpace, getSpaceTopicHash } from '../../../utils/space.utils.js';
-import {
-  fileExists,
-  openFile,
-  posixPathJoin,
-} from '../../../utils/system.utils.js';
+import { fileExists, posixPathJoin } from '../../../utils/system.utils.js';
 import {
   getFileRegistryRecord,
   getFileTreeRecord,
@@ -34,6 +30,7 @@ export class SpaceDownloadTask {
     this.messageManager = managers.messageManager;
     this.socketManager = managers.socketManager;
     this.connectionManager = managers.connectionManager;
+    this.fileCache = managers.fileCache;
 
     // state
     this.downloadComplete = false;
@@ -90,6 +87,32 @@ export class SpaceDownloadTask {
 
   getKey() {
     return this.key;
+  }
+
+  get fileOwner() {
+    return this.key ? `download:${this.key}` : null;
+  }
+
+  /**
+   * Acquire the shared write handler for the temporary file.
+   */
+  async acquireFileHandler() {
+    if (!this.fileOwner) {
+      throw new Error('Download key is not set');
+    }
+
+    return await this.fileCache.acquire(this.tempFilePath, this.fileOwner, {
+      mode: 'write',
+    });
+  }
+
+  /**
+   * Release the shared write handler for the temporary file.
+   */
+  async releaseFileHandler() {
+    if (!this.fileOwner) return;
+
+    await this.fileCache.release(this.fileOwner);
   }
 
   _buildStack() {
@@ -174,7 +197,7 @@ export class SpaceDownloadTask {
       this.leafCount = savedTree.leafCount;
     }
 
-    const fileHandler = await openFile(this.tempFilePath);
+    const fileHandler = await this.acquireFileHandler();
 
     this._buildStack();
 
@@ -268,6 +291,7 @@ export class SpaceDownloadTask {
     }
 
     await this.writer?.close();
+    await this.releaseFileHandler();
   }
 
   /**
@@ -332,7 +356,9 @@ export class SpaceDownloadTask {
       this.registryId = registryId;
     }
 
-    const fileHandler = await openFile(this.tempFilePath);
+    const fileHandler =
+      this.writer?.fileHandler ?? (await this.acquireFileHandler());
+
     if (!this.writer) {
       this.writer = new SequentialWriter({
         db: this.db,
@@ -357,6 +383,10 @@ export class SpaceDownloadTask {
   async finish() {
     if (this.downloadComplete) return;
     this.downloadComplete = true;
+
+    // release the write handler before moving the file to its final destination
+    await this.writer?.close();
+    await this.releaseFileHandler();
 
     await setDownloadAsComplete(this.db, this.registryId);
     await this.stop();

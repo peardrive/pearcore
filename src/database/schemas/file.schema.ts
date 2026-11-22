@@ -38,7 +38,7 @@ export const fileRegistry = sqliteTable('file_registry', {
   spacePath: text('space_path').notNull(),
   spaceFilename: text('space_filename').notNull(),
 
-  rootHash: text('root_hash'),
+  rootHash: text('root_hash').notNull(),
   metaHash: text('meta_hash').notNull(),
 
   leafCount: integer('leaf_count').notNull(),
