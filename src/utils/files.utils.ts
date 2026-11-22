@@ -3,7 +3,7 @@ import path from 'path';
 import fs from 'fs/promises';
 import chokidar from 'chokidar';
 import { getSpace } from './space.utils.js';
-import { eq, and, asc, isNotNull, isNull } from 'drizzle-orm';
+import { eq, and, asc, isNotNull } from 'drizzle-orm';
 import type { SQL } from 'drizzle-orm';
 import { hex, hash, canonicalStringify } from './crypto.utils.js';
 import { DEFAULT_CHUNK_SIZE } from '../constants/global.constants.js';
@@ -40,7 +40,7 @@ export interface FileRegistryInput {
   spaceId: number;
   spacePath?: string;
   spaceFilename?: string;
-  rootHash?: string | null;
+  rootHash: string;
   metaHash: string;
   leafCount: number;
   height: number;
@@ -67,6 +67,7 @@ export interface GenerateFileTreeRecordInput {
   spaceId: number;
   onLeaf?: (leafHash: Uint8Array, leafIndex: number) => void;
   tree?: MerkleTree;
+  metaHash?: string;
 }
 
 export interface FileTreeRecord {
@@ -145,7 +146,7 @@ export const WatchTypes = {
   ADD: 'add',
   CHANGE: 'change',
   DELETE: 'unlink',
-};
+} as const;
 
 /**
  * Wathes multiple files for change using chokidar.
@@ -337,9 +338,7 @@ function createFileRegistryQueryFilters(filters: FileRegistryFilters): SQL[] {
   if (filters.spaceFilename !== undefined) {
     conditions.push(eq(fileRegistry.spaceFilename, filters.spaceFilename));
   }
-  if (filters.rootHash === null) {
-    conditions.push(isNull(fileRegistry.rootHash));
-  } else if (filters.rootHash !== undefined) {
+  if (filters.rootHash !== undefined) {
     conditions.push(eq(fileRegistry.rootHash, filters.rootHash));
   }
 
@@ -616,8 +615,14 @@ export async function generateFileTreeRecord(
   db: Database,
   params: GenerateFileTreeRecordInput,
 ): Promise<{ registryId: number; rootHash: string; leafCount: number }> {
-  const { fileSourcePath, spacePath, spaceFilename, spaceId, onLeaf } = params;
-
+  const {
+    fileSourcePath,
+    spacePath,
+    spaceFilename,
+    spaceId,
+    onLeaf,
+    metaHash: providedMetaHash,
+  } = params;
   const source = path.resolve(fileSourcePath);
   const exists = await fileExists(source);
 
@@ -655,7 +660,8 @@ export async function generateFileTreeRecord(
   const rootHash = tree.rootHash;
   const leafCount = getLeafCount(size, DEFAULT_CHUNK_SIZE);
 
-  const metaHash = await getFileMetaHashFromSource(source);
+  const metaHash =
+    providedMetaHash ?? (await getFileMetaHashFromSource(source));
 
   const { registryId } = await createfileRegistryRecord(db, {
     fileSourcePath: source,
