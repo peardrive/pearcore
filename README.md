@@ -25,27 +25,33 @@
 
 ## 📦 Installation
 
-PearCore is not published to npm yet. Install an explicit version from the
+PearCore is published to npm and needs Node.js 22 or newer:
+
+```bash
+npm install pearcore
+```
+
+Every release is also available as a pinned tarball on the
 [Releases](https://github.com/peardrive/pearcore/releases) page:
 
 ```bash
-npm install https://github.com/peardrive/pearcore/releases/download/v0.2.1/pearcore-0.2.1.tgz
+npm install https://github.com/peardrive/pearcore/releases/download/v0.2.2/pearcore-0.2.2.tgz
 ```
 
-Replace `v0.2.1` in both places with the release you want. Releases stay pinned
-to explicit versions until `1.0.0`.
+Replace `v0.2.2` in both places with the release you want. The newest release is
+always available as
+`https://github.com/peardrive/pearcore/releases/latest/download/pearcore.tgz`.
 
 <br>
 
-You can also install from the git tag, which builds the package on your machine
-and needs Node.js 22 or newer:
+You can also install from the git tag, which builds the package on your machine:
 
 ```bash
-npm install github:peardrive/pearcore#v0.2.1
+npm install github:peardrive/pearcore#v0.2.2
 ```
 
-If no prebuilt binaries exist for `better-sqlite3` or `sqlite3`, that build also
-needs a C/C++ toolchain.
+If no prebuilt binaries exist for `better-sqlite3` or `sqlite3`, those builds
+need a C/C++ toolchain.
 
 <br>
 

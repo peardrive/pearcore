@@ -195,32 +195,27 @@ applies those during a release.
 
 ## Release flow
 
-1. Create `release/<version>` from `develop`.
-2. Run `npm run release:version` to apply the collected changesets.
-3. Run `npm install --package-lock-only` so `package-lock.json` matches the new
-   version.
-4. Commit the version, lockfile, and changelog updates.
-5. Open a pull request to `main` and merge it.
-6. Tag the merge commit on `main` and push the tag:
+Releases are cut from `develop` and published automatically once `develop`
+reaches `main`.
 
-   ```bash
-   git checkout main
-   git pull
-   git tag -a v0.2.1 -m "PearCore 0.2.1"
-   git push origin v0.2.1
-   ```
+1. Make sure every change on `develop` has a changeset.
+2. Run `npm run release:prepare`. It creates `release/<version>`, applies the
+   collected changesets, syncs `package-lock.json`, and commits
+   `chore(release): <version>`.
+3. Push the branch and open a pull request into `develop` titled
+   `chore(release): <version>`; squash-merge it.
+4. Open a pull request `develop` → `main` titled `release: <version>` and merge
+   it with a merge commit. The `release-source` job checks that the version is
+   new and that no changesets are pending.
+5. The `Release` workflow tags the merge commit `v<version>`, publishes
+   `pearcore@<version>` to npm, and creates a GitHub Release with the changelog
+   section and the installable tarball attached.
 
-   The `Release` workflow verifies the tag against `package.json`, runs the type
-   check and tests, packs the tarball, and publishes a GitHub Release with that
-   tarball attached. Consumers install the release asset.
+You never tag a release by hand. See [RELEASE.md](RELEASE.md) for the full
+procedure, setup, and failure recovery.
 
-   Before pushing, `npm run release:verify-tag -- v0.2.1` runs the same check
-   locally.
-
-7. Merge `main` back into `develop`.
-
-Hotfixes follow the same flow from `main`, with a `patch` changeset and a
-`hotfix/<version>` branch.
+Hotfixes follow the same flow from `main` on a `hotfix/<version>` branch, with a
+`patch` changeset.
 
 <br>
 
