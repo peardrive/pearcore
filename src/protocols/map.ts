@@ -25,7 +25,7 @@ export interface ProtocolMapEntry {
 }
 
 export const ProtocolMapFactory = (
-  emitter: Pick<EventEmitter, 'emit'>,
+  emitter: EventEmitter,
   managers: ProtocolManagers,
 ): ProtocolMapEntry[] => [
   {
