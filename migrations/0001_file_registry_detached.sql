@@ -1,0 +1,1 @@
+ALTER TABLE `file_registry` ADD `detached_at` integer;

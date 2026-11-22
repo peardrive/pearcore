@@ -3,7 +3,7 @@ import path from 'path';
 import fs from 'fs/promises';
 import chokidar from 'chokidar';
 import { getSpace } from './space.utils.js';
-import { eq, and, asc, isNotNull, sql } from 'drizzle-orm';
+import { eq, and, asc, isNotNull, isNull, sql } from 'drizzle-orm';
 import { hex, hash, canonicalStringify } from './crypto.utils.js';
 import { DEFAULT_CHUNK_SIZE } from '../constants/global.constants.js';
 import { isDefined, isNumber, isString, now } from './general.utils.js';
@@ -276,6 +276,14 @@ function createFileRegistryQueryFilters(filters) {
         conditions.push(eq(fileRegistry.height, filters.height));
     }
 
+    if (filters.detached === false) {
+        conditions.push(isNull(fileRegistry.detachedAt));
+    }
+
+    if (filters.detached === true) {
+        conditions.push(isNotNull(fileRegistry.detachedAt));
+    }
+
     return conditions;
 }
 
@@ -293,6 +301,7 @@ function createFileRegistryQueryFilters(filters) {
  * @param {string} filters.metaHash - The file metadata hash.
  * @param {number} filters.leafCount - Total number of leaf nodes in the Merkle tree.
  * @param {number} filters.height - Height of the Merkle tree.
+ * @param {boolean} filters.detached - false: attached registries only; true: detached only; omitted: both.
  * @returns {Promise<Array>}
  */
 export async function queryFileRegistryRecords(db, filters) {
@@ -304,6 +313,35 @@ export async function queryFileRegistryRecords(db, filters) {
     }
 
     return await query;
+}
+
+/**
+ * Detach a registry from its source: the bytes at its `fileSourcePath` are no longer its own.
+ * The row, its root hash and its tree are kept.
+ * @param {object} db - Database instance.
+ * @param {number} registryId - ID of the file registry.
+ * @param {number} detachedAt - Unix timestamp.
+ * @returns {Promise<void>}
+ */
+export async function detachFileRegistryRecord(db, registryId, detachedAt = now()) {
+    await db.update(fileRegistry)
+        .set({ detachedAt })
+        .where(eq(fileRegistry.id, registryId));
+}
+
+/**
+ * Attach a registry to a source that holds its bytes.
+ * @param {object} db - Database instance.
+ * @param {number} registryId - ID of the file registry.
+ * @param {Object} params
+ * @param {string} params.fileSourcePath - where the bytes are.
+ * @param {string} params.metaHash - the metadata hash of that file.
+ * @returns {Promise<void>}
+ */
+export async function attachFileRegistryRecord(db, registryId, { fileSourcePath, metaHash }) {
+    await db.update(fileRegistry)
+        .set({ fileSourcePath, metaHash, detachedAt: null })
+        .where(eq(fileRegistry.id, registryId));
 }
 
 /**

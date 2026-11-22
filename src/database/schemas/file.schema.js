@@ -18,6 +18,10 @@ import { spaces } from "./space.schema.js";
  * - metaHash: The hash of local file metadata information.
  * - leafCount: Total number of leaf nodes for complete Merkle Tree.
  * - height: The height of Merkle Tree indexing.
+ * - detachedAt: Unix timestamp since which the bytes at `file_path` are not this registry's
+ *   (the file there changed for another registry, or went missing). NULL = attached.
+ *   A detached registry keeps its root hash and its tree, is neither announced nor served,
+ *   and can be attached again to any file that holds its bytes (LocalFileRegistry.reconnect).
  */
 export const fileRegistry = sqliteTable('file_registry', {
     id: integer("id").primaryKey(),
@@ -36,6 +40,8 @@ export const fileRegistry = sqliteTable('file_registry', {
 
     leafCount: integer("leaf_count").notNull(),
     height: integer("height").notNull(),
+
+    detachedAt: integer("detached_at"),
 });
 
 

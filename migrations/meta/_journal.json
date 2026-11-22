@@ -8,6 +8,13 @@
       "when": 1781712200392,
       "tag": "0000_hesitant_marvel_apes",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "6",
+      "when": 1795305080688,
+      "tag": "0001_file_registry_detached",
+      "breakpoints": true
     }
   ]
 }

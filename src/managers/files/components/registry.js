@@ -14,6 +14,8 @@ import {
     getDownloadRecord,
     listDownloadRecords,
     getFileRegistryRecord,
+    detachFileRegistryRecord,
+    attachFileRegistryRecord,
 } from "../../../utils/files.utils.js";
 import { generateMerkleTree, getLeafCount } from '../../../utils/merkleTree.utils.js';
 import { createChild } from '../../../logger.js';
@@ -137,7 +139,8 @@ export class LocalFileRegistry {
     async init() {
         const { publicKey, secretKey } = this.sessionManager.getCredentials();
         const spaceTopicMap = await getSpaceToTopicMap(this.db);
-        const records = await queryFileRegistryRecords(this.db, {});
+        // a detached registry is not at its recorded place: nothing to announce, verify or watch
+        const records = await queryFileRegistryRecords(this.db, { detached: false });
 
         // this code groups file regisries by the sourceFilePath
         // which helps to avoid recomputing Merkle tree for identical files.
@@ -460,6 +463,9 @@ export class LocalFileRegistry {
             }
         }
 
+        // its removal was announced when it was detached
+        if (registry.detachedAt) return;
+
         const { publicKey, secretKey } = this.sessionManager.getCredentials();
         const space = await getSpace(this.db, registry.spaceId);
         const spaceFilePath = posixPathJoin(registry.spacePath, registry.spaceFilename);
@@ -494,14 +500,29 @@ export class LocalFileRegistry {
         this.progressTrackers.clear();
     }
 
-    async onChangeEvent(filePath) {
+    /**
+     * A registered file changed on disk.
+     *
+     * A registry names fixed bytes (its root hash); the place on disk is only where those bytes were
+     * last seen. Several registries, in several spaces, can share one place. By default every one of
+     * them follows the change, as before. An application that knows which of them the change belongs
+     * to (the space whose folder the file was written into, say) names them with `options.only`: only
+     * those are re-indexed and announced with the new root hash. The others keep their root hash and
+     * their tree, are announced as removed, and are marked detached; `reconnect` attaches one again.
+     *
+     * @param {string} filePath - the local file path.
+     * @param {Object} [options]
+     * @param {number[]} [options.only] - IDs of the registries that follow this change. An empty list:
+     *   the change belongs to none of them.
+     */
+    async onChangeEvent(filePath, options) {
         const exists = await fileExists(filePath);
         if (!exists) return;
 
         const { publicKey, secretKey } = this.sessionManager.getCredentials();
         const registeries = await queryFileRegistryRecords(
             this.db,
-            { fileSourcePath: filePath }
+            { fileSourcePath: filePath, detached: false }
         );
 
         if (registeries.length === 0) return;
@@ -512,7 +533,16 @@ export class LocalFileRegistry {
         const currentMetaHash = await getFileMetaHashFromSource(filePath);
         if (currentMetaHash === registeries[0].metaHash) return;
 
-        this.scheduleFileIndexing(filePath);
+        // the watcher passes its own second argument (fs.Stats): only an array names followers
+        const only = Array.isArray(options?.only) ? new Set(options.only) : null;
+        const follows = (registry) => !only || only.has(registry.id);
+
+        // detached before the indexing is scheduled: processFileIndex updates attached registries only
+        for (const registry of registeries) {
+            if (!follows(registry)) await detachFileRegistryRecord(this.db, registry.id);
+        }
+
+        if (registeries.some(follows)) this.scheduleFileIndexing(filePath);
 
         for (const registry of registeries) {
             const space = await getSpace(this.db, registry.spaceId);
@@ -527,7 +557,7 @@ export class LocalFileRegistry {
                     publicKey,
                     secretKey,
                     timestamp: now(),
-                    rootHash: registeries[0].rootHash,
+                    rootHash: registry.rootHash,
                 });
 
                 // remove the old record into local file list
@@ -541,7 +571,20 @@ export class LocalFileRegistry {
         }
     }
 
-    async onDeleteEvent(filePath) {
+    /**
+     * A registered file is gone from disk.
+     *
+     * By default its registries are deleted, as before. With `options.detach` they are kept and marked
+     * detached instead: a file that was moved or renamed is the same bytes at another place, and
+     * `reconnect` attaches the registry to it without the space losing the file's history.
+     * Either way the removal is announced.
+     *
+     * @param {string} filePath - the local file path.
+     * @param {Object} [options]
+     * @param {boolean} [options.detach=false] - keep the registries, detached.
+     */
+    async onDeleteEvent(filePath, options) {
+        const detach = options?.detach === true;
         const schedule = this.backoffStates.get(filePath);
         if (schedule) {
             clearTimeout(schedule.timeout);
@@ -555,7 +598,7 @@ export class LocalFileRegistry {
 
         const registeries = await queryFileRegistryRecords(
             this.db,
-            { fileSourcePath: filePath }
+            { fileSourcePath: filePath, detached: false }
         );
 
         if (registeries.length === 0) return;
@@ -564,7 +607,8 @@ export class LocalFileRegistry {
         if (sourceHashDownloadRecord) return;
 
         for (const registry of registeries) {
-            await deleteFileRecord(this.db, registry.id);
+            if (detach) await detachFileRegistryRecord(this.db, registry.id);
+            else await deleteFileRecord(this.db, registry.id);
 
             const space = await getSpace(this.db, registry.spaceId);
 
@@ -588,6 +632,76 @@ export class LocalFileRegistry {
                 );
             }
         }
+    }
+
+    /**
+     * Attach a registry to a file that holds its bytes: the recorded place, or a new one.
+     *
+     * The file is hashed, and only a file whose root hash is the registry's own is accepted;
+     * otherwise nothing changes. On success the registry points at that file, is no longer
+     * detached, and is announced to its space again.
+     *
+     * @param {Object} params
+     * @param {number} params.registryId - ID of the registry.
+     * @param {string} [params.fileSourcePath] - where the bytes are now. Default: the recorded place.
+     * @returns {Promise<boolean>} true when the registry is attached to that file.
+     */
+    async reconnect(params) {
+        const { registryId, fileSourcePath } = params;
+        const registry = await getFileRegistryRecord(this.db, registryId);
+
+        if (!registry) {
+            throw new Error(`Registry ${registryId} not found`);
+        }
+
+        // a download in progress owns its file until it completes
+        if (await getDownloadRecord(this.db, registryId)) return false;
+
+        const sourcePath = fileSourcePath || registry.fileSourcePath;
+        if (!(await fileExists(sourcePath))) return false;
+
+        let stream, tree;
+        try {
+            const size = await getFileSize(sourcePath);
+            stream = createFileStream(sourcePath);
+            tree = await generateMerkleTree({ stream, size });
+        } catch (error) {
+            logger.warn('reading the file to reconnect failed', { sourcePath, error });
+            return false;
+        } finally {
+            if (stream && !stream.destroyed) {
+                await stream.destroy();
+            }
+        }
+
+        if (tree.rootHash !== registry.rootHash) return false;
+
+        await attachFileRegistryRecord(this.db, registryId, {
+            fileSourcePath: sourcePath,
+            metaHash: await getFileMetaHashFromSource(sourcePath),
+        });
+
+        if (this.watcher) {
+            await this.watcher.add(sourcePath);
+        }
+
+        const space = await getSpace(this.db, registry.spaceId);
+        if (!space) return true;
+
+        const { publicKey, secretKey } = this.sessionManager.getCredentials();
+        const record = await this.signedAdd({
+            topic: getSpaceTopicHash(space),
+            path: posixPathJoin(registry.spacePath, registry.spaceFilename),
+            publicKey,
+            secretKey,
+            timestamp: now(),
+            rootHash: registry.rootHash,
+        });
+
+        this.spaceFileListManager.add(record);
+        this.fileEventBroadcaster.add(EVENTS.SpaceFileEventOptions.ADD, record);
+
+        return true;
     }
 
     /**
@@ -642,7 +756,7 @@ export class LocalFileRegistry {
 
             const { publicKey, secretKey } = this.sessionManager.getCredentials();
 
-            const registeries = await queryFileRegistryRecords(this.db, { fileSourcePath: filePath });
+            const registeries = await queryFileRegistryRecords(this.db, { fileSourcePath: filePath, detached: false });
             if (registeries.length === 0) return;
 
             const downloadRecord = await getDownloadRecord(this.db, registeries[0].id);

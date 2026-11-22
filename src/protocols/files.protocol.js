@@ -203,6 +203,7 @@ export class SpaceFileTreeRequestHandler extends BaseProtocolHandler {
             rootHash: rootHash,
             spacePath: parsedSpacePath.dir,
             spaceFilename: parsedSpacePath.filename,
+            detached: false, // the bytes at a detached registry's place are another file's
         });
 
         if (registryQuery.length === 0) {
@@ -323,7 +324,8 @@ export class SpaceFileContentRequestHandler extends BaseProtocolHandler {
         const registryRecords = await queryFileRegistryRecords(this.db, {
             spaceId: spaceId,
             spacePath: spacePath,
-            spaceFilename: spaceFilename
+            spaceFilename: spaceFilename,
+            detached: false,
         });
 
         if (registryRecords.length === 0) {
