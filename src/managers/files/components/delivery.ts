@@ -1,161 +1,50 @@
-import { DEFAULT_CHUNK_SIZE } from '../constants/global.constants.js';
-import * as EVENTS from '../constants/events.constants.js';
-import * as MESSAGES from '../constants/messages.constants.js';
-import { createChild } from '../logger.js';
-import { hexToUint8 } from '../utils/crypto.utils.js';
-import { getFileChunk } from '../utils/files.utils.js';
-import { closeFile, readFile } from '../utils/system.utils.js';
-import { FrameTypes } from './multiplexer.manager.js';
+import { DEFAULT_CHUNK_SIZE } from '../../../constants/global.constants.js';
+import * as MESSAGES from '../../../constants/messages.constants.js';
+import { hexToUint8, hex, randomNonce } from '../../../utils/crypto.utils.js';
+import { getFileChunk } from '../../../utils/files.utils.js';
+import { FrameTypes, type MuxManager } from '../../multiplexer.manager.js';
+import type { SessionManager } from '../../session.manager.js';
+import type { FileHandlerCache } from './cache.js';
+import type { LocalFileWatcher } from './watcher.js';
 
-const logger = createChild('FileContentDelivery');
+type DeliveryTask = { 
+  filePath: string, 
+  controller: AbortController, 
+  publicKey: string 
+}; 
 
-export class FileHandlerCache {
-  [key: string]: any;
-
-  constructor() {
-    this.handlers = new Map(); // filePath -> { handle: FileHandle | null, refCount: number }
-    this.keyToPath = new Map(); // key -> filePath
-  }
-
-  /**
-   * Get a file handler for the given path.
-   * @param filePath - path to the file
-   * @param key - the task key
-   */
-  async get(filePath: string, key: string) {
-    const existingPath = this.keyToPath.get(key);
-    if (existingPath && existingPath !== filePath) {
-      throw new Error(
-        `Key "${key}" is already associated with file "${existingPath}"`,
-      );
-    }
-
-    let entry = this.handlers.get(filePath);
-    if (!entry) {
-      entry = { handle: null, refCount: 0, opening: null, error: null };
-      this.handlers.set(filePath, entry);
-    }
-
-    if (entry.error) {
-      throw entry.error;
-    }
-
-    // increment the number of tasks assigned to the file handler
-    entry.refCount++;
-    this.keyToPath.set(key, filePath);
-
-    if (entry.opening) {
-      await entry.opening;
-
-      // in case if the promise did catch error
-      if (entry.error) throw entry.error;
-      return entry.handle;
-    }
-
-    entry.opening = readFile(filePath);
-    try {
-      const handler = await entry.opening;
-      entry.handle = handler;
-      entry.opening = null;
-      return handler;
-    } catch (error) {
-      entry.error = error;
-      entry.opening = null;
-
-      entry.refCount = entry.refCount - 1;
-      if (entry.refCount === 0) {
-        this.handlers.delete(filePath);
-      }
-
-      this.keyToPath.delete(key);
-      throw error;
-    }
-  }
-
-  /**
-   * Release the reference from a given key.
-   * @param key
-   * @returns */
-  async drop(key: string) {
-    const filePath = this.keyToPath.get(key);
-    if (!filePath) return;
-
-    const entry = this.handlers.get(filePath);
-    if (!entry) {
-      this.keyToPath.delete(key);
-      return;
-    }
-
-    entry.refCount = entry.refCount - 1;
-    if (entry.refCount === 0) {
-      if (entry.handle) {
-        try {
-          await closeFile(entry.handle);
-        } catch (error) {
-          throw new Error(`Error closing file ${filePath}`);
-        }
-
-        entry.handle = null;
-      }
-
-      this.handlers.delete(filePath);
-    }
-
-    this.keyToPath.delete(key);
-  }
-
-  /**
-   * Force eject a file handle
-   * @param filePath
-   */
-  async eject(filePath: string) {
-    const entry = this.handlers.get(filePath);
-    if (!entry) return;
-
-    if (entry.handle) {
-      try {
-        await closeFile(entry.handle);
-      } catch (error) {
-        throw new Error(`Error closing file ${filePath}`);
-      }
-
-      entry.handle = null;
-    }
-
-    this.handlers.delete(filePath);
-
-    for (const [key, path] of this.keyToPath.entries()) {
-      if (path === filePath) {
-        this.keyToPath.delete(key);
-      }
-    }
-  }
-
-  async stop() {
-    for (const [filePath, entry] of this.handlers) {
-      if (entry.handle) {
-        try {
-          await closeFile(entry.handle);
-        } catch (err) {
-          throw new Error(`Error closing file ${filePath}`);
-        }
-      }
-    }
-    this.handlers.clear();
-    this.keyToPath.clear();
-  }
+export interface FileContentDeliveryDependencies {
+  sessionManager: Pick<SessionManager, 'getDatabase'>;
+  muxManager: Pick<MuxManager, 'send'>;
+  fileCache: Pick<FileHandlerCache, 'acquire' | 'release' | 'eject'>;
+  /** Shared local-file bus; changes and deletions abort active streams. */
+  fileWatcher: Pick<LocalFileWatcher, 'on' | 'off'>;
 }
 
 export class FileContentDeliveryManager {
   [key: string]: any;
 
-  constructor(emitter: any, managers: any) {
-    this.emitter = emitter;
-    this.sessionManager = managers.sessionManager;
-    this.messageManager = managers.messageManager;
-    this.muxManager = managers.muxManager;
+  fileTasks: Map<string, Set<AbortController>>;
+  deliveryTasksByKey: Map<string, Set<DeliveryTask>>;
+  taskPromises: Map<string, Promise<{ succeed: boolean, reason: string }>>;
 
-    this.fileCache = new FileHandlerCache();
+  constructor(managers: FileContentDeliveryDependencies) {
+    this.sessionManager = managers.sessionManager;
+    this.muxManager = managers.muxManager;
+    this.fileCache = managers.fileCache;
+    this.fileWatcher = managers.fileWatcher;
+
+    // stable listeners so they can be detached on stop
+    this.onFileChange = (filePath: string) => {
+      this.abortTasksForFilePath(filePath);
+      this.fileCache.eject(filePath).catch(() => {}); // file may already be gone
+    };
+
+    this.onFileDelete = (filePath: string) => {
+      this.abortTasksForFilePath(filePath);
+      this.fileCache.eject(filePath).catch(() => {}); // file may already be gone
+    };
+
     this.fileTasks = new Map(); // filePath -> Set<AbortController>
     this.deliveryTasksByKey = new Map(); // key -> Set<{ filePath, controller, publicKey }>
     this.taskPromises = new Map(); // key -> Promise<{succeed, reason}>
@@ -163,6 +52,10 @@ export class FileContentDeliveryManager {
 
   get db() {
     return this.sessionManager.getDatabase().db;
+  }
+
+  createOwner(key: string) {
+    return `delivery:${key}:${hex(randomNonce())}`;
   }
 
   async sendStreamToSocket(stream: Buffer, socket: any) {
@@ -179,18 +72,18 @@ export class FileContentDeliveryManager {
   }
 
   async init() {
-    this.emitter.on(EVENTS.LocalFileChange, (filePath: string) => {
-      this.abortTasksForFilePath(filePath);
-      this.fileCache.eject(filePath);
-    });
-
-    this.emitter.on(EVENTS.LocalFileDetele, (filePath: string) => {
-      this.abortTasksForFilePath(filePath);
-      this.fileCache.eject(filePath);
-    });
+    // detach first so a repeated init does not register duplicate listeners
+    this.fileWatcher.off('change', this.onFileChange);
+    this.fileWatcher.off('delete', this.onFileDelete);
+    // assign handlers
+    this.fileWatcher.on('change', this.onFileChange);
+    this.fileWatcher.on('delete', this.onFileDelete);
   }
 
   async stop() {
+    this.fileWatcher.off('change', this.onFileChange);
+    this.fileWatcher.off('delete', this.onFileDelete);
+
     for (const [filePath, controllers] of this.fileTasks) {
       for (const controller of controllers) {
         controller.abort();
@@ -199,7 +92,7 @@ export class FileContentDeliveryManager {
 
     this.fileTasks.clear();
     this.deliveryTasksByKey.clear();
-    await this.fileCache.stop();
+    this.taskPromises.clear();
   }
 
   /**
@@ -231,17 +124,21 @@ export class FileContentDeliveryManager {
       this.deliveryTasksByKey.set(key, new Set());
     }
 
-    this.deliveryTasksByKey.get(key).add({ filePath, controller, publicKey });
+    this.deliveryTasksByKey.get(key)!.add({ filePath, controller, publicKey });
 
-    this.fileTasks.get(filePath).add(controller);
+    this.fileTasks.get(filePath)!.add(controller);
 
     let fileHandler;
+    let fileOwner = null;
     try {
-      fileHandler = await this.fileCache.get(filePath, key);
+      fileOwner = this.createOwner(key);
+      fileHandler = await this.fileCache.acquire(filePath, fileOwner);
     } catch (error) {
       fileHandler = null;
     }
 
+    // in case of failure to acquire file-read lane, 
+    // we should abort all tasks that rely on that file.
     if (!fileHandler) {
       const fileTaskSet = this.fileTasks.get(filePath);
       if (fileTaskSet) {
@@ -276,6 +173,7 @@ export class FileContentDeliveryManager {
       endLeaf,
       key,
       fileHandler,
+      fileOwner,
       signal: controller.signal,
     })
       .then(() => ({ succeed: true, reason: 'Stream completed' }))
@@ -312,7 +210,9 @@ export class FileContentDeliveryManager {
           }
         }
 
-        this.taskPromises.delete(key);
+        if (this.taskPromises.get(key) === streamPromise) {
+          this.taskPromises.delete(key);
+        }
       });
 
     this.taskPromises.set(key, streamPromise);
@@ -320,7 +220,8 @@ export class FileContentDeliveryManager {
   }
 
   async stream(params: any) {
-    const { socket, startLeaf, endLeaf, key, fileHandler, signal } = params;
+    const { socket, startLeaf, endLeaf, key, fileHandler, fileOwner, signal } =
+      params;
 
     const keyBuffer = hexToUint8(key);
     const stats = await fileHandler.stat();
@@ -363,7 +264,9 @@ export class FileContentDeliveryManager {
         signal.removeEventListener('abort', abortHandler);
       }
 
-      await this.fileCache.drop(key);
+      if (fileOwner) {
+        await this.fileCache.release(fileOwner);
+      }
     }
   }
 

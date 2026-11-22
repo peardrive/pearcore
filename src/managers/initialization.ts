@@ -10,7 +10,6 @@ import {
   SpaceFileListManager,
   SpaceFileManager,
 } from './files/files.manager.js';
-import { FileContentDeliveryManager } from './delivery.manager.js';
 import { NegentropySyncManager } from './negentropy/negentropy.manager.js';
 import type { PeerNetworkFactory } from '../types/peer-network.js';
 
@@ -60,11 +59,6 @@ export function initializeManagers(
     messageManager,
     connectionManager,
     spaceFileListManager,
-  });
-
-  const fileContentDeliveryManager = new FileContentDeliveryManager(emitter, {
-    sessionManager,
-    messageManager,
     muxManager,
   });
 
@@ -92,8 +86,8 @@ export function initializeManagers(
     session: sessionManager,
     message: messageManager,
     spaceFileList: spaceFileListManager,
+    spaceFiles: spaceFileManager,
     mux: muxManager,
-    delivery: fileContentDeliveryManager,
     sync: negentropySyncManager,
   });
 
@@ -108,7 +102,6 @@ export function initializeManagers(
     connection: connectionManager,
     spaceFileList: spaceFileListManager,
     spaceFiles: spaceFileManager,
-    delivery: fileContentDeliveryManager,
     sync: negentropySyncManager,
   };
 }

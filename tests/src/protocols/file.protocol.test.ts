@@ -603,7 +603,7 @@ describe('Space File Protocols', () => {
         await deliverMessage(primary, secondary, message);
 
         // wait for task to be assigned internally and then wait for completion of the task
-        const taskResult = await primary.managers.delivery.waitForTask(testKey);
+        const taskResult = await primary.managers.spaceFiles.waitForDeliveryTask(testKey);
         expect(taskResult.succeed).toBe(true);
         await factory.settle();
 

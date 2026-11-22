@@ -6,7 +6,6 @@ import {
   getSpaceToTopicMap,
 } from '../../../utils/space.utils.js';
 import {
-  createFileStream,
   fileExists,
   getFileSize,
   posixPathJoin,
@@ -15,37 +14,130 @@ import { createSpaceFileRecordSignature } from '../../../utils/protocol.utils.js
 import {
   deleteFileRecord,
   generateFileTreeRecord,
-  createWatcher,
-  WatchTypes,
   queryFileRegistryRecords,
-  getFileMetaHashFromSource,
+  getFileMetaHash,
   updateFileTreeRecord,
   getDownloadRecord,
   getFileRegistryRecord,
+  type FileRegistryRecord,
 } from '../../../utils/files.utils.js';
 import {
   generateMerkleTree,
   getLeafCount,
+  type MerkleTree,
 } from '../../../utils/merkletree.utils.js';
 import { createChild } from '../../../logger.js';
 import { ProgressTracker } from './progress.js';
 import { DEFAULT_CHUNK_SIZE } from '../../../constants/global.constants.js';
+import { hex, randomNonce } from '../../../utils/crypto.utils.js';
+import type { Database } from '../../../types/database.js';
+import type { FileHandle } from 'node:fs/promises';
+import type { EventEmitter } from 'node:events';
+import type { SessionManager, FilesSession } from '../../session.manager.js';
+import type { SpaceFileListManager } from '../files.manager.js';
+import type { FileEventBroadcaster } from './events.js';
+import type { FileHandlerCache } from './cache.js';
+import type { LocalFileWatcher } from './watcher.js';
 
-const logger: any = createChild('LocalFileRegistry');
+const logger = createChild('LocalFileRegistry');
+
+/** Managers and shared state required by {@link LocalFileRegistry}. */
+export interface LocalFileRegistryDependencies {
+  /** Credentials, configuration and database access. */
+  sessionManager: Pick<
+    SessionManager,
+    'getDatabase' | 'getCredentials' | 'session'
+  >;
+  /** Local view of the space file lists, kept in sync while indexing. */
+  spaceFileListManager: Pick<SpaceFileListManager, 'add' | 'remove'>;
+  /** Broadcasts file add/remove events to the space. */
+  fileEventBroadcaster: Pick<FileEventBroadcaster, 'add'>;
+  /** Shared handler cache used for metadata hashing and tree generation. */
+  fileCache: Pick<FileHandlerCache, 'acquire' | 'release'>;
+  /** Shared local-file bus; the registry subscribes to change and delete. */
+  fileWatcher: Pick<
+    LocalFileWatcher,
+    'start' | 'add' | 'remove' | 'on' | 'off'
+  >;
+}
+
+/** A space-file event before its signature is attached. */
+export interface SpaceFileEventPayload {
+  topic: string;
+  path: string;
+  publicKey: string;
+  secretKey: string;
+  timestamp: number;
+  rootHash: string;
+}
+
+/** A space-file event with its signature attached. */
+export interface SignedSpaceFileEvent extends SpaceFileEventPayload {
+  signature: string;
+}
+
+/** Metadata and callbacks for indexing a new local file. */
+export interface AddLocalFileParams {
+  spaceId: number;
+  spacePath: string;
+  spaceFilename: string;
+  fileSourcePath: string;
+  onIndexingStart?: (tracker: ProgressTracker) => void;
+  onCompletion?: (registryId: number) => void;
+  onError?: (error: unknown) => void;
+}
+
+/** Identifies the registry to remove. */
+export interface DeleteLocalFileParams {
+  registryId: number;
+}
 
 export class LocalFileRegistry {
-  [key: string]: any;
+  emitter: Pick<EventEmitter, 'emit'>;
+  sessionManager: LocalFileRegistryDependencies['sessionManager'];
+  spaceFileListManager: LocalFileRegistryDependencies['spaceFileListManager'];
+  fileEventBroadcaster: LocalFileRegistryDependencies['fileEventBroadcaster'];
+  fileCache: LocalFileRegistryDependencies['fileCache'];
+  fileWatcher: LocalFileRegistryDependencies['fileWatcher'];
+
+  /** Detachable listeners bound to the shared file watcher. */
+  onWatcherChange: (filePath: string) => void;
+  onWatcherDelete: (filePath: string) => void;
+
+  /** Pending re-indexing timers, keyed by source file path. */
+  backoffStates: Map<string, { timeout: NodeJS.Timeout; delay: number }>;
+  /** Source files that are currently being indexed. */
+  indexingInProgress: Map<string, boolean>;
+  /** Source files that changed while their indexing was still running. */
+  pendingAfterIndex: Map<string, boolean>;
+  /** Active progress trackers, keyed by source file path. */
+  progressTrackers: Map<string, ProgressTracker>;
 
   constructor(
-    emitter: any,
-    { sessionManager, spaceFileListManager, fileEventBroadcaster }: any,
+    emitter: Pick<EventEmitter, 'emit'>,
+    {
+      sessionManager,
+      spaceFileListManager,
+      fileEventBroadcaster,
+      fileCache,
+      fileWatcher,
+    }: LocalFileRegistryDependencies,
   ) {
     this.emitter = emitter;
     this.sessionManager = sessionManager;
     this.spaceFileListManager = spaceFileListManager;
     this.fileEventBroadcaster = fileEventBroadcaster;
+    this.fileCache = fileCache;
+    this.fileWatcher = fileWatcher;
 
-    this.watcher = null;
+    // stable listeners so they can be detached from the shared watcher
+    this.onWatcherChange = (filePath: string) => {
+      this.onChangeEvent(filePath);
+    };
+
+    this.onWatcherDelete = (filePath: string) => {
+      this.onDeleteEvent(filePath);
+    };
 
     /**
      * Tracks scheduler re-indexing tasks for each file.
@@ -76,12 +168,35 @@ export class LocalFileRegistry {
     this.progressTrackers = new Map();
   }
 
-  get db() {
-    return this.sessionManager.getDatabase().db;
+  get db(): Database {
+    return this.sessionManager.getDatabase().db!;
   }
 
-  get backoffConfig() {
-    return this.sessionManager.session.get('files.localChangeBackoff');
+  /**
+   * Account credentials required to sign space-file events. Indexing is only
+   * reachable while an account is authenticated, so missing credentials are a
+   * programming error rather than a recoverable state.
+   */
+  get credentials(): { publicKey: string; secretKey: string } {
+    const { publicKey, secretKey } = this.sessionManager.getCredentials();
+
+    if (!publicKey || !secretKey) {
+      throw new Error('Missing credentials for local file registry');
+    }
+
+    return { publicKey, secretKey };
+  }
+
+  get backoffConfig(): FilesSession['localChangeBackoff'] {
+    const config = this.sessionManager.session.get<
+      FilesSession['localChangeBackoff']
+    >('files.localChangeBackoff');
+
+    if (!config) {
+      throw new Error('Missing files.localChangeBackoff configuration');
+    }
+
+    return config;
   }
 
   /**
@@ -90,6 +205,63 @@ export class LocalFileRegistry {
    */
   getProgressTracker(sourceFilePath: string) {
     return this.progressTrackers.get(sourceFilePath);
+  }
+
+  /**
+   * Creates a unique owner token for a cached file handler.
+   * @param filePath - the local file path.
+   */
+  createFileOwner(filePath: string) {
+    return `registry:${filePath}:${hex(randomNonce())}`;
+  }
+
+  /**
+   * Run a callback with a cached read handler for the file.
+   * @param filePath - the local file path.
+   * @param callback - callback receiving the file handler.
+   */
+  async withFileHandler<T>(
+    filePath: string,
+    callback: (handler: FileHandle) => Promise<T>,
+  ): Promise<T> {
+    const owner = this.createFileOwner(filePath);
+    const handler = await this.fileCache.acquire(filePath, owner);
+
+    try {
+      return await callback(handler);
+    } finally {
+      await this.fileCache.release(owner);
+    }
+  }
+
+  /**
+   * Generate a Merkle tree from an already acquired file handler.
+   * @param handler - the cached file handler.
+   * @param size - file size in bytes.
+   * @param [onLeaf] - optional leaf progress callback.
+   */
+  async generateTreeFromHandler(
+    handler: FileHandle,
+    size: number,
+    onLeaf?: (leafHash: Uint8Array, leafIndex: number) => void,
+  ): Promise<MerkleTree> {
+    const stream = handler.createReadStream({
+      highWaterMark: DEFAULT_CHUNK_SIZE,
+      autoClose: false,
+      start: 0,
+    });
+
+    try {
+      return await generateMerkleTree({
+        stream,
+        size,
+        onLeaf,
+      });
+    } finally {
+      if (stream && !stream.destroyed) {
+        await stream.destroy();
+      }
+    }
   }
 
   /**
@@ -102,13 +274,15 @@ export class LocalFileRegistry {
    * @param event.timestamp - The timestamp when the event was created.
    * @param event.rootHash - The root hash of the space file.
    */
-  async createSignedEvent(event: any) {
+  async createSignedEvent(
+    event: SpaceFileEventPayload,
+  ): Promise<SignedSpaceFileEvent> {
     const signature = await createSpaceFileRecordSignature(event);
     return { ...event, signature };
   }
 
   async init() {
-    const { publicKey, secretKey } = this.sessionManager.getCredentials();
+    const { publicKey, secretKey } = this.credentials;
     const spaceTopicMap = await getSpaceToTopicMap(this.db);
     const records = await queryFileRegistryRecords(this.db, {});
 
@@ -117,11 +291,11 @@ export class LocalFileRegistry {
     const groups = records.reduce((map, rec) => {
       const key = rec.fileSourcePath;
       if (!map.has(key)) map.set(key, []);
-      map.get(key).push(rec);
+      map.get(key)!.push(rec);
       return map;
-    }, new Map());
+    }, new Map<string, FileRegistryRecord[]>());
 
-    const sourcePaths = [];
+    const sourcePaths: string[] = [];
 
     for (const [sourcePath, registries] of groups) {
       // delete the registry if the local file does not exists anymore
@@ -134,8 +308,8 @@ export class LocalFileRegistry {
         continue;
       }
 
-      const downloadPendingRegistries = [];
-      const settledRegistries = [];
+      const downloadPendingRegistries: FileRegistryRecord[] = [];
+      const settledRegistries: FileRegistryRecord[] = [];
 
       for (const registry of registries) {
         const downloadRecord = await getDownloadRecord(this.db, registry.id);
@@ -153,23 +327,23 @@ export class LocalFileRegistry {
         if (settledCount > 0) {
           // raise awarness about potential conflict between local registries and pending downloads fight over same file source
           logger.warn(
-            `Conflict: ${pendingCount} pending downloads and ${settledCount} settled registeries share the same path`,
             {
               sourcePath,
               downloadIds: downloadPendingRegistries.map((r) => r.id),
               registryIds: settledRegistries.map((r) => r.id),
             },
+            `Conflict: ${pendingCount} pending downloads and ${settledCount} settled registeries share the same path`,
           );
         }
 
         if (pendingCount > 1) {
           // raise awareness about potential conflict between multiple pending downloads using same file source
           logger.warn(
-            `Conflict: ${pendingCount} pending downloads share same path`,
             {
               sourcePath,
               downloadIds: downloadPendingRegistries.map((r) => r.id),
             },
+            `Conflict: ${pendingCount} pending downloads share same path`,
           );
         }
 
@@ -178,52 +352,57 @@ export class LocalFileRegistry {
 
       // checking the current meta hash against the registry
       // ensures that the file hasn't been modified.
-      const currentMetaHash = await getFileMetaHashFromSource(sourcePath);
-      const batchRequireUpdate = registries.some(
-        (reg: any) => reg.metaHash !== currentMetaHash,
-      );
+      let currentMetaHash: string;
+      let tree: MerkleTree | null = null;
+      let rootHash: string;
 
-      let tree = null;
-      let rootHash = null;
+      try {
+        const result = await this.withFileHandler(
+          sourcePath,
+          async (handler) => {
+            const metaHash = await getFileMetaHash(handler);
+            const batchRequireUpdate = registries.some(
+              (reg) => reg.metaHash !== metaHash,
+            );
 
-      if (batchRequireUpdate) {
-        // calculate the Merkle tree once
-        const size = await getFileSize(sourcePath);
-        const leafCount = getLeafCount(size, DEFAULT_CHUNK_SIZE);
-        const tracker = new ProgressTracker({ total: leafCount });
+            if (!batchRequireUpdate) {
+              return { metaHash, tree: null };
+            }
 
-        this.progressTrackers.set(sourcePath, tracker);
+            // calculate the Merkle tree once
+            const size = await getFileSize(sourcePath);
+            const leafCount = getLeafCount(size, DEFAULT_CHUNK_SIZE);
+            const tracker = new ProgressTracker({ total: leafCount });
 
-        let stream;
-        try {
-          // try to generate new Merkle tree
-          stream = createFileStream(sourcePath);
-          tree = await generateMerkleTree({
-            stream,
-            size,
-            onLeaf: () => {
-              tracker.record('local');
-            },
-          });
+            this.progressTrackers.set(sourcePath, tracker);
 
-          rootHash = tree.rootHash;
-        } catch (error) {
-          // skip the registry group if reading file has failed.
-          logger.warn('generating new tree failed', {
-            sourcePath,
-            error,
-          });
+            try {
+              const tree = await this.generateTreeFromHandler(
+                handler,
+                size,
+                () => {
+                  tracker.record('local');
+                },
+              );
 
-          continue;
-        } finally {
-          // ensure that the stream is fully closed
-          if (stream && !stream.destroyed) {
-            await stream.destroy();
-          }
+              return { metaHash, tree };
+            } finally {
+              this.progressTrackers.delete(sourcePath);
+            }
+          },
+        );
 
-          this.progressTrackers.delete(sourcePath);
-        }
+        currentMetaHash = result.metaHash;
+        tree = result.tree;
+        rootHash = tree ? tree.rootHash : registries[0].rootHash;
+      } catch (error) {
+        // skip the registry group if reading file has failed.
+        logger.warn({ sourcePath, error }, 'generating new tree failed');
 
+        continue;
+      }
+
+      if (tree) {
         for (const reg of registries) {
           await updateFileTreeRecord(this.db, {
             registryId: reg.id,
@@ -231,8 +410,6 @@ export class LocalFileRegistry {
             tree: tree,
           });
         }
-      } else {
-        rootHash = registries[0].rootHash;
       }
 
       for (const registry of registries) {
@@ -240,7 +417,7 @@ export class LocalFileRegistry {
           registry.spacePath,
           registry.spaceFilename,
         );
-        const spaceTopicHash = spaceTopicMap.get(registry.spaceId);
+        const spaceTopicHash = spaceTopicMap.get(registry.spaceId)!;
 
         const record = await this.createSignedEvent({
           topic: spaceTopicHash,
@@ -260,9 +437,13 @@ export class LocalFileRegistry {
       sourcePaths.push(sourcePath);
     }
 
-    this.watcher = await createWatcher(sourcePaths);
-    this.watcher.on(WatchTypes.CHANGE, this.onChangeEvent);
-    this.watcher.on(WatchTypes.DELETE, this.onDeleteEvent);
+    await this.fileWatcher.start(sourcePaths);
+
+    // detach first so a repeated init does not register duplicate listeners
+    this.fileWatcher.off('change', this.onWatcherChange);
+    this.fileWatcher.off('delete', this.onWatcherDelete);
+    this.fileWatcher.on('change', this.onWatcherChange);
+    this.fileWatcher.on('delete', this.onWatcherDelete);
   }
 
   /**
@@ -276,7 +457,7 @@ export class LocalFileRegistry {
    * @param params.onCompletion - optional callback once the file indexing has been complete locally.
    * @param params.onError - optional callback once an error has been thrown.
    */
-  async add(params: any) {
+  async add(params: AddLocalFileParams) {
     const {
       spaceId,
       spacePath,
@@ -315,34 +496,45 @@ export class LocalFileRegistry {
 
       this.progressTrackers.set(fileSourcePath, tracker);
 
-      let registryId, rootHash;
+      let registryId: number;
+      let rootHash: string;
       try {
         onIndexingStart?.(tracker);
+
+        const { metaHash, tree } = await this.withFileHandler(
+          fileSourcePath,
+          async (handler) => {
+            const metaHash = await getFileMetaHash(handler);
+            const tree = await this.generateTreeFromHandler(
+              handler,
+              size,
+              () => {
+                tracker.record('local');
+              },
+            );
+
+            return { metaHash, tree };
+          },
+        );
 
         const result = await generateFileTreeRecord(this.db, {
           fileSourcePath: fileSourcePath,
           spacePath: spacePath,
           spaceFilename: spaceFilename,
           spaceId: spaceId,
-          onLeaf: () => {
-            tracker.record('local');
-          },
+          tree: tree,
+          metaHash: metaHash,
         });
 
         registryId = result.registryId;
         rootHash = result.rootHash;
 
-        if (this.watcher) {
-          const watchedFiles = this.watcher.getWatched() || {};
-          if (!Object.keys(watchedFiles).includes(fileSourcePath)) {
-            await this.watcher.add(fileSourcePath);
-          }
-        }
+        this.fileWatcher.add(fileSourcePath);
       } finally {
         this.progressTrackers.delete(fileSourcePath);
       }
 
-      const { publicKey, secretKey } = this.sessionManager.getCredentials();
+      const { publicKey, secretKey } = this.credentials;
       const spaceTopicHash = getSpaceTopicHash(space);
       const spaceFilePath = posixPathJoin(spacePath, spaceFilename);
 
@@ -372,7 +564,7 @@ export class LocalFileRegistry {
    * @param params
    * @param params.registryId - ID of the registry to delete
    */
-  async delete(params: any) {
+  async delete(params: DeleteLocalFileParams) {
     const { registryId } = params;
     const registry = await getFileRegistryRecord(this.db, registryId);
 
@@ -387,12 +579,10 @@ export class LocalFileRegistry {
     });
 
     if (remainingRegistries.length === 0) {
-      if (this.watcher) {
-        await this.watcher.unwatch(registry.fileSourcePath);
-      }
+      this.fileWatcher.remove(registry.fileSourcePath);
     }
 
-    const { publicKey, secretKey } = this.sessionManager.getCredentials();
+    const { publicKey, secretKey } = this.credentials;
     const space = await getSpace(this.db, registry.spaceId);
     if (!space) return;
     const spaceFilePath = posixPathJoin(
@@ -418,11 +608,9 @@ export class LocalFileRegistry {
       clearTimeout(entry.timeout);
     }
 
-    if (this.watcher) {
-      this.watcher.removeAllListeners();
-      await this.watcher.close();
-      this.watcher = null;
-    }
+    // the watcher is shared, so only detach this component's listeners
+    this.fileWatcher.off('change', this.onWatcherChange);
+    this.fileWatcher.off('delete', this.onWatcherDelete);
 
     this.backoffStates.clear();
     this.pendingAfterIndex.clear();
@@ -434,7 +622,7 @@ export class LocalFileRegistry {
     const exists = await fileExists(filePath);
     if (!exists) return;
 
-    const { publicKey, secretKey } = this.sessionManager.getCredentials();
+    const { publicKey, secretKey } = this.credentials;
     const registeries = await queryFileRegistryRecords(this.db, {
       fileSourcePath: filePath,
     });
@@ -447,9 +635,13 @@ export class LocalFileRegistry {
     );
     if (sourceHashDownloadRecord) return;
 
-    const currentMetaHash = await getFileMetaHashFromSource(filePath);
+    const currentMetaHash = await this.withFileHandler(
+      filePath,
+      async (handler) => await getFileMetaHash(handler),
+    );
     if (currentMetaHash === registeries[0].metaHash) return;
 
+    this.emitter.emit(EVENTS.LocalFileChange, filePath);
     this.scheduleFileIndexing(filePath);
 
     for (const registry of registeries) {
@@ -492,7 +684,7 @@ export class LocalFileRegistry {
     const exists = await fileExists(filePath);
     if (exists) return; // avoid deletion if the file still exists; rare condition.
 
-    const { publicKey, secretKey } = this.sessionManager.getCredentials();
+    const { publicKey, secretKey } = this.credentials;
 
     const registeries = await queryFileRegistryRecords(this.db, {
       fileSourcePath: filePath,
@@ -505,6 +697,8 @@ export class LocalFileRegistry {
       registeries[0].id,
     );
     if (sourceHashDownloadRecord) return;
+
+    this.emitter.emit(EVENTS.LocalFileDetele, filePath);
 
     for (const registry of registeries) {
       await deleteFileRecord(this.db, registry.id);
@@ -587,7 +781,7 @@ export class LocalFileRegistry {
       const exists = await fileExists(filePath);
       if (!exists) return;
 
-      const { publicKey, secretKey } = this.sessionManager.getCredentials();
+      const { publicKey, secretKey } = this.credentials;
 
       const registeries = await queryFileRegistryRecords(this.db, {
         fileSourcePath: filePath,
@@ -600,39 +794,48 @@ export class LocalFileRegistry {
       );
       if (downloadRecord) return;
 
-      const currentMetaHash = await getFileMetaHashFromSource(filePath);
-      if (currentMetaHash === registeries[0].metaHash) return;
+      let currentMetaHash: string;
+      let tree: MerkleTree | null;
 
-      let tree;
       try {
-        const size = await getFileSize(filePath);
-        const leafCount = getLeafCount(size, DEFAULT_CHUNK_SIZE);
-        const tracker = new ProgressTracker({ total: leafCount });
+        const result = await this.withFileHandler(filePath, async (handler) => {
+          const metaHash = await getFileMetaHash(handler);
+          if (metaHash === registeries[0].metaHash) {
+            return { metaHash, tree: null };
+          }
 
-        this.progressTrackers.set(filePath, tracker);
+          const size = await getFileSize(filePath);
+          const leafCount = getLeafCount(size, DEFAULT_CHUNK_SIZE);
+          const tracker = new ProgressTracker({ total: leafCount });
 
-        try {
-          const stream = await createFileStream(filePath);
-          tree = await generateMerkleTree({
-            stream,
-            size,
-            onLeaf: () => {
-              tracker.record('local');
-            },
-          });
-        } finally {
-          this.progressTrackers.delete(filePath);
-        }
+          this.progressTrackers.set(filePath, tracker);
+
+          try {
+            const tree = await this.generateTreeFromHandler(
+              handler,
+              size,
+              () => {
+                tracker.record('local');
+              },
+            );
+
+            return { metaHash, tree };
+          } finally {
+            this.progressTrackers.delete(filePath);
+          }
+        });
+
+        currentMetaHash = result.metaHash;
+        tree = result.tree;
       } catch (error) {
         logger.error(
+          { filePath, error },
           'Generating Merkle tree failed during scheduled indexing',
-          {
-            filePath,
-            error,
-          },
         );
         return;
       }
+
+      if (!tree) return;
 
       for (const registry of registeries) {
         await updateFileTreeRecord(this.db, {
@@ -671,10 +874,7 @@ export class LocalFileRegistry {
         }
       }
     } catch (error) {
-      logger.error('Indexing local file registry failed', {
-        filePath: filePath,
-        error: error,
-      });
+      logger.error({ filePath, error }, 'Indexing local file registry failed');
     } finally {
       this.indexingInProgress.delete(filePath);
 

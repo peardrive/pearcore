@@ -106,7 +106,7 @@ export const SpaceFileEvent = 'SpaceFileEvent';
 export const SpaceFileEventOptions = {
   ADD: 'add',
   REMOVE: 'remove',
-};
+} as const;
 
 // Emitted when peer wants to ask for file Merkle tree information from connected node.
 export const SpaceFileTreeRequest = 'SpaceFileTreeRequest';
