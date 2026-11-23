@@ -23,6 +23,23 @@ This page is being expanded. The source tree is the best reference for now.
 
 <br>
 
+## Protocol handlers
+
+Every protocol type has its own handler file under `src/protocols/<family>/`, named after the protocol it serves (for example `files/content-request.handler.ts`). `src/protocols/map.ts` is the registry that binds message types to handlers.
+
+Repeated preconditions are composed from `src/protocols/shared/guards.ts`:
+
+- `notRelayed` - the author must be the connected peer.
+- `validPayload` - runs a protocol payload validator.
+- `canRead` / `canBroadcast` - permission checks against an explicitly resolved space.
+- `verified` - async signature or membership checks.
+
+Space topics are resolved through the `SpaceResolver` port (`src/managers/space.resolver.ts`). `DatabaseSpaceResolver` is the current implementation; a cache-backed resolver can replace it without changing handlers or guards.
+
+Handlers stack guards in the order their protocol requires through `this.enforce(ctx, [...])`. The runner returns `{ result, reason }` without side effects, and the handler sends the rejection with `this.reject(ctx, reason)`.
+
+<br>
+
 ## Related documentation
 
 - [Spaces](/spaces)

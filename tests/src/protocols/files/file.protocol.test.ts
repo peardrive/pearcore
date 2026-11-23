@@ -1,33 +1,33 @@
 // @ts-nocheck
 import path from 'path';
-import * as EVENTS from '../../../src/constants/events.constants.js';
-import * as MESSAGES from '../../../src/constants/messages.constants.js';
+import * as EVENTS from '../../../../src/constants/events.constants.js';
+import * as MESSAGES from '../../../../src/constants/messages.constants.js';
 import { describe, it, beforeEach, afterEach, expect } from 'vitest';
 import {
   createSpaceForPublicKey,
   getSpace,
   getSpaceTopicHash,
   upsertSpace,
-} from '../../../src/utils/space.utils.js';
+} from '../../../../src/utils/space.utils.js';
 import {
   createSpaceFileContentRequestMessage,
   createSpaceFileEventMessage,
   createSpaceFileRecordSignature,
   createSpaceFileTreeRequestMessage,
   validateSpaceFileTreeResponsePayload,
-} from '../../../src/utils/protocol.utils.js';
+} from '../../../../src/utils/protocol.utils.js';
 import {
   buildTestSpacePayload,
   makeTempDir,
   cleanup,
   generateRandomFile,
-} from '../../helpers/general.utils.js';
-import { MockCoreFactory } from '../../helpers/mock.factory.js';
+} from '../../../helpers/general.utils.js';
+import { MockCoreFactory } from '../../../helpers/mock.factory.js';
 import {
   collectMessages,
   connectProtocolNodes,
   deliverMessage,
-} from '../../helpers/protocol.utils.js';
+} from '../../../helpers/protocol.utils.js';
 import {
   createDownloadRecord,
   createFileIndexRecord,
@@ -36,18 +36,18 @@ import {
   getFileChunk,
   getFileTreeRecord,
   updateDownloadRecord,
-} from '../../../src/utils/files.utils.js';
-import { generateMerkleTree } from '../../../src/utils/merkletree.utils.js';
+} from '../../../../src/utils/files.utils.js';
+import { generateMerkleTree } from '../../../../src/utils/merkletree.utils.js';
 import {
   closeFile,
   createFileStream,
   getFileSize,
   openFile,
   posixPathJoin,
-} from '../../../src/utils/system.utils.js';
-import { DEFAULT_CHUNK_SIZE } from '../../../src/constants/global.constants.js';
-import type { SignedSpace } from '../../../src/utils/space.utils.js';
-import type { SpaceFileRecordInput } from '../../../src/utils/protocol.utils.js';
+} from '../../../../src/utils/system.utils.js';
+import { DEFAULT_CHUNK_SIZE } from '../../../../src/constants/global.constants.js';
+import type { SignedSpace } from '../../../../src/utils/space.utils.js';
+import type { SpaceFileRecordInput } from '../../../../src/utils/protocol.utils.js';
 
 async function getExistingSpace(db: any, spaceId: number) {
   const space = await getSpace(db, spaceId);

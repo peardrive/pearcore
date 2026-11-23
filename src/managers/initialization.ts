@@ -6,6 +6,7 @@ import { ProtocolMapFactory } from '../protocols/map.js';
 import { ThrottleManager } from './throttle.manager.js';
 import { ConnectionManager } from './connection.manager.js';
 import { MuxManager, FrameTypes } from './multiplexer.manager.js';
+import { DatabaseSpaceResolver } from './space.resolver.js';
 import {
   SpaceFileListManager,
   SpaceFileManager,
@@ -27,6 +28,7 @@ export function initializeManagers(
 ) {
   const sessionManager = new SessionManager();
   const socketManager = new SocketManager();
+  const spaceResolver = new DatabaseSpaceResolver(sessionManager);
   const muxManager = new MuxManager(emitter, { sessionManager });
 
   const spaceFileListManager = new SpaceFileListManager(emitter, {
@@ -66,6 +68,7 @@ export function initializeManagers(
     sessionManager,
     socketManager,
     messageManager,
+    spaces: spaceResolver,
   });
 
   muxManager.setHandlers([
@@ -88,6 +91,7 @@ export function initializeManagers(
     spaceFileList: spaceFileListManager,
     spaceFiles: spaceFileManager,
     mux: muxManager,
+    spaces: spaceResolver,
     sync: negentropySyncManager,
   });
 
@@ -102,6 +106,7 @@ export function initializeManagers(
     connection: connectionManager,
     spaceFileList: spaceFileListManager,
     spaceFiles: spaceFileManager,
+    spaces: spaceResolver,
     sync: negentropySyncManager,
   };
 }

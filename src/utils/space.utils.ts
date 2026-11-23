@@ -793,6 +793,26 @@ export async function getSpaceToTopicMap(
 }
 
 /**
+ * Resolve a space by its topic hash.
+ *
+ * Spaces do not store the topic hash; it is derived from the space name, public key
+ * and nonce. The list is therefore scanned once and the matching record (including
+ * its whitelists) is returned as-is, avoiding a second read.
+ *
+ * @param db - Drizzle database instance.
+ * @param topicHash - Hashed space topic.
+ * @returns The matching space with whitelists, or null.
+ */
+export async function getSpaceByTopicHash(
+  db: Database,
+  topicHash: string,
+): Promise<SpaceWithWhitelists | null> {
+  const spaces = await listSpaces(db);
+
+  return spaces.find((space) => getSpaceTopicHash(space) === topicHash) ?? null;
+}
+
+/**
  * Creates a map for topic hash -> space ID.
  * @param db - Drizzle database instance.
  */
