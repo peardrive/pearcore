@@ -5,6 +5,7 @@ import type { PeerInfo, ProtocolMessage, ProtocolSocket } from '../base.js';
 import { spaceShouldEncryptMessages } from '../../utils/policy.utils.js';
 import { validateHexString } from '../../utils/general.utils.js';
 import { decryptPayload } from '../../utils/protocol.utils.js';
+import { getSpaceByTopicHash } from '../../utils/space.utils.js';
 import { canBroadcast, canRead } from '../shared/guards.js';
 
 export class SpaceMessageHandler extends BaseProtocolHandler {
@@ -15,7 +16,7 @@ export class SpaceMessageHandler extends BaseProtocolHandler {
   ): Promise<void> {
     const ctx = this.context(socket, message, info);
 
-    const space = await this.spaceResolver.resolve(message.topic);
+    const space = await getSpaceByTopicHash(this.db, message.topic);
     if (!space) {
       await this.reject(ctx, MESSAGES.SPACE_NOT_FOUND_MESSAGE);
       return;

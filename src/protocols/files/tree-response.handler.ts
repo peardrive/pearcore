@@ -5,6 +5,7 @@ import type { PeerInfo, ProtocolMessage, ProtocolSocket } from '../base.js';
 import { verifyMerkleTree } from '../../utils/merkletree.utils.js';
 import type { MerkleTree } from '../../utils/merkletree.utils.js';
 import { validateSpaceFileTreeResponsePayload } from '../../utils/protocol.utils.js';
+import { getSpaceByTopicHash } from '../../utils/space.utils.js';
 import { canRead, notRelayed, validPayload } from '../shared/guards.js';
 
 type SpaceFileTreeResponsePayload = {
@@ -21,7 +22,7 @@ export class SpaceFileTreeResponseHandler extends BaseProtocolHandler {
   ): Promise<void> {
     const ctx = this.context(socket, message, info);
 
-    const space = await this.spaceResolver.resolve(message.topic);
+    const space = await getSpaceByTopicHash(this.db, message.topic);
     if (!space) {
       await this.reject(ctx, MESSAGES.SPACE_NOT_FOUND_MESSAGE);
       return;

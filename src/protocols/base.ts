@@ -15,7 +15,6 @@ import type {
 } from '../managers/files/files.manager.js';
 import type { MessageManager } from '../managers/message.manager.js';
 import type { SessionManager } from '../managers/session.manager.js';
-import type { SpaceResolver } from '../managers/space.resolver.js';
 import type { Database } from '../types/database.js';
 import type { SignedProtocolMessage } from '../utils/protocol.utils.js';
 import type { SpacePolicy } from '../utils/policy.utils.js';
@@ -53,8 +52,6 @@ export interface ProtocolManagers {
   spaceFileList: SpaceFileListManager;
   spaceFiles: SpaceFileManager;
   mux: MuxManager;
-  /** Resolves space topics to local records; replaceable by a cache-backed port. */
-  spaces: SpaceResolver;
   sync?: NegentropySyncManager;
 }
 
@@ -80,7 +77,6 @@ export class BaseProtocolHandler {
   spaceFileListManager: SpaceFileListManager;
   spaceFileManager: SpaceFileManager;
   muxManager: MuxManager;
-  spaceResolver: SpaceResolver;
   syncManager: NegentropySyncManager | undefined;
   emitter: EventEmitter;
   emit: EventEmitter['emit'];
@@ -92,7 +88,6 @@ export class BaseProtocolHandler {
     this.spaceFileListManager = managers.spaceFileList;
     this.spaceFileManager = managers.spaceFiles;
     this.muxManager = managers.mux;
-    this.spaceResolver = managers.spaces;
     this.syncManager = managers.sync;
 
     this.emitter = emitter;

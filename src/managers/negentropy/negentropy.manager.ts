@@ -20,8 +20,11 @@ import {
   createNegentropySyncMessage,
   verifyDeliveredMessage,
 } from '../../utils/protocol.utils.js';
-import { getSpaceTopicHash } from '../../utils/space.utils.js';
-import type { SpaceResolver } from '../space.resolver.js';
+import {
+  getSpace,
+  getSpaceTopicHash,
+  getTopicToSpaceMap,
+} from '../../utils/space.utils.js';
 import { NegentropyRole, NegentropySync } from './components/sync.js';
 import { MessageRequestScheduler } from './components/scheduler.js';
 import { MessageDeliveryTasks } from './components/delivery.js';
@@ -46,14 +49,12 @@ const logger: any = createChild('NegentropySyncManager');
  */
 export class NegentropySyncManager {
   [key: string]: any;
-  spaces: SpaceResolver;
 
   constructor(emitter: any, managers: any) {
     this.emitter = emitter;
     this.sessionManager = managers.sessionManager;
     this.socketManager = managers.socketManager;
     this.messageManager = managers.messageManager;
-    this.spaces = managers.spaces;
 
     /** `${peerPublicKey}:${topic}` -> session entry */
     this.sessions = new Map();
@@ -187,8 +188,12 @@ export class NegentropySyncManager {
    * @param topic
    * @returns */
   async resolveSpace(topic: string) {
-    const space = await this.spaces.resolve(topic);
-    return space ? { spaceId: space.id, space } : null;
+    const topicMap = await getTopicToSpaceMap(this.db);
+    const spaceId = topicMap.get(topic);
+    if (!spaceId) return null;
+
+    const space = await getSpace(this.db, spaceId);
+    return space ? { spaceId, space } : null;
   }
 
   /**

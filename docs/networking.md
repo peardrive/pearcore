@@ -34,7 +34,7 @@ Repeated preconditions are composed from `src/protocols/shared/guards.ts`:
 - `canRead` / `canBroadcast` - permission checks against an explicitly resolved space.
 - `verified` - async signature or membership checks.
 
-Space topics are resolved through the `SpaceResolver` port (`src/managers/space.resolver.ts`). `DatabaseSpaceResolver` is the current implementation; a cache-backed resolver can replace it without changing handlers or guards.
+Space topics are resolved by the handlers themselves through the local space queries before the guard stack runs.
 
 Handlers stack guards in the order their protocol requires through `this.enforce(ctx, [...])`. The runner returns `{ result, reason }` without side effects, and the handler sends the rejection with `this.reject(ctx, reason)`.
 

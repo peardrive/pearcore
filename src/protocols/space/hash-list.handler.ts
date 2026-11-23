@@ -7,6 +7,10 @@ import {
   createSpaceSyncMessage,
   validateSpaceHashListPayload,
 } from '../../utils/protocol.utils.js';
+import {
+  getSpace,
+  getTopicToSpaceMap,
+} from '../../utils/space.utils.js';
 import { notRelayed, validPayload } from '../shared/guards.js';
 
 export class SpaceHashListHandler extends BaseProtocolHandler {
@@ -30,11 +34,14 @@ export class SpaceHashListHandler extends BaseProtocolHandler {
     const peerTopicList = message.payload;
     this.socketManager.addSocket(socket, message.publicKey, peerTopicList);
 
-    const spaces = await this.spaceResolver.resolveMany(peerTopicList);
+    const localTopicList = await getTopicToSpaceMap(this.db);
     const { publicKey, secretKey } = this.credentials;
 
     for (const topic of peerTopicList) {
-      const space = spaces.get(topic);
+      const spaceId = localTopicList.get(topic);
+      if (!spaceId) continue;
+
+      const space = await getSpace(this.db, spaceId);
       if (!space) continue;
       if (!publicKeyIsAllowedToRead(ctx.senderPublicKey, space)) continue;
 

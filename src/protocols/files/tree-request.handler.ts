@@ -12,6 +12,7 @@ import {
   createSpaceFileTreeResponseMessage,
   validateSpaceFileTreeRequestPayload,
 } from '../../utils/protocol.utils.js';
+import { getSpaceByTopicHash } from '../../utils/space.utils.js';
 import { canRead, notRelayed, validPayload } from '../shared/guards.js';
 
 type SpaceFileTreeRequestPayload = {
@@ -27,7 +28,7 @@ export class SpaceFileTreeRequestHandler extends BaseProtocolHandler {
   ): Promise<void> {
     const ctx = this.context(socket, message, info);
 
-    const space = await this.spaceResolver.resolve(message.topic);
+    const space = await getSpaceByTopicHash(this.db, message.topic);
     if (!space) {
       await this.reject(ctx, MESSAGES.SPACE_NOT_FOUND_MESSAGE);
       return;

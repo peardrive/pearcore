@@ -1,6 +1,7 @@
 import * as MESSAGES from '../../constants/messages.constants.js';
 import { BaseProtocolHandler } from '../base.js';
 import type { PeerInfo, ProtocolMessage, ProtocolSocket } from '../base.js';
+import { getSpaceByTopicHash } from '../../utils/space.utils.js';
 import type { SpaceWithWhitelists } from '../../utils/space.utils.js';
 import type { ProtocolValidationResult } from '../../utils/protocol.utils.js';
 import type { ProtocolContext } from '../shared/context.js';
@@ -45,7 +46,7 @@ export abstract class NegentropyContentBaseHandler extends BaseProtocolHandler {
   ): Promise<void> {
     const ctx = this.context(socket, message, info);
 
-    const space = await this.spaceResolver.resolve(message.topic);
+    const space = await getSpaceByTopicHash(this.db, message.topic);
     if (!space) {
       await this.reject(ctx, MESSAGES.SPACE_NOT_FOUND_MESSAGE);
       return;
