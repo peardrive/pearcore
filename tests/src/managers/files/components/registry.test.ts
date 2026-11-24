@@ -458,4 +458,45 @@ describe('LocalFileRegistry', () => {
       expect(localFileRegistry.getProgressTracker(filePath)).not.toBeDefined();
     });
   });
+
+  describe('watcher lifecycle', () => {
+    it('should wait for in-flight watcher handlers before stop resolves', async () => {
+      await localFileRegistry.init();
+
+      let releaseHandler!: () => void;
+      const handler = new Promise<void>((resolve) => {
+        releaseHandler = resolve;
+      });
+      localFileRegistry.onChangeEvent = vi.fn(() => handler);
+
+      fileWatcher.emit('change', filePath);
+
+      let stopped = false;
+      const stopPromise = localFileRegistry.stop().then(() => {
+        stopped = true;
+      });
+
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(stopped).toBe(false);
+
+      releaseHandler();
+      await stopPromise;
+
+      expect(stopped).toBe(true);
+      expect(localFileRegistry.pendingWatcherOperations.size).toBe(0);
+    });
+
+    it('should not surface rejected watcher handlers as unhandled rejections', async () => {
+      await localFileRegistry.init();
+
+      localFileRegistry.onChangeEvent = vi.fn(async () => {
+        throw new Error('handler failed');
+      });
+
+      fileWatcher.emit('change', filePath);
+
+      await expect(localFileRegistry.stop()).resolves.toBeUndefined();
+      expect(localFileRegistry.pendingWatcherOperations.size).toBe(0);
+    });
+  });
 });
