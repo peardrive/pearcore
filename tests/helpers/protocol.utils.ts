@@ -1,6 +1,7 @@
 // @ts-nocheck
 import * as EVENTS from '../../src/constants/events.constants.js';
 import { hexToUint8 } from '../../src/utils/crypto.utils.js';
+import { validateHexString } from '../../src/utils/general.utils.js';
 
 /**
  * Protocol-test surface for factory cores.
@@ -42,10 +43,20 @@ export async function deliverMessage(to, from, message) {
     throw new Error(`${to.name} has no connection to ${from.name}`);
   }
 
+  const info: { publicKey: Uint8Array; topics?: Uint8Array[] } = {
+    publicKey: hexToUint8(from.publicKey),
+  };
+
+  // the in-memory link is established over the message topic, so the sender is
+  // subscribed to it for the purpose of this delivery.
+  if (validateHexString(message.topic) && message.topic.length % 2 === 0) {
+    info.topics = [hexToUint8(message.topic)];
+  }
+
   await to.managers.message.handleIncomingMessage(
     socket,
     JSON.stringify(message),
-    { publicKey: hexToUint8(from.publicKey) },
+    info,
   );
 }
 

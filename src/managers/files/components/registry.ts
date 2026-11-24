@@ -112,6 +112,8 @@ export class LocalFileRegistry {
   pendingAfterIndex: Map<string, boolean>;
   /** Active progress trackers, keyed by source file path. */
   progressTrackers: Map<string, ProgressTracker>;
+  /** Watcher handlers that started and have not settled yet. */
+  pendingWatcherOperations: Set<Promise<void>>;
 
   constructor(
     emitter: Pick<EventEmitter, 'emit'>,
@@ -132,11 +134,11 @@ export class LocalFileRegistry {
 
     // stable listeners so they can be detached from the shared watcher
     this.onWatcherChange = (filePath: string) => {
-      this.onChangeEvent(filePath);
+      this.trackWatcherOperation(this.onChangeEvent(filePath), filePath);
     };
 
     this.onWatcherDelete = (filePath: string) => {
-      this.onDeleteEvent(filePath);
+      this.trackWatcherOperation(this.onDeleteEvent(filePath), filePath);
     };
 
     /**
@@ -166,6 +168,38 @@ export class LocalFileRegistry {
      * @type {Map<string, ProgressTracker>}
      */
     this.progressTrackers = new Map();
+
+    /**
+     * Handlers already running for watcher events. `stop()` drains them before
+     * the session database is closed, and their failures are logged here instead
+     * of surfacing as unhandled rejections.
+     * @type {Set<Promise<void>>}
+     */
+    this.pendingWatcherOperations = new Set();
+  }
+
+  /**
+   * Tracks an async watcher handler until it settles.
+   *
+   * `EventEmitter.emit` does not await listeners, so a rejection would otherwise
+   * become an unhandled rejection. Tracking the promise also lets `stop()` wait
+   * for work that started before the listeners were detached.
+   *
+   * @param operation - Handler promise for one watcher event.
+   * @param filePath - Path that triggered the event, used for logging.
+   */
+  private trackWatcherOperation(
+    operation: Promise<void>,
+    filePath: string,
+  ): void {
+    const tracked = operation.catch((error) => {
+      logger.warn({ filePath, error }, 'local file watcher handler failed');
+    });
+
+    this.pendingWatcherOperations.add(tracked);
+    void tracked.finally(() => {
+      this.pendingWatcherOperations.delete(tracked);
+    });
   }
 
   get db(): Database {
@@ -188,15 +222,13 @@ export class LocalFileRegistry {
   }
 
   get backoffConfig(): FilesSession['localChangeBackoff'] {
-    const config = this.sessionManager.session.get<
-      FilesSession['localChangeBackoff']
-    >('files.localChangeBackoff');
+    const config = this.sessionManager.session.get('files.localChangeBackoff');
 
     if (!config) {
       throw new Error('Missing files.localChangeBackoff configuration');
     }
 
-    return config;
+    return config as FilesSession['localChangeBackoff'];
   }
 
   /**
@@ -604,13 +636,18 @@ export class LocalFileRegistry {
   }
 
   async stop() {
-    for (const [filePath, entry] of this.backoffStates.entries()) {
-      clearTimeout(entry.timeout);
-    }
-
     // the watcher is shared, so only detach this component's listeners
     this.fileWatcher.off('change', this.onWatcherChange);
     this.fileWatcher.off('delete', this.onWatcherDelete);
+
+    // let handlers that started before detaching finish while the database is open
+    while (this.pendingWatcherOperations.size > 0) {
+      await Promise.allSettled([...this.pendingWatcherOperations]);
+    }
+
+    for (const [filePath, entry] of this.backoffStates.entries()) {
+      clearTimeout(entry.timeout);
+    }
 
     this.backoffStates.clear();
     this.pendingAfterIndex.clear();

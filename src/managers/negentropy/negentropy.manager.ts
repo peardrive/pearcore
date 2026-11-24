@@ -1,5 +1,6 @@
 import * as EVENTS from '../../constants/events.constants.js';
 import * as MESSAGES from '../../constants/messages.constants.js';
+import { SPACE_SYNC_STATES } from '../../constants/space.constants.js';
 import { createChild } from '../../logger.js';
 import { hex, randomNonce } from '../../utils/crypto.utils.js';
 import { now } from '../../utils/general.utils.js';
@@ -24,7 +25,6 @@ import {
   getSpaceTopicHash,
   getTopicToSpaceMap,
 } from '../../utils/space.utils.js';
-import { SpaceSyncHandler } from '../../protocols/space.protocol.js';
 import { NegentropyRole, NegentropySync } from './components/sync.js';
 import { MessageRequestScheduler } from './components/scheduler.js';
 import { MessageDeliveryTasks } from './components/delivery.js';
@@ -201,7 +201,7 @@ export class NegentropySyncManager {
    * @param context
    * @param context.info - Hyperswarm info of the sender.
    * @param context.message - The SpaceSync message (payload is the space).
-   * @param context.action - SpaceSyncHandler.STATES value.
+   * @param context.action - SPACE_SYNC_STATES value.
    */
   async onSpaceSync({ info, message, action }: any) {
     const peerPublicKey = hex(info.publicKey);
@@ -209,7 +209,7 @@ export class NegentropySyncManager {
     const { publicKey } = this.credentials;
 
     // on a first encounter, only the newcomer is notified: it always initiates.
-    const isFirstEncounter = action === SpaceSyncHandler.STATES.FIRST_ENCOUNTER;
+    const isFirstEncounter = action === SPACE_SYNC_STATES.FIRST_ENCOUNTER;
 
     if (
       !isFirstEncounter &&

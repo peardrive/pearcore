@@ -23,6 +23,7 @@ import {
   verifySpaceSignature,
   createSpace,
   getSpace,
+  getSpaceByTopicHash,
   updateSpace,
   createSpaceForPublicKey,
   upsertSpace,
@@ -255,6 +256,24 @@ describe('Space operations', () => {
     it('should return null when space does not exist', async () => {
       const result = await getSpace(db, 999999);
       expect(result).toBeNull();
+    });
+  });
+
+  describe('getSpaceByTopicHash', () => {
+    it('should resolve a space by its topic hash', async () => {
+      const { spaceId } = await createSpace(db, testSpace);
+      const topicHash = getSpaceTopicHash(testSpace);
+
+      const result = (await getSpaceByTopicHash(db, topicHash))!;
+
+      expect(result).not.toBeNull();
+      expect(result.id).toBe(spaceId);
+      expect(result.readWhitelist).toEqual([testSpace.publicKey]);
+      expect(result.broadcastWhitelist).toEqual([testSpace.publicKey]);
+    });
+
+    it('should return null for an unknown topic hash', async () => {
+      expect(await getSpaceByTopicHash(db, 'f'.repeat(64))).toBeNull();
     });
   });
 

@@ -1,28 +1,28 @@
 // @ts-nocheck
-import * as EVENTS from '../../../src/constants/events.constants.js';
+import * as EVENTS from '../../../../src/constants/events.constants.js';
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { stripIds, now } from '../../../src/utils/general.utils.js';
-import { hexToUint8, signJSON } from '../../../src/utils/crypto.utils.js';
+import { stripIds, now } from '../../../../src/utils/general.utils.js';
+import { hexToUint8, signJSON } from '../../../../src/utils/crypto.utils.js';
 import {
   buildProfilePayload,
   createProfile,
   getProfile,
   getProfileByPublicKey,
   updateProfile,
-} from '../../../src/utils/profile.utils.js';
-import { createProfileUpdateMessage } from '../../../src/utils/protocol.utils.js';
-import { buildTestProfilePayload } from '../../helpers/general.utils.js';
-import { MockCoreFactory } from '../../helpers/mock.factory.js';
+} from '../../../../src/utils/profile.utils.js';
+import { createProfileUpdateMessage } from '../../../../src/utils/protocol.utils.js';
+import { buildTestProfilePayload } from '../../../helpers/general.utils.js';
+import { MockCoreFactory } from '../../../helpers/mock.factory.js';
 import {
   collectMessages,
   connectProtocolNodes,
   deliverMessage,
-} from '../../helpers/protocol.utils.js';
+} from '../../../helpers/protocol.utils.js';
 import type {
   ProfileRecord,
   SignedProfile,
-} from '../../../src/utils/profile.utils.js';
-import type { SignedProtocolMessage } from '../../../src/utils/protocol.utils.js';
+} from '../../../../src/utils/profile.utils.js';
+import type { SignedProtocolMessage } from '../../../../src/utils/protocol.utils.js';
 
 async function getExistingProfile(
   db: any,

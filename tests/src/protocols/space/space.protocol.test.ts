@@ -1,18 +1,18 @@
 // @ts-nocheck
-import * as EVENTS from '../../../src/constants/events.constants.js';
-import * as MESSAGES from '../../../src/constants/messages.constants.js';
+import * as EVENTS from '../../../../src/constants/events.constants.js';
+import * as MESSAGES from '../../../../src/constants/messages.constants.js';
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { buildTestSpacePayload } from '../../helpers/general.utils.js';
-import { MockCoreFactory } from '../../helpers/mock.factory.js';
+import { buildTestSpacePayload } from '../../../helpers/general.utils.js';
+import { MockCoreFactory } from '../../../helpers/mock.factory.js';
 import {
   collectMessages,
   connectProtocolNodes,
   deliverMessage,
-} from '../../helpers/protocol.utils.js';
+} from '../../../helpers/protocol.utils.js';
 import {
   createSpaceHashListMessage,
   createSpaceSyncMessage,
-} from '../../../src/utils/protocol.utils.js';
+} from '../../../../src/utils/protocol.utils.js';
 import {
   createSpaceForPublicKey,
   getSpace,
@@ -20,12 +20,12 @@ import {
   getTopicToSpaceMap,
   updateSpaceForPublicKey,
   upsertSpace,
-} from '../../../src/utils/space.utils.js';
-import { SpaceSyncHandler } from '../../../src/protocols/space.protocol.js';
-import { now, stripIds } from '../../../src/utils/general.utils.js';
-import { hex, randomNonce } from '../../../src/utils/crypto.utils.js';
-import { saveShareLink } from '../../../src/utils/sharelink.utils.js';
-import type { SpaceInput } from '../../../src/utils/space.utils.js';
+} from '../../../../src/utils/space.utils.js';
+import { SpaceSyncHandler } from '../../../../src/protocols/space/sync.handler.js';
+import { now, stripIds } from '../../../../src/utils/general.utils.js';
+import { hex, randomNonce } from '../../../../src/utils/crypto.utils.js';
+import { saveShareLink } from '../../../../src/utils/sharelink.utils.js';
+import type { SpaceInput } from '../../../../src/utils/space.utils.js';
 
 async function getExistingSpace(db: any, spaceId: number) {
   const space = await getSpace(db, spaceId);
