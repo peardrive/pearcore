@@ -7,10 +7,7 @@ import {
   createSpaceSyncMessage,
   validateSpaceHashListPayload,
 } from '../../utils/protocol.utils.js';
-import {
-  getSpace,
-  getTopicToSpaceMap,
-} from '../../utils/space.utils.js';
+import { getSpace, getTopicToSpaceMap } from '../../utils/space.utils.js';
 import { notRelayed, validPayload } from '../shared/guards.js';
 
 export class SpaceHashListHandler extends BaseProtocolHandler {
@@ -22,7 +19,9 @@ export class SpaceHashListHandler extends BaseProtocolHandler {
     const ctx = this.context(socket, message, info);
 
     const { result, reason } = await this.enforce(ctx, [
+      // payload must be a valid list of topic hashes.
       validPayload(validateSpaceHashListPayload),
+      // author must be the connected peer, not a relay.
       notRelayed,
     ]);
 

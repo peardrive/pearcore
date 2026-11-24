@@ -4,7 +4,12 @@ import { BaseProtocolHandler } from '../base.js';
 import type { PeerInfo, ProtocolMessage, ProtocolSocket } from '../base.js';
 import { validateNegentropySyncPayload } from '../../utils/protocol.utils.js';
 import { getSpaceByTopicHash } from '../../utils/space.utils.js';
-import { canRead, notRelayed, validPayload } from '../shared/guards.js';
+import {
+  canRead,
+  notRelayed,
+  subscribed,
+  validPayload,
+} from '../shared/guards.js';
 
 /**
  * Handles one round of message-history reconciliation (Negentropy) for a space.
@@ -28,13 +33,18 @@ export class NegentropySyncHandler extends BaseProtocolHandler {
       this.sessionManager.getMessageConfig().reconciliation;
 
     const { result, reason } = await this.enforce(ctx, [
+      // author must be the connected peer, not a relay.
       notRelayed,
+      // sender must be subscribed to the message topic.
+      subscribed(this.socketManager),
+      // payload must contain valid reconciliation ranges and session id.
       validPayload((payload) =>
         validateNegentropySyncPayload(payload, {
           maxRanges,
           maxIdListSize,
         }),
       ),
+      // sender must be allowed to read the space.
       canRead(space, 'sender'),
     ]);
 

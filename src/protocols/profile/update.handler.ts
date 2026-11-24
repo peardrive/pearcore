@@ -26,7 +26,9 @@ export class ProfileProtocolHandler extends BaseProtocolHandler {
     const ctx = this.context(socket, message, info);
 
     const { result, reason } = await this.enforce(ctx, [
+      // payload must contain a valid profile and topic list.
       validPayload(validateProfileUpdateMessagePayload),
+      // profile signature must verify against the profile key.
       verified(
         (context) => verifyProfileSignature(context.message.payload.profile),
         MESSAGES.BAD_PROFILE_SIGNATURE,

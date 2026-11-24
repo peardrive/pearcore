@@ -10,7 +10,12 @@ import {
   validateSpaceFileEventPayload,
   verifySpaceFileRecordSignature,
 } from '../../utils/protocol.utils.js';
-import { canBroadcast, canRead, validPayload } from '../shared/guards.js';
+import {
+  canBroadcast,
+  canRead,
+  subscribed,
+  validPayload,
+} from '../shared/guards.js';
 
 type SpaceFileRecordTuple = [
   path: string,
@@ -77,8 +82,13 @@ export class SpaceFileEventHandler extends BaseProtocolHandler {
     }
 
     const { result, reason } = await this.enforce(ctx, [
+      // sender must be subscribed to the message topic.
+      subscribed(this.socketManager),
+      // author must be allowed to broadcast in the space.
       canBroadcast(space, 'author'),
+      // sender must be allowed to read the space.
       canRead(space, 'sender'),
+      // payload must contain valid, signed file records.
       validPayload(validateSpaceFileEventPayload),
     ]);
 

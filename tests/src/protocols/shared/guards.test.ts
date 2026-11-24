@@ -1,6 +1,7 @@
 import { EventEmitter } from 'node:events';
 import { describe, it, expect, vi } from 'vitest';
 import * as MESSAGES from '../../../../src/constants/messages.constants.js';
+import { hexToUint8 } from '../../../../src/utils/crypto.utils.js';
 import { BaseProtocolHandler } from '../../../../src/protocols/base.js';
 import type { EnforcementResult } from '../../../../src/protocols/base.js';
 import type { ProtocolContext } from '../../../../src/protocols/shared/context.js';
@@ -8,10 +9,12 @@ import {
   canBroadcast,
   canRead,
   notRelayed,
+  subscribed,
   validPayload,
   verified,
 } from '../../../../src/protocols/shared/guards.js';
 import type { Guard } from '../../../../src/protocols/shared/guards.js';
+import type { SocketManager } from '../../../../src/managers/sockets.manager.js';
 
 const alice = 'a'.repeat(64);
 const bob = 'b'.repeat(64);
@@ -81,6 +84,68 @@ describe('protocol guards', () => {
       ctx.message.publicKey = bob;
 
       expect(notRelayed(ctx)).toBe(MESSAGES.NO_RELAY_MESSAGE);
+    });
+  });
+
+  describe('subscribed', () => {
+    const topic = 'a'.repeat(64);
+
+    function contextOnTopic(): ProtocolContext {
+      const ctx = context();
+
+      return { ...ctx, message: { ...ctx.message, topic } };
+    }
+
+    function socketManager(announced: string[] = []): SocketManager {
+      return {
+        getPeerInfoBySocket: () => ({
+          publicKey: alice,
+          topics: announced,
+        }),
+      } as unknown as SocketManager;
+    }
+
+    function withConnectionTopics(topics: string[]): ProtocolContext {
+      const ctx = contextOnTopic();
+
+      return {
+        ...ctx,
+        info: {
+          publicKey: new Uint8Array(),
+          topics: topics.map((item) => hexToUint8(item)),
+        },
+      };
+    }
+
+    it('passes when the connection includes the message topic', () => {
+      expect(
+        subscribed(socketManager())(withConnectionTopics([topic])),
+      ).toBeNull();
+    });
+
+    it('passes when the peer announced the message topic', () => {
+      expect(subscribed(socketManager([topic]))(contextOnTopic())).toBeNull();
+    });
+
+    it('rejects when neither source includes the message topic', () => {
+      const ctx = withConnectionTopics(['b'.repeat(64)]);
+
+      expect(subscribed(socketManager(['c'.repeat(64)]))(ctx)).toBe(
+        MESSAGES.NOT_SUBSCRIBED_MESSAGE,
+      );
+    });
+
+    it('uses a custom topic resolver', () => {
+      const other = 'c'.repeat(64);
+      const ctx = withConnectionTopics([other]);
+
+      expect(subscribed(socketManager(), () => other)(ctx)).toBeNull();
+    });
+
+    it('rejects when no topic information is available', () => {
+      expect(subscribed(socketManager())(contextOnTopic())).toBe(
+        MESSAGES.NOT_SUBSCRIBED_MESSAGE,
+      );
     });
   });
 

@@ -6,7 +6,12 @@ import { verifyMerkleTree } from '../../utils/merkletree.utils.js';
 import type { MerkleTree } from '../../utils/merkletree.utils.js';
 import { validateSpaceFileTreeResponsePayload } from '../../utils/protocol.utils.js';
 import { getSpaceByTopicHash } from '../../utils/space.utils.js';
-import { canRead, notRelayed, validPayload } from '../shared/guards.js';
+import {
+  canRead,
+  notRelayed,
+  subscribed,
+  validPayload,
+} from '../shared/guards.js';
 
 type SpaceFileTreeResponsePayload = {
   tree: MerkleTree;
@@ -29,8 +34,13 @@ export class SpaceFileTreeResponseHandler extends BaseProtocolHandler {
     }
 
     const { result, reason } = await this.enforce(ctx, [
+      // author must be the connected peer, not a relay.
       notRelayed,
+      // sender must be subscribed to the message topic.
+      subscribed(this.socketManager),
+      // author must be allowed to read the space.
       canRead(space, 'author'),
+      // payload must contain a structurally valid Merkle tree.
       validPayload(validateSpaceFileTreeResponsePayload),
     ]);
 

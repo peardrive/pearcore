@@ -6,7 +6,7 @@ import { spaceShouldEncryptMessages } from '../../utils/policy.utils.js';
 import { validateHexString } from '../../utils/general.utils.js';
 import { decryptPayload } from '../../utils/protocol.utils.js';
 import { getSpaceByTopicHash } from '../../utils/space.utils.js';
-import { canBroadcast, canRead } from '../shared/guards.js';
+import { canBroadcast, canRead, subscribed } from '../shared/guards.js';
 
 export class SpaceMessageHandler extends BaseProtocolHandler {
   override async handle(
@@ -23,7 +23,11 @@ export class SpaceMessageHandler extends BaseProtocolHandler {
     }
 
     const { result, reason } = await this.enforce(ctx, [
+      // sender must be subscribed to the message topic.
+      subscribed(this.socketManager),
+      // sender must be allowed to read the space.
       canRead(space, 'sender'),
+      // author must be allowed to broadcast in the space.
       canBroadcast(space, 'author'),
     ]);
 

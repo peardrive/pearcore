@@ -30,6 +30,7 @@ Every protocol type has its own handler file under `src/protocols/<family>/`, na
 Repeated preconditions are composed from `src/protocols/shared/guards.ts`:
 
 - `notRelayed` - the author must be the connected peer.
+- `subscribed` - the peer must be subscribed to the message topic.
 - `validPayload` - runs a protocol payload validator.
 - `canRead` / `canBroadcast` - permission checks against an explicitly resolved space.
 - `verified` - async signature or membership checks.

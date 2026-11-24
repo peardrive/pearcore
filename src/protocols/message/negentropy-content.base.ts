@@ -5,7 +5,12 @@ import { getSpaceByTopicHash } from '../../utils/space.utils.js';
 import type { SpaceWithWhitelists } from '../../utils/space.utils.js';
 import type { ProtocolValidationResult } from '../../utils/protocol.utils.js';
 import type { ProtocolContext } from '../shared/context.js';
-import { canRead, notRelayed, validPayload } from '../shared/guards.js';
+import {
+  canRead,
+  notRelayed,
+  subscribed,
+  validPayload,
+} from '../shared/guards.js';
 
 /**
  * Shared checks of the message-sync handlers: no relaying, a valid payload, a known
@@ -53,8 +58,13 @@ export abstract class NegentropyContentBaseHandler extends BaseProtocolHandler {
     }
 
     const { result, reason } = await this.enforce(ctx, [
+      // author must be the connected peer, not a relay.
       notRelayed,
+      // sender must be subscribed to the message topic.
+      subscribed(this.socketManager),
+      // payload must match the content message schema.
       validPayload((payload) => this.validatePayload(payload)),
+      // sender must be allowed to read the space.
       canRead(space, 'sender'),
     ]);
 

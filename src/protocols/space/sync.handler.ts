@@ -33,7 +33,12 @@ import {
   queryShareLink,
 } from '../../utils/sharelink.utils.js';
 import type { ProtocolContext } from '../shared/context.js';
-import { canRead, validPayload, verified } from '../shared/guards.js';
+import {
+  canRead,
+  subscribed,
+  validPayload,
+  verified,
+} from '../shared/guards.js';
 
 type TimestampedSpace = Pick<SpacePayload, 'timestamp'>;
 
@@ -93,23 +98,17 @@ export class SpaceSyncHandler extends BaseProtocolHandler {
   ): Promise<void> {
     const ctx = this.context(socket, message, info);
 
-    let spaceTopicHash = '';
-    const subscribed = (): string | null => {
-      spaceTopicHash = getSpaceTopicHash(message.payload);
-      const peerInfo = this.socketManager.getPeerInfoBySocket(socket);
-
-      return peerInfo.topics.includes(spaceTopicHash)
-        ? null
-        : MESSAGES.NOT_SUBSCRIBED_MESSAGE;
-    };
-
     const { result, reason } = await this.enforce(ctx, [
+      // payload must describe a valid signed space.
       validPayload(validateSpaceSyncMessagePayload),
+      // space signature must verify against the space key.
       verified(
         (context) => verifySpaceSignature(context.message.payload),
         MESSAGES.BAD_SPACE_SIGNATURE,
       ),
-      subscribed,
+      // sender must be subscribed to the message topic.
+      subscribed(this.socketManager),
+      // author must be allowed to read the advertised space.
       canRead(message.payload, 'author'),
     ]);
 
@@ -117,6 +116,8 @@ export class SpaceSyncHandler extends BaseProtocolHandler {
       await this.reject(ctx, reason);
       return;
     }
+
+    const spaceTopicHash = getSpaceTopicHash(message.payload);
 
     const sharelinkQuery = await queryShareLink(this.db, {}); // list all records
     const spaceQuery = await querySpace(this.db, {

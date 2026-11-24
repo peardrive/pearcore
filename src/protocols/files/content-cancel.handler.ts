@@ -2,7 +2,7 @@ import * as EVENTS from '../../constants/events.constants.js';
 import { BaseProtocolHandler } from '../base.js';
 import type { PeerInfo, ProtocolMessage, ProtocolSocket } from '../base.js';
 import { validateSpaceFileContentCancelPayload } from '../../utils/protocol.utils.js';
-import { notRelayed, validPayload } from '../shared/guards.js';
+import { notRelayed, subscribed, validPayload } from '../shared/guards.js';
 
 type SpaceFileContentCancelPayload = {
   key: string;
@@ -17,7 +17,11 @@ export class SpaceFileContentCancelHandler extends BaseProtocolHandler {
     const ctx = this.context(socket, message, info);
 
     const { result, reason } = await this.enforce(ctx, [
+      // author must be the connected peer, not a relay.
       notRelayed,
+      // sender must be subscribed to the message topic.
+      subscribed(this.socketManager),
+      // payload must contain a valid download key.
       validPayload(validateSpaceFileContentCancelPayload),
     ]);
 

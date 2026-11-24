@@ -144,7 +144,7 @@ describe('Space File Protocols', () => {
     };
 
     it('should reject message from unknown space', async () => {
-      const unkownTopic = '0x012345';
+      const unkownTopic = 'd'.repeat(64);
       const message = await createSpaceFileEventMessage({
         topic: unkownTopic,
         events: [],
@@ -477,7 +477,7 @@ describe('Space File Protocols', () => {
 
     it('should reject when space not found', async () => {
       const message = await createSpaceFileContentRequestMessage({
-        topic: '0x999999999',
+        topic: 'e'.repeat(64),
         spaceFilePath: posixPathJoin(spacePath, spaceFilename),
         leafStart: 0,
         leafStop: 0,

@@ -9,7 +9,12 @@ import {
 } from '../../utils/files.utils.js';
 import { validateSpaceFileContentRequestPayload } from '../../utils/protocol.utils.js';
 import { getSpaceByTopicHash } from '../../utils/space.utils.js';
-import { canRead, notRelayed, validPayload } from '../shared/guards.js';
+import {
+  canRead,
+  notRelayed,
+  subscribed,
+  validPayload,
+} from '../shared/guards.js';
 
 type SpaceFileContentRequestPayload = {
   spaceFilePath: string;
@@ -32,8 +37,13 @@ export class SpaceFileContentRequestHandler extends BaseProtocolHandler {
     }
 
     const { result, reason } = await this.enforce(ctx, [
+      // author must be the connected peer, not a relay.
       notRelayed,
+      // sender must be subscribed to the message topic.
+      subscribed(this.socketManager),
+      // payload must contain a valid path, slice and request key.
       validPayload(validateSpaceFileContentRequestPayload),
+      // author must be allowed to read the space.
       canRead(space, 'author'),
     ]);
 
